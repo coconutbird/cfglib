@@ -86,10 +86,13 @@ pub use dataflow::{InstrInfo, Location, ProgramPoint};
 
 // ── Re-exports: Graph algorithms ────────────────────────────────────
 
+pub use graph::callgraph::{CallEdge, CallGraph, FunctionId, FunctionNode};
 pub use graph::cdg::ControlDependenceGraph;
 pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff, cfg_diff};
 pub use graph::dominator::DominatorTree;
+pub use graph::inc_dom::{IncrementalUpdate, update_after_edge_insert, update_after_edge_remove};
 pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
+pub use graph::loopnest::{LoopNestNode, LoopNestingTree};
 pub use graph::pdg::{Dependence, ProgramDependenceGraph};
 pub use graph::reverse::reverse_cfg;
 pub use graph::scc::{Scc, SccResult, tarjan_scc};
@@ -98,20 +101,28 @@ pub use graph::structure::{
     insert_preheader, loop_exit_blocks,
 };
 pub use graph::verify::{VerifyError, VerifyResult, verify};
+pub use graph::visitor::{CfgVisitor, walk_bfs, walk_dfs};
 
 // ── Re-exports: Analyses ────────────────────────────────────────────
 
+pub use analysis::alias::{AliasSets, MemoryInfo, MemoryOp, alias_analysis};
 pub use analysis::expr::{
     BlockExprTrees, ExprInstr, ExprNode, recover_block_expressions, recover_expressions,
 };
 pub use analysis::metrics::{CfgMetrics, cfg_metrics};
+pub use analysis::pattern::{CfgPattern, detect_patterns};
 pub use analysis::tailcall::{TailCall, detect_tail_calls};
+pub use analysis::valuenumber::{
+    BlockValueNumbers, ValueNumber, ValueNumberInfo, ValueNumbering, count_redundant,
+    global_value_numbering, local_value_numbering,
+};
 pub use dataflow::constprop::{ConstPropProblem, ConstValue, ConstantFolder, constant_propagation};
 pub use dataflow::copyprop::{CopyPropResult, CopySource, copy_propagation};
 pub use dataflow::ssa_destruct::{PhiCopy, copies_by_predecessor, eliminate_phis};
 
 // ── Re-exports: Transforms & linearization ──────────────────────────
 
+pub use transform::coloring::{ColorAssignment, InterferenceGraph, color_graph};
 pub use transform::contract::{contract_edge, split_node};
 pub use transform::loops::{RotationResult, find_loop_invariants, rotate_loop};
 pub use transform::{

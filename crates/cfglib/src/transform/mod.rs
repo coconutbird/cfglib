@@ -9,6 +9,7 @@
 //! - [`linearize`] — re-serialize a CFG back to a flat instruction stream.
 
 pub mod cleanup;
+pub mod coloring;
 pub mod contract;
 pub mod critical;
 pub mod dce;
