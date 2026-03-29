@@ -190,6 +190,103 @@ pub fn is_reducible<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> bool {
     true
 }
 
+// ── Loop canonicalization ───────────────────────────────────────────
+
+/// Information about a canonicalized loop.
+#[derive(Debug, Clone)]
+pub struct CanonicalLoop {
+    /// The original natural loop.
+    pub natural_loop: NaturalLoop,
+    /// The preheader block (newly inserted).
+    pub preheader: BlockId,
+    /// Exit blocks — blocks outside the loop that are targets of edges
+    /// from inside the loop.
+    pub exits: BTreeSet<BlockId>,
+}
+
+/// Insert a dedicated **preheader** block for a natural loop.
+///
+/// A preheader is a single-successor block that becomes the sole
+/// non-backedge predecessor of the loop header. This simplifies
+/// many loop transformations (LICM, unrolling, etc.).
+///
+/// Returns the `BlockId` of the new preheader, or `None` if a
+/// preheader was not needed (single non-backedge predecessor).
+pub fn insert_preheader<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<BlockId> {
+    // Collect non-backedge predecessors of the header.
+    let outside_preds: Vec<crate::edge::EdgeId> = cfg
+        .predecessor_edges(lp.header)
+        .iter()
+        .copied()
+        .filter(|&eid| {
+            let src = cfg.edge(eid).source();
+            !lp.body.contains(&src)
+        })
+        .collect();
+
+    if outside_preds.len() <= 1 {
+        return None; // already canonical
+    }
+
+    let preheader = cfg.new_block();
+
+    // Redirect all outside predecessor edges to target the preheader.
+    for eid in &outside_preds {
+        let edge = cfg.edge(*eid);
+        let src = edge.source();
+        let kind = edge.kind();
+        cfg.remove_edge(*eid);
+        cfg.add_edge(src, preheader, kind);
+    }
+
+    // Add fallthrough from preheader to the header.
+    cfg.add_edge(preheader, lp.header, crate::edge::EdgeKind::Fallthrough);
+
+    Some(preheader)
+}
+
+/// Identify exit blocks of a natural loop.
+///
+/// An exit block is any block **outside** the loop body that has a
+/// predecessor inside the loop body.
+pub fn loop_exit_blocks<I>(cfg: &Cfg<I>, lp: &NaturalLoop) -> BTreeSet<BlockId> {
+    let mut exits = BTreeSet::new();
+    for &b in &lp.body {
+        for s in cfg.successors(b) {
+            if !lp.body.contains(&s) {
+                exits.insert(s);
+            }
+        }
+    }
+    exits
+}
+
+/// Canonicalize all loops: insert preheaders and identify exits.
+pub fn canonicalize_loops<I: Clone>(cfg: &mut Cfg<I>, dom: &DominatorTree) -> Vec<CanonicalLoop> {
+    let loops = detect_loops(cfg, dom);
+    let mut result = Vec::new();
+
+    for lp in loops {
+        let exits = loop_exit_blocks(cfg, &lp);
+        let preheader = insert_preheader(cfg, &lp).unwrap_or_else(|| {
+            // No new preheader needed; use the single outside pred.
+            let outside: Vec<BlockId> = cfg
+                .predecessors(lp.header)
+                .filter(|p| !lp.body.contains(p))
+                .collect();
+            outside.into_iter().next().unwrap_or(lp.header)
+        });
+
+        result.push(CanonicalLoop {
+            natural_loop: lp,
+            preheader,
+            exits,
+        });
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,5 +387,41 @@ mod tests {
         let loops = detect_loops(&cfg, &dom);
         assert!(loops.is_empty());
         assert!(is_reducible(&cfg, &dom));
+    }
+
+    #[test]
+    fn loop_exit_blocks_found() {
+        let cfg = CfgBuilder::build(vec![
+            MockInst(FlowEffect::LoopOpen, "loop"),
+            MockInst(FlowEffect::ConditionalBreak, "breakc"),
+            ff("body"),
+            MockInst(FlowEffect::LoopClose, "endloop"),
+            MockInst(FlowEffect::Return, "ret"),
+        ])
+        .unwrap();
+        let dom = DominatorTree::compute(&cfg);
+        let loops = detect_loops(&cfg, &dom);
+        assert!(!loops.is_empty());
+        let exits = loop_exit_blocks(&cfg, &loops[0]);
+        assert!(
+            !exits.is_empty(),
+            "loop should have at least one exit block"
+        );
+    }
+
+    #[test]
+    fn canonicalize_loops_adds_exits() {
+        let mut cfg = CfgBuilder::build(vec![
+            MockInst(FlowEffect::LoopOpen, "loop"),
+            MockInst(FlowEffect::ConditionalBreak, "breakc"),
+            ff("body"),
+            MockInst(FlowEffect::LoopClose, "endloop"),
+            MockInst(FlowEffect::Return, "ret"),
+        ])
+        .unwrap();
+        let dom = DominatorTree::compute(&cfg);
+        let canonical = canonicalize_loops(&mut cfg, &dom);
+        assert!(!canonical.is_empty());
+        assert!(!canonical[0].exits.is_empty());
     }
 }

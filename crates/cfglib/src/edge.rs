@@ -1,5 +1,7 @@
 //! Edges connecting basic blocks in a control-flow graph.
 
+extern crate alloc;
+
 use crate::block::BlockId;
 
 /// Opaque identifier for an edge within a [`Cfg`](crate::Cfg).
@@ -88,6 +90,50 @@ pub struct Edge {
     pub(crate) target: BlockId,
     /// Classification.
     pub(crate) kind: EdgeKind,
+    /// Optional branch weight / probability (0.0–1.0).
+    ///
+    /// When set, this indicates the likelihood of this edge being taken
+    /// relative to other outgoing edges of the same source block.
+    /// Used by the linearizer for hot-path layout and by DOT output
+    /// for visual emphasis.
+    pub(crate) weight: Option<f64>,
+    /// Optional call-site metadata for `Call` / `IndirectCall` edges.
+    pub(crate) call_site: Option<CallSite>,
+}
+
+/// Metadata attached to a call edge describing the call target.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallSite {
+    /// Symbolic name or address of the call target (e.g. function name).
+    pub target_name: Option<alloc::string::String>,
+    /// Raw target address, if known.
+    pub target_address: Option<u64>,
+    /// Calling convention hint (ISA-specific string, e.g. "cdecl", "aapcs").
+    pub calling_convention: Option<alloc::string::String>,
+    /// Whether this is a tail call (no return edge expected).
+    pub is_tail_call: bool,
+}
+
+impl CallSite {
+    /// Create a call site with just a target name.
+    pub fn named(name: &str) -> Self {
+        Self {
+            target_name: Some(alloc::string::String::from(name)),
+            target_address: None,
+            calling_convention: None,
+            is_tail_call: false,
+        }
+    }
+
+    /// Create a call site with a raw address.
+    pub fn at_address(addr: u64) -> Self {
+        Self {
+            target_name: None,
+            target_address: Some(addr),
+            calling_convention: None,
+            is_tail_call: false,
+        }
+    }
 }
 
 impl Edge {
@@ -113,5 +159,29 @@ impl Edge {
     #[inline]
     pub fn kind(&self) -> EdgeKind {
         self.kind
+    }
+
+    /// The branch weight / probability, if set.
+    #[inline]
+    pub fn weight(&self) -> Option<f64> {
+        self.weight
+    }
+
+    /// Set the branch weight / probability.
+    #[inline]
+    pub fn set_weight(&mut self, w: Option<f64>) {
+        self.weight = w;
+    }
+
+    /// The call-site metadata, if this is a call edge.
+    #[inline]
+    pub fn call_site(&self) -> Option<&CallSite> {
+        self.call_site.as_ref()
+    }
+
+    /// Set call-site metadata.
+    #[inline]
+    pub fn set_call_site(&mut self, cs: Option<CallSite>) {
+        self.call_site = cs;
     }
 }

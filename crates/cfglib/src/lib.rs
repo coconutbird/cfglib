@@ -31,10 +31,12 @@ pub mod purity;
 pub mod region;
 
 // Submodules.
+pub mod analysis;
 pub mod ast;
 pub mod dataflow;
 pub mod graph;
 pub mod linearize;
+pub mod ssa;
 pub mod transform;
 
 // Shared test utilities.
@@ -42,12 +44,31 @@ pub mod transform;
 pub(crate) mod test_util;
 
 // Re-exports — core types for building and traversing CFGs.
-pub use block::{BasicBlock, BlockId};
+pub use block::{BasicBlock, BlockId, Guard};
 pub use builder::{BuildError, CfgBuilder};
 pub use cfg::Cfg;
-pub use edge::{Edge, EdgeId, EdgeKind};
+pub use edge::{CallSite, Edge, EdgeId, EdgeKind};
 pub use flow::{FlowControl, FlowEffect};
 
 // Re-exports — data flow and analysis.
+pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
 pub use dataflow::{InstrInfo, Location, ProgramPoint};
 pub use purity::Effect;
+
+// Re-exports — graph analysis.
+pub use graph::dominator::DominatorTree;
+pub use graph::structure::{BackEdge, NaturalLoop, detect_loops, find_back_edges};
+
+// Re-exports — transforms and linearization.
+pub use linearize::{BlockOrder, Emitter, LinearInst, linearize};
+pub use region::{Handler, HandlerKind, Region, RegionId};
+pub use transform::{merge_blocks, remove_empty_blocks, remove_unreachable, simplify};
+
+// Re-exports — SSA.
+pub use ssa::{DominanceFrontiers, PhiMap, PhiNode, insert_phis};
+
+// Re-exports — interval analysis.
+pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
+
+// Re-exports — loop canonicalization.
+pub use graph::structure::{CanonicalLoop, canonicalize_loops, insert_preheader, loop_exit_blocks};

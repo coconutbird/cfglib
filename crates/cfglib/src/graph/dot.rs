@@ -75,8 +75,20 @@ impl<I: FlowControl> Cfg<I> {
                 edge.target(),
             )?;
 
-            if !lbl.is_empty() {
-                write!(w, " label=\"{lbl}\"")?;
+            // Show weight in the label if present.
+            let weight_str = edge
+                .weight()
+                .map(|w| alloc::format!(" ({w:.2})"))
+                .unwrap_or_default();
+            let full_label = alloc::format!("{lbl}{weight_str}");
+            if !full_label.is_empty() {
+                write!(w, " label=\"{full_label}\"")?;
+            }
+
+            // Thicker line for high-probability edges.
+            if let Some(wt) = edge.weight() {
+                let penwidth = 1.0 + wt * 3.0; // 1.0–4.0
+                write!(w, " penwidth={penwidth:.1}")?;
             }
 
             writeln!(w, "];")?;

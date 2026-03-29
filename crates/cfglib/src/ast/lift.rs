@@ -193,6 +193,7 @@ fn lift_region<I: Clone>(
             id: block,
             instructions: cfg.block(block).instructions().to_vec(),
         };
+        let block_node = maybe_guard(cfg, block, block_node);
         if needs_label {
             result.push(wrap_label(block, block_node));
         } else {
@@ -205,6 +206,23 @@ fn lift_region<I: Clone>(
     }
 
     result
+}
+
+/// Wrap a node in a `Guarded` if the block has a predication guard.
+fn maybe_guard<I>(cfg: &Cfg<I>, block: BlockId, node: AstNode<I>) -> AstNode<I> {
+    if let Some(guard) = cfg.block(block).guard() {
+        let pred = if guard.when_true {
+            guard.predicate.clone()
+        } else {
+            alloc::format!("!{}", guard.predicate)
+        };
+        AstNode::Guarded {
+            predicate: pred,
+            body: alloc::vec![node],
+        }
+    } else {
+        node
+    }
 }
 
 /// Produce a label name for a block (used in Goto/Label nodes).

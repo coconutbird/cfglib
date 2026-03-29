@@ -38,6 +38,7 @@ impl<I> Cfg<I> {
                 id: entry,
                 instructions: Vec::new(),
                 label: None,
+                guard: None,
             }],
             edges: Vec::new(),
             succs: alloc::vec![Vec::new()],
@@ -241,6 +242,7 @@ impl<I> Cfg<I> {
             id,
             instructions: Vec::new(),
             label: None,
+            guard: None,
         });
 
         self.succs.push(Vec::new());
@@ -251,6 +253,28 @@ impl<I> Cfg<I> {
 
     /// Add a directed edge and return its id.
     pub fn add_edge(&mut self, source: BlockId, target: BlockId, kind: EdgeKind) -> EdgeId {
+        self.add_edge_inner(source, target, kind, None, None)
+    }
+
+    /// Add a directed edge with a branch weight.
+    pub fn add_weighted_edge(
+        &mut self,
+        source: BlockId,
+        target: BlockId,
+        kind: EdgeKind,
+        weight: f64,
+    ) -> EdgeId {
+        self.add_edge_inner(source, target, kind, Some(weight), None)
+    }
+
+    fn add_edge_inner(
+        &mut self,
+        source: BlockId,
+        target: BlockId,
+        kind: EdgeKind,
+        weight: Option<f64>,
+        call_site: Option<crate::edge::CallSite>,
+    ) -> EdgeId {
         debug_assert!(
             self.edges.len() < u32::MAX as usize,
             "too many edges: would overflow u32 EdgeId",
@@ -261,6 +285,8 @@ impl<I> Cfg<I> {
             source,
             target,
             kind,
+            weight,
+            call_site,
         });
 
         self.succs[source.index()].push(id);
@@ -428,3 +454,164 @@ impl<'a> Iterator for Predecessors<'a> {
 }
 
 impl<'a> ExactSizeIterator for Predecessors<'a> {}
+
+// ── Convenience dataflow method ────────────────────────────────────
+impl<I> Cfg<I> {
+    /// Run a fixpoint dataflow analysis on this CFG.
+    ///
+    /// This is a thin convenience wrapper around
+    /// [`dataflow::fixpoint::solve`](crate::dataflow::fixpoint::solve).
+    pub fn solve_dataflow<P: crate::dataflow::fixpoint::Problem<I>>(
+        &self,
+        problem: &P,
+    ) -> crate::dataflow::fixpoint::FixpointResult<P::Fact> {
+        crate::dataflow::fixpoint::solve(self, problem)
+    }
+}
+
+// ── Subgraph extraction ───────────────────────────────────────────
+impl<I: Clone> Cfg<I> {
+    /// Extract a sub-CFG containing only the specified blocks.
+    ///
+    /// The resulting CFG preserves edges between the selected blocks
+    /// and remaps block IDs to be contiguous starting from 0.
+    /// The first block in `blocks` becomes the entry.
+    ///
+    /// Edges that cross the boundary (one endpoint outside the set)
+    /// are dropped.
+    pub fn subgraph(&self, blocks: &[BlockId]) -> Self {
+        use alloc::collections::BTreeMap;
+
+        if blocks.is_empty() {
+            return Self::new();
+        }
+
+        let mut new_cfg = Self::new();
+
+        // Map old BlockId → new BlockId.
+        let mut id_map: BTreeMap<BlockId, BlockId> = BTreeMap::new();
+        // Entry is already block 0.
+        id_map.insert(blocks[0], new_cfg.entry());
+
+        // Copy instructions into the entry block.
+        let src = &self.blocks[blocks[0].index()];
+        for inst in src.instructions() {
+            new_cfg.block_mut(new_cfg.entry()).push(inst.clone());
+        }
+        if let Some(lbl) = src.label() {
+            new_cfg.block_mut(new_cfg.entry()).set_label(lbl);
+        }
+        if let Some(g) = src.guard() {
+            new_cfg
+                .block_mut(new_cfg.entry())
+                .set_guard(Some(g.clone()));
+        }
+
+        // Create remaining blocks.
+        for &bid in &blocks[1..] {
+            let new_id = new_cfg.new_block();
+            id_map.insert(bid, new_id);
+            let old_block = &self.blocks[bid.index()];
+            for inst in old_block.instructions() {
+                new_cfg.block_mut(new_id).push(inst.clone());
+            }
+            if let Some(lbl) = old_block.label() {
+                new_cfg.block_mut(new_id).set_label(lbl);
+            }
+            if let Some(g) = old_block.guard() {
+                new_cfg.block_mut(new_id).set_guard(Some(g.clone()));
+            }
+        }
+
+        // Copy edges that stay within the subgraph.
+        for edge in &self.edges {
+            if let (Some(&new_src), Some(&new_tgt)) =
+                (id_map.get(&edge.source()), id_map.get(&edge.target()))
+            {
+                // Skip ghost edges.
+                if !self.succs[edge.source().index()].contains(&edge.id()) {
+                    continue;
+                }
+                let eid = new_cfg.add_edge(new_src, new_tgt, edge.kind());
+                if let Some(w) = edge.weight() {
+                    new_cfg.edge_mut(eid).set_weight(Some(w));
+                }
+                if let Some(cs) = edge.call_site() {
+                    new_cfg.edge_mut(eid).set_call_site(Some(cs.clone()));
+                }
+            }
+        }
+
+        new_cfg
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edge::{CallSite, EdgeKind};
+    use crate::test_util::MockInst;
+
+    #[test]
+    fn edge_weight_roundtrip() {
+        let mut cfg = Cfg::<MockInst>::new();
+        let b0 = cfg.entry();
+        let b1 = cfg.new_block();
+        let eid = cfg.add_weighted_edge(b0, b1, EdgeKind::ConditionalTrue, 0.75);
+        assert_eq!(cfg.edge(eid).weight(), Some(0.75));
+        // Default edge should have no weight.
+        let eid2 = cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+        assert_eq!(cfg.edge(eid2).weight(), None);
+    }
+
+    #[test]
+    fn call_site_on_edge() {
+        let mut cfg = Cfg::<MockInst>::new();
+        let b0 = cfg.entry();
+        let b1 = cfg.new_block();
+        let eid = cfg.add_edge(b0, b1, EdgeKind::Call);
+        cfg.edge_mut(eid)
+            .set_call_site(Some(CallSite::named("printf")));
+        let cs = cfg.edge(eid).call_site().unwrap();
+        assert_eq!(cs.target_name.as_deref(), Some("printf"));
+        assert!(!cs.is_tail_call);
+    }
+
+    #[test]
+    fn subgraph_extraction() {
+        let mut cfg = Cfg::<MockInst>::new();
+        let b0 = cfg.entry();
+        let b1 = cfg.new_block();
+        let b2 = cfg.new_block();
+        cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+        cfg.add_edge(b1, b2, EdgeKind::Fallthrough);
+
+        // Extract first two blocks.
+        let sub = cfg.subgraph(&[b0, b1]);
+        assert_eq!(sub.num_blocks(), 2);
+        // The subgraph should have an edge from block 0 to block 1.
+        let succs: Vec<BlockId> = sub.successors(sub.entry()).collect();
+        assert_eq!(succs.len(), 1);
+    }
+
+    #[test]
+    fn subgraph_empty_input() {
+        let sub = Cfg::<MockInst>::new().subgraph(&[]);
+        assert_eq!(sub.num_blocks(), 1); // Cfg::new() always has an entry
+    }
+
+    #[test]
+    fn guard_on_block() {
+        let mut cfg = Cfg::<MockInst>::new();
+        let b0 = cfg.entry();
+        assert!(!cfg.block(b0).is_guarded());
+        cfg.block_mut(b0).set_guard(Some(crate::block::Guard {
+            predicate: alloc::string::String::from("p0"),
+            when_true: true,
+        }));
+        assert!(cfg.block(b0).is_guarded());
+        let g = cfg.block(b0).guard().unwrap();
+        assert_eq!(g.predicate, "p0");
+        assert!(g.when_true);
+    }
+}

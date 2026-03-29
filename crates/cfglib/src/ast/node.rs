@@ -94,6 +94,15 @@ pub enum AstNode<I> {
         /// Finally body (empty if no finally).
         finally_body: Vec<AstNode<I>>,
     },
+
+    /// A predicated/guarded region — executes only when a condition
+    /// register is set (ARM IT blocks, GPU wave predication, CMOV).
+    Guarded {
+        /// Human-readable predicate description (e.g. "p0", "!cc_z").
+        predicate: alloc::string::String,
+        /// The guarded body.
+        body: Vec<AstNode<I>>,
+    },
 }
 
 /// A single handler arm inside a [`AstNode::TryCatch`].
@@ -183,6 +192,10 @@ impl<I> AstNode<I> {
                     })
                     .collect(),
                 finally_body: finally_body.into_iter().map(AstNode::simplify).collect(),
+            },
+            AstNode::Guarded { predicate, body } => AstNode::Guarded {
+                predicate,
+                body: body.into_iter().map(AstNode::simplify).collect(),
             },
             other => other,
         }
@@ -343,6 +356,17 @@ fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize)
                 for child in finally_body {
                     write_node(out, child, depth + 1);
                 }
+            }
+            write_indent(out, depth);
+            out.push_str("}\n");
+        }
+        AstNode::Guarded { predicate, body } => {
+            write_indent(out, depth);
+            out.push_str("@guarded(");
+            out.push_str(predicate);
+            out.push_str(") {\n");
+            for child in body {
+                write_node(out, child, depth + 1);
             }
             write_indent(out, depth);
             out.push_str("}\n");
