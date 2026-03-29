@@ -1,0 +1,9 @@
+[package]
+name = "cfglib-dxbc"
+version = "0.1.0"
+edition = "2024"
+description = "SM4/SM5 shader bytecode CFG adapter for cfglib"
+
+[dependencies]
+cfglib = { path = "../cfglib" }
+dxbc = { git = "https://github.com/coconutbird/d3dasm", package = "dxbc" }

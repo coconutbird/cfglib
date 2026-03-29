@@ -1,0 +1,11 @@
+[package]
+name = "cfglib"
+version = "0.1.0"
+edition = "2024"
+description = "Generic control-flow graph library for binary analysis"
+
+[features]
+default = []
+std = []
+
+[dependencies]
