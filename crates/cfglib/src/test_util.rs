@@ -15,10 +15,10 @@ use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
 use crate::analysis::expr::ExprInstr;
+use crate::analysis::purity::Effect;
 use crate::dataflow::copyprop::CopySource;
 use crate::dataflow::{InstrInfo, Location};
 use crate::flow::{FlowControl, FlowEffect};
-use crate::purity::Effect;
 
 // ── MockInst (flow-only) ────────────────────────────────────────────
 

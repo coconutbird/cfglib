@@ -19,6 +19,7 @@ pub mod defuse;
 pub mod fixpoint;
 pub mod liveness;
 pub mod reaching;
+pub mod ssa;
 
 use crate::block::BlockId;
 
@@ -74,7 +75,7 @@ pub trait InstrInfo {
     ///
     /// An empty slice means the instruction is pure. The default
     /// implementation returns no effects.
-    fn effects(&self) -> &[crate::purity::Effect] {
+    fn effects(&self) -> &[crate::analysis::purity::Effect] {
         &[]
     }
 }

@@ -47,26 +47,21 @@ pub mod builder;
 pub mod cfg;
 pub mod edge;
 pub mod flow;
-pub mod purity;
 pub mod region;
 
 // Graph algorithms.
 pub mod graph;
 
-// Dataflow framework and analyses.
+// Dataflow framework, analyses, and SSA.
 pub mod dataflow;
 
-// Higher-level analyses.
+// Higher-level analyses (switch recovery, expression trees, purity).
 pub mod analysis;
 
 // AST lifting / structural recovery.
 pub mod ast;
 
-// SSA construction.
-pub mod ssa;
-
-// Transforms and linearization.
-pub mod linearize;
+// Transforms (cleanup, critical edges, DCE, linearization).
 pub mod transform;
 
 // Shared test utilities (crate-internal).
@@ -75,17 +70,18 @@ pub(crate) mod test_util;
 
 // ── Re-exports: Core ────────────────────────────────────────────────
 
+pub use analysis::purity::Effect;
 pub use block::{BasicBlock, BlockId, Guard};
 pub use builder::{BuildError, CfgBuilder};
 pub use cfg::Cfg;
 pub use edge::{CallSite, Edge, EdgeId, EdgeKind};
 pub use flow::{FlowControl, FlowEffect};
-pub use purity::Effect;
 pub use region::{Handler, HandlerKind, Region, RegionId};
 
-// ── Re-exports: Dataflow framework ──────────────────────────────────
+// ── Re-exports: Dataflow framework & SSA ────────────────────────────
 
 pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
+pub use dataflow::ssa::{DominanceFrontiers, PhiMap, PhiNode, insert_phis};
 pub use dataflow::{InstrInfo, Location, ProgramPoint};
 
 // ── Re-exports: Graph algorithms ────────────────────────────────────
@@ -99,10 +95,6 @@ pub use graph::structure::{
     insert_preheader, loop_exit_blocks,
 };
 
-// ── Re-exports: SSA ─────────────────────────────────────────────────
-
-pub use ssa::{DominanceFrontiers, PhiMap, PhiNode, insert_phis};
-
 // ── Re-exports: Analyses ────────────────────────────────────────────
 
 pub use analysis::expr::{
@@ -113,8 +105,7 @@ pub use dataflow::copyprop::{CopyPropResult, CopySource, copy_propagation};
 
 // ── Re-exports: Transforms & linearization ──────────────────────────
 
-pub use linearize::{BlockOrder, Emitter, LinearInst, linearize};
 pub use transform::{
-    dead_code_elimination, merge_blocks, remove_empty_blocks, remove_unreachable, simplify,
-    split_critical_edges,
+    BlockOrder, Emitter, LinearInst, dead_code_elimination, linearize, merge_blocks,
+    remove_empty_blocks, remove_unreachable, simplify, split_critical_edges,
 };
