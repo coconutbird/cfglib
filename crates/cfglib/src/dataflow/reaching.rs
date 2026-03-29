@@ -8,10 +8,10 @@ extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
+use super::fixpoint::{self, Direction, FixpointResult, Problem};
+use super::{DefSite, InstrInfo, Location};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use super::{InstrInfo, DefSite, Location};
-use super::fixpoint::{self, Direction, FixpointResult, Problem};
 
 /// A reaching definition: which location was defined, and where.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -98,11 +98,7 @@ impl ReachingDefs {
     }
 
     /// All definitions of a specific location reaching a block's entry.
-    pub fn defs_of_at_entry(
-        &self,
-        loc: Location,
-        block: BlockId,
-    ) -> Vec<DefSite> {
+    pub fn defs_of_at_entry(&self, loc: Location, block: BlockId) -> Vec<DefSite> {
         self.reaching_in(block)
             .iter()
             .filter(|rd| rd.location == loc)
@@ -111,14 +107,15 @@ impl ReachingDefs {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::builder::CfgBuilder;
     use crate::flow::FlowEffect;
-    use crate::test_util::{df_def as def, df_use as use_, df_ff as ff, df_with_effect as with_effect};
+    use crate::test_util::{
+        df_def as def, df_ff as ff, df_use as use_, df_with_effect as with_effect,
+    };
+    use alloc::vec;
 
     // --- Linear CFG tests ---
 
@@ -167,11 +164,16 @@ mod tests {
             def("def_false", 0),
             with_effect(ff("endif"), FlowEffect::ConditionalClose),
             use_("use_r0", 0),
-        ]).unwrap();
+        ])
+        .unwrap();
         let merge_block = cfg.blocks().last().unwrap().id();
         let rd = ReachingDefs::compute(&cfg);
         let defs_at_merge = rd.defs_of_at_entry(Location(0), merge_block);
-        assert_eq!(defs_at_merge.len(), 2, "both branch defs should reach merge");
+        assert_eq!(
+            defs_at_merge.len(),
+            2,
+            "both branch defs should reach merge"
+        );
     }
 
     // --- Loop CFG tests ---
@@ -185,12 +187,13 @@ mod tests {
             use_("read", 0),
             def("update", 0),
             with_effect(ff("endloop"), FlowEffect::LoopClose),
-        ]).unwrap();
+        ])
+        .unwrap();
         let rd = ReachingDefs::compute(&cfg);
         // The loop header should have defs reaching from both
         // the pre-loop init and the loop body update (via back-edge).
         let header = BlockId(1);
         let defs = rd.defs_of_at_entry(Location(0), header);
-        assert!(defs.len() >= 1, "at least the init def reaches the header");
+        assert!(!defs.is_empty(), "at least the init def reaches the header");
     }
 }

@@ -7,9 +7,9 @@ extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
+use super::dominator::DominatorTree;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use super::dominator::DominatorTree;
 use crate::edge::EdgeKind;
 
 /// A natural loop in the CFG.
@@ -193,11 +193,11 @@ pub fn is_reducible<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::builder::CfgBuilder;
-    use crate::graph::dominator::DominatorTree;
     use crate::flow::FlowEffect;
+    use crate::graph::dominator::DominatorTree;
     use crate::test_util::{MockInst, ff};
+    use alloc::vec;
 
     #[test]
     fn no_loops_in_linear_cfg() {
@@ -214,7 +214,8 @@ mod tests {
             ff("body"),
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]).unwrap();
+        ])
+        .unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert_eq!(loops.len(), 1);
@@ -232,7 +233,8 @@ mod tests {
             MockInst(FlowEffect::ConditionalBreak, "breakc_outer"),
             MockInst(FlowEffect::LoopClose, "end_outer"),
             MockInst(FlowEffect::Return, "ret"),
-        ]).unwrap();
+        ])
+        .unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert_eq!(loops.len(), 2);
@@ -248,7 +250,8 @@ mod tests {
             MockInst(FlowEffect::ConditionalBreak, "breakc"),
             ff("body"),
             MockInst(FlowEffect::LoopClose, "endloop"),
-        ]).unwrap();
+        ])
+        .unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert_eq!(loops.len(), 1);
@@ -267,7 +270,8 @@ mod tests {
             MockInst(FlowEffect::LoopOpen, "loop"),
             ff("body"),
             MockInst(FlowEffect::LoopClose, "endloop"),
-        ]).unwrap();
+        ])
+        .unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(is_reducible(&cfg, &dom));
     }
@@ -280,7 +284,8 @@ mod tests {
             MockInst(FlowEffect::ConditionalAlternate, "else"),
             ff("else_body"),
             MockInst(FlowEffect::ConditionalClose, "endif"),
-        ]).unwrap();
+        ])
+        .unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert!(loops.is_empty());

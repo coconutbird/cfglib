@@ -12,7 +12,10 @@ impl<I: FlowControl> Cfg<I> {
     /// Write the CFG in DOT format to any `fmt::Write` sink.
     pub fn write_dot(&self, w: &mut dyn fmt::Write) -> fmt::Result {
         writeln!(w, "digraph cfg {{")?;
-        writeln!(w, "    node [shape=box fontname=\"monospace\" fontsize=10];")?;
+        writeln!(
+            w,
+            "    node [shape=box fontname=\"monospace\" fontsize=10];"
+        )?;
         writeln!(w, "    edge [fontname=\"monospace\" fontsize=9];")?;
 
         for block in &self.blocks {
@@ -40,10 +43,7 @@ impl<I: FlowControl> Cfg<I> {
 
             body.push_str("\\l");
 
-            writeln!(
-                w,
-                "    {id} [label=\"{label_prefix}{id}\\n{body}\"];",
-            )?;
+            writeln!(w, "    {id} [label=\"{label_prefix}{id}\\n{body}\"];",)?;
         }
 
         for edge in &self.edges {
@@ -60,7 +60,8 @@ impl<I: FlowControl> Cfg<I> {
             write!(
                 w,
                 "    {} -> {} [color={color} style={style}",
-                edge.source(), edge.target(),
+                edge.source(),
+                edge.target(),
             )?;
 
             if !lbl.is_empty() {
@@ -76,7 +77,8 @@ impl<I: FlowControl> Cfg<I> {
     /// Produce the DOT representation as a [`String`].
     pub fn to_dot(&self) -> String {
         let mut s = String::new();
-        self.write_dot(&mut s).expect("fmt::Write to String cannot fail");
+        self.write_dot(&mut s)
+            .expect("fmt::Write to String cannot fail");
         s
     }
 }

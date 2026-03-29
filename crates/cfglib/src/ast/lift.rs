@@ -10,8 +10,8 @@ use alloc::vec::Vec;
 use super::node::{AstNode, SwitchCase};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::graph::dominator::DominatorTree;
 use crate::edge::EdgeKind;
+use crate::graph::dominator::DominatorTree;
 
 /// Lift a [`Cfg`] into a structured [`AstNode`] tree.
 ///
@@ -46,11 +46,21 @@ fn lift_region<I: Clone>(
         current = None;
 
         let succ_edges = cfg.successor_edges(block);
-        let has_ct = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalTrue);
-        let has_cf = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalFalse);
-        let has_sw = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::SwitchCase);
-        let has_back = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::Back);
-        let is_header = cfg.predecessor_edges(block).iter()
+        let has_ct = succ_edges
+            .iter()
+            .any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalTrue);
+        let has_cf = succ_edges
+            .iter()
+            .any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalFalse);
+        let has_sw = succ_edges
+            .iter()
+            .any(|&e| cfg.edge(e).kind() == EdgeKind::SwitchCase);
+        let has_back = succ_edges
+            .iter()
+            .any(|&e| cfg.edge(e).kind() == EdgeKind::Back);
+        let is_header = cfg
+            .predecessor_edges(block)
+            .iter()
             .any(|&e| cfg.edge(e).kind() == EdgeKind::Back);
 
         // --- Loop header ---
@@ -79,10 +89,14 @@ fn lift_region<I: Clone>(
 
         // --- Back edge (loop latch) ---
         if has_back {
-            result.push(AstNode::Block {
-                id: block,
-                instructions: cfg.block(block).instructions().to_vec(),
-            });
+            let insts = cfg.block(block).instructions().to_vec();
+            if !insts.is_empty() {
+                result.push(AstNode::Block {
+                    id: block,
+                    instructions: insts,
+                });
+            }
+            result.push(AstNode::Continue);
             continue;
         }
 
@@ -90,8 +104,21 @@ fn lift_region<I: Clone>(
         if succ_edges.is_empty() {
             let insts = cfg.block(block).instructions().to_vec();
             if !insts.is_empty() {
-                result.push(AstNode::Return { instructions: insts });
+                result.push(AstNode::Return {
+                    instructions: insts,
+                });
             }
+            continue;
+        }
+
+        // --- Break relay block ---
+        // The builder creates empty blocks with a single Unconditional
+        // edge for `break` statements. Recognise these and emit Break.
+        if cfg.block(block).is_empty()
+            && succ_edges.len() == 1
+            && cfg.edge(succ_edges[0]).kind() == EdgeKind::Unconditional
+        {
+            result.push(AstNode::Break);
             continue;
         }
 
@@ -197,27 +224,33 @@ fn lift_loop<I: Clone>(
 
     // Check if the header itself is a conditional or switch dispatch.
     let succ_edges = cfg.successor_edges(header);
-    let has_ct = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalTrue);
-    let has_cf = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalFalse);
-    let has_sw = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::SwitchCase);
+    let has_ct = succ_edges
+        .iter()
+        .any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalTrue);
+    let has_cf = succ_edges
+        .iter()
+        .any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalFalse);
+    let has_sw = succ_edges
+        .iter()
+        .any(|&e| cfg.edge(e).kind() == EdgeKind::SwitchCase);
 
     if has_ct && has_cf {
         // Header is also a conditional — lift it as if/else inside the loop.
         let node = lift_conditional(cfg, dom, pdom, header, visited);
         body.push(node);
         // Follow the merge point for more body.
-        if let Some(merge) = pdom.idom(header) {
-            if !visited.contains(&merge.0) {
-                body.extend(lift_region(cfg, dom, pdom, merge, visited));
-            }
+        if let Some(merge) = pdom.idom(header)
+            && !visited.contains(&merge.0)
+        {
+            body.extend(lift_region(cfg, dom, pdom, merge, visited));
         }
     } else if has_sw {
         let node = lift_switch(cfg, dom, pdom, header, visited);
         body.push(node);
-        if let Some(merge) = pdom.idom(header) {
-            if !visited.contains(&merge.0) {
-                body.extend(lift_region(cfg, dom, pdom, merge, visited));
-            }
+        if let Some(merge) = pdom.idom(header)
+            && !visited.contains(&merge.0)
+        {
+            body.extend(lift_region(cfg, dom, pdom, merge, visited));
         }
     } else {
         // Plain header — emit instructions, then follow non-back successors.
@@ -315,10 +348,10 @@ fn find_loop_exit<I>(cfg: &Cfg<I>, header: BlockId, visited: &BTreeSet<u32>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::builder::CfgBuilder;
     use crate::flow::FlowEffect;
     use crate::test_util::{MockInst, ff};
+    use alloc::vec;
 
     /// Helper: build CFG then lift, return pseudocode.
     fn lift_pseudo(insts: Vec<MockInst>) -> alloc::string::String {
@@ -331,7 +364,12 @@ mod tests {
 
     #[test]
     fn lift_linear() {
-        let p = lift_pseudo(vec![ff("a"), ff("b"), ff("c"), MockInst(FlowEffect::Return, "ret")]);
+        let p = lift_pseudo(vec![
+            ff("a"),
+            ff("b"),
+            ff("c"),
+            MockInst(FlowEffect::Return, "ret"),
+        ]);
         assert!(p.contains("a"), "should contain instruction a: {p}");
         assert!(p.contains("ret"), "should contain ret: {p}");
         // No control flow keywords.
@@ -371,7 +409,10 @@ mod tests {
         assert!(p.contains("if {"), "should have if: {p}");
         assert!(p.contains("then_inst"), "then arm: {p}");
         // else arm or merge should appear
-        assert!(p.contains("else_inst") || p.contains("} else {"), "else arm: {p}");
+        assert!(
+            p.contains("else_inst") || p.contains("} else {"),
+            "else arm: {p}"
+        );
     }
 
     // ---- Loop ----
@@ -475,7 +516,8 @@ mod tests {
             ff("b"),
             MockInst(FlowEffect::ConditionalClose, "endif"),
             MockInst(FlowEffect::Return, "ret"),
-        ]).unwrap();
+        ])
+        .unwrap();
         let ast = lift(&cfg);
         // Walk the AST to find an IfThenElse node.
         let found = has_node_kind(&ast, |n| matches!(n, AstNode::IfThenElse { .. }));
@@ -489,7 +531,8 @@ mod tests {
             ff("x"),
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]).unwrap();
+        ])
+        .unwrap();
         let ast = lift(&cfg);
         let found = has_node_kind(&ast, |n| matches!(n, AstNode::Loop { .. }));
         assert!(found, "should contain Loop node: {ast:?}");
@@ -506,7 +549,8 @@ mod tests {
             ff("a2"),
             MockInst(FlowEffect::SwitchClose, "endswitch"),
             MockInst(FlowEffect::Return, "ret"),
-        ]).unwrap();
+        ])
+        .unwrap();
         let ast = lift(&cfg);
         let found = has_node_kind(&ast, |n| matches!(n, AstNode::Switch { .. }));
         assert!(found, "should contain Switch node: {ast:?}");
@@ -521,13 +565,17 @@ mod tests {
             AstNode::Sequence { body } | AstNode::Loop { body, .. } => {
                 body.iter().any(|c| has_node_kind(c, pred))
             }
-            AstNode::IfThenElse { then_body, else_body, .. } => {
+            AstNode::IfThenElse {
+                then_body,
+                else_body,
+                ..
+            } => {
                 then_body.iter().any(|c| has_node_kind(c, pred))
                     || else_body.iter().any(|c| has_node_kind(c, pred))
             }
-            AstNode::Switch { cases, .. } => {
-                cases.iter().any(|c| c.body.iter().any(|n| has_node_kind(n, pred)))
-            }
+            AstNode::Switch { cases, .. } => cases
+                .iter()
+                .any(|c| c.body.iter().any(|n| has_node_kind(n, pred))),
             _ => false,
         }
     }

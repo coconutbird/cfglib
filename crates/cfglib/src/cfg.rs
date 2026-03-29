@@ -3,6 +3,7 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use core::ops::Index;
 use core::slice;
 
 use crate::block::{BasicBlock, BlockId};
@@ -148,6 +149,18 @@ impl<I> Cfg<I> {
         self.edges.len()
     }
 
+    /// Returns the exit blocks — blocks with no outgoing edges.
+    ///
+    /// These are the natural exit points of the control-flow graph
+    /// (return blocks, terminators, etc.).
+    pub fn exit_blocks(&self) -> Vec<BlockId> {
+        self.blocks
+            .iter()
+            .filter(|b| self.succs[b.id().index()].is_empty())
+            .map(|b| b.id())
+            .collect()
+    }
+
     /// Allocate a new empty block and return its id.
     pub(crate) fn new_block(&mut self) -> BlockId {
         debug_assert!(
@@ -189,6 +202,39 @@ impl<I> Cfg<I> {
     }
 }
 
+// ── Index impls ────────────────────────────────────────────────────
+
+impl<I> Index<BlockId> for Cfg<I> {
+    type Output = BasicBlock<I>;
+
+    /// Index into the CFG by [`BlockId`].
+    ///
+    /// Equivalent to [`Cfg::block`] but usable with `cfg[id]` syntax.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not refer to a block in this CFG.
+    #[inline]
+    fn index(&self, id: BlockId) -> &BasicBlock<I> {
+        &self.blocks[id.index()]
+    }
+}
+
+impl<I> Index<EdgeId> for Cfg<I> {
+    type Output = Edge;
+
+    /// Index into the CFG by [`EdgeId`].
+    ///
+    /// Equivalent to [`Cfg::edge`] but usable with `cfg[id]` syntax.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not refer to an edge in this CFG.
+    #[inline]
+    fn index(&self, id: EdgeId) -> &Edge {
+        &self.edges[id.index()]
+    }
+}
 
 /// Iterator over successor block ids (zero-allocation).
 pub struct Successors<'a> {

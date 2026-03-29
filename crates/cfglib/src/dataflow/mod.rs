@@ -77,8 +77,6 @@ pub trait InstrInfo {
     }
 }
 
-
-
 /// A point in the program identified by a (block, instruction-index) pair.
 ///
 /// Used to refer to both definition sites and use sites in data flow

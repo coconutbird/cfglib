@@ -156,5 +156,8 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
         }
     }
 
-    FixpointResult { block_in, block_out }
+    FixpointResult {
+        block_in,
+        block_out,
+    }
 }

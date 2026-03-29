@@ -297,9 +297,9 @@ impl DominatorTree {
 
         // Blocks whose idom maps to themselves had the virtual exit
         // as their post-dominator — set to None.
-        for i in 0..n {
-            if idom_result[i] == Some(BlockId(i as u32)) {
-                idom_result[i] = None;
+        for (i, slot) in idom_result.iter_mut().enumerate().take(n) {
+            if *slot == Some(BlockId(i as u32)) {
+                *slot = None;
             }
         }
 

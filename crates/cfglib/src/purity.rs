@@ -94,36 +94,10 @@ pub fn all_block_purities<I: InstrInfo>(cfg: &Cfg<I>) -> Vec<(BlockId, Purity)> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::borrow::Cow;
-    use alloc::vec;
     use crate::builder::CfgBuilder;
-    use crate::flow::{FlowControl, FlowEffect};
-
-    #[derive(Debug, Clone)]
-    struct PInst {
-        effect: FlowEffect,
-        name: &'static str,
-        side: Vec<Effect>,
-    }
-
-    impl FlowControl for PInst {
-        fn flow_effect(&self) -> FlowEffect { self.effect }
-        fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.name) }
-    }
-
-    impl InstrInfo for PInst {
-        fn uses(&self) -> &[crate::dataflow::Location] { &[] }
-        fn defs(&self) -> &[crate::dataflow::Location] { &[] }
-        fn effects(&self) -> &[Effect] { &self.side }
-    }
-
-    fn pure(name: &'static str) -> PInst {
-        PInst { effect: FlowEffect::Fallthrough, name, side: vec![] }
-    }
-
-    fn impure(name: &'static str, e: Effect) -> PInst {
-        PInst { effect: FlowEffect::Fallthrough, name, side: vec![e] }
-    }
+    use crate::flow::FlowEffect;
+    use crate::test_util::{df_impure as impure, df_pure as pure, df_with_effect};
+    use alloc::vec;
 
     #[test]
     fn pure_cfg() {
@@ -133,7 +107,8 @@ mod tests {
 
     #[test]
     fn impure_cfg() {
-        let cfg = CfgBuilder::build(vec![pure("add"), impure("store", Effect::MemoryWrite)]).unwrap();
+        let cfg =
+            CfgBuilder::build(vec![pure("add"), impure("store", Effect::MemoryWrite)]).unwrap();
         let p = cfg_purity(&cfg);
         assert!(p.is_impure());
         if let Purity::Impure(effs) = p {
@@ -145,12 +120,13 @@ mod tests {
     fn mixed_block_purity() {
         let cfg = CfgBuilder::build(vec![
             pure("add"),
-            PInst { effect: FlowEffect::ConditionalOpen, name: "if", side: vec![] },
+            df_with_effect(pure("if"), FlowEffect::ConditionalOpen),
             impure("store", Effect::MemoryWrite),
-            PInst { effect: FlowEffect::ConditionalAlternate, name: "else", side: vec![] },
+            df_with_effect(pure("else"), FlowEffect::ConditionalAlternate),
             pure("nop"),
-            PInst { effect: FlowEffect::ConditionalClose, name: "endif", side: vec![] },
-        ]).unwrap();
+            df_with_effect(pure("endif"), FlowEffect::ConditionalClose),
+        ])
+        .unwrap();
         // Entry block (has "add") should be pure.
         assert!(block_purity(&cfg, cfg.entry()).is_pure());
         // The whole CFG is impure because one branch stores.

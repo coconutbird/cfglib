@@ -136,7 +136,6 @@ impl<I> AstNode<I> {
     }
 }
 
-
 use alloc::string::String;
 use core::fmt;
 
@@ -186,7 +185,11 @@ fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize)
         } => {
             // Print instructions before the "if" (like mov, cmp).
             if condition_instructions.len() > 1 {
-                write_insts(out, &condition_instructions[..condition_instructions.len() - 1], depth);
+                write_insts(
+                    out,
+                    &condition_instructions[..condition_instructions.len() - 1],
+                    depth,
+                );
             }
             write_indent(out, depth);
             out.push_str("if {\n");
@@ -218,7 +221,11 @@ fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize)
             ..
         } => {
             if condition_instructions.len() > 1 {
-                write_insts(out, &condition_instructions[..condition_instructions.len() - 1], depth);
+                write_insts(
+                    out,
+                    &condition_instructions[..condition_instructions.len() - 1],
+                    depth,
+                );
             }
             write_indent(out, depth);
             out.push_str("switch {\n");

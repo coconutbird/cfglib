@@ -15,8 +15,8 @@
 extern crate alloc;
 use alloc::borrow::Cow;
 
-use dxbc::shex::{Instruction, Opcode, Program};
 use cfglib::{BuildError, Cfg, CfgBuilder, FlowControl, FlowEffect};
+use dxbc::shex::{Instruction, Opcode, Program};
 
 /// Newtype wrapper around a `dxbc` instruction to satisfy the orphan rule.
 #[derive(Debug, Clone)]

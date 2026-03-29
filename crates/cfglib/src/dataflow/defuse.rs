@@ -10,9 +10,9 @@ use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use crate::cfg::Cfg;
-use super::{InstrInfo, DefSite, UseSite};
 use super::reaching::{ReachingDef, ReachingDefs};
+use super::{DefSite, InstrInfo, UseSite};
+use crate::cfg::Cfg;
 
 /// Def-use and use-def chain results.
 #[derive(Debug, Clone)]
@@ -38,8 +38,7 @@ impl DefUseChains {
 
             // Track the current reaching defs as we walk forward
             // through the block, so intra-block kills are respected.
-            let mut current_reaching: BTreeSet<ReachingDef> =
-                reaching.reaching_in(block).clone();
+            let mut current_reaching: BTreeSet<ReachingDef> = reaching.reaching_in(block).clone();
 
             for (idx, inst) in insts.iter().enumerate() {
                 let use_site = UseSite {
@@ -111,15 +110,14 @@ impl DefUseChains {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::block::BlockId;
     use crate::builder::CfgBuilder;
     use crate::dataflow::DefSite;
     use crate::test_util::{df_def as def, df_use as use_};
+    use alloc::vec;
 
     #[test]
     fn defuse_linear_chain() {
@@ -127,8 +125,14 @@ mod tests {
         let cfg = CfgBuilder::build(vec![def("def_r0", 0), use_("use_r0", 0)]).unwrap();
         let chains = DefUseChains::compute(&cfg);
 
-        let def_site = DefSite { block: BlockId(0), inst_idx: 0 };
-        let use_site = DefSite { block: BlockId(0), inst_idx: 1 };
+        let def_site = DefSite {
+            block: BlockId(0),
+            inst_idx: 0,
+        };
+        let use_site = DefSite {
+            block: BlockId(0),
+            inst_idx: 1,
+        };
 
         // def→use
         assert!(chains.uses_of(def_site).contains(&use_site));
@@ -149,11 +153,7 @@ mod tests {
     fn defuse_killed_def_is_dead() {
         // bb0: def r0; def r0; use r0
         // First def is killed by second, so first is dead.
-        let cfg = CfgBuilder::build(vec![
-            def("def1", 0),
-            def("def2", 0),
-            use_("use", 0),
-        ]).unwrap();
+        let cfg = CfgBuilder::build(vec![def("def1", 0), def("def2", 0), use_("use", 0)]).unwrap();
         let chains = DefUseChains::compute(&cfg);
         let dead = chains.dead_defs();
         assert_eq!(dead.len(), 1);
@@ -163,13 +163,12 @@ mod tests {
     #[test]
     fn defuse_multiple_uses_of_one_def() {
         // bb0: def r0; use r0; use r0
-        let cfg = CfgBuilder::build(vec![
-            def("def", 0),
-            use_("use1", 0),
-            use_("use2", 0),
-        ]).unwrap();
+        let cfg = CfgBuilder::build(vec![def("def", 0), use_("use1", 0), use_("use2", 0)]).unwrap();
         let chains = DefUseChains::compute(&cfg);
-        let def_site = DefSite { block: BlockId(0), inst_idx: 0 };
+        let def_site = DefSite {
+            block: BlockId(0),
+            inst_idx: 0,
+        };
         assert_eq!(chains.uses_of(def_site).len(), 2);
     }
 }

@@ -10,10 +10,10 @@
 extern crate alloc;
 use alloc::collections::BTreeSet;
 
+use super::fixpoint::{self, Direction, FixpointResult, Problem};
+use super::{InstrInfo, Location};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use super::{InstrInfo, Location};
-use super::fixpoint::{self, Direction, FixpointResult, Problem};
 
 /// The liveness problem.
 pub struct LivenessProblem;
@@ -105,14 +105,13 @@ impl Liveness {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::vec;
     use crate::builder::CfgBuilder;
     use crate::flow::FlowEffect;
-    use crate::test_util::{DfInst, df_def as def, df_use as use_};
+    use crate::test_util::{df_def as def, df_ff, df_use as use_, df_with_effect};
+    use alloc::vec;
 
     #[test]
     fn liveness_linear_use_makes_live() {
@@ -155,13 +154,16 @@ mod tests {
         // r0 should be live-out of bb0 because bb1 uses it.
         let cfg = CfgBuilder::build(vec![
             def("def_r0", 0),
-            DfInst { effect: FlowEffect::ConditionalOpen, name: "if", uses: vec![], defs: vec![] },
+            df_with_effect(df_ff("if"), FlowEffect::ConditionalOpen),
             use_("use_r0", 0),
-            DfInst { effect: FlowEffect::ConditionalAlternate, name: "else", uses: vec![], defs: vec![] },
-            DfInst { effect: FlowEffect::ConditionalClose, name: "endif", uses: vec![], defs: vec![] },
-        ]).unwrap();
+            df_with_effect(df_ff("else"), FlowEffect::ConditionalAlternate),
+            df_with_effect(df_ff("endif"), FlowEffect::ConditionalClose),
+        ])
+        .unwrap();
         let live = Liveness::compute(&cfg);
-        assert!(live.is_live_out(Location(0), cfg.entry()),
-            "r0 is live-out of entry because the true branch uses it");
+        assert!(
+            live.is_live_out(Location(0), cfg.entry()),
+            "r0 is live-out of entry because the true branch uses it"
+        );
     }
 }
