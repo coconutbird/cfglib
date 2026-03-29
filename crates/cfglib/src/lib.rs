@@ -82,3 +82,11 @@ pub use graph::scc::{Scc, SccResult, tarjan_scc};
 
 // Re-exports — constant propagation.
 pub use dataflow::constprop::{ConstPropProblem, ConstValue, ConstantFolder, constant_propagation};
+
+// Re-exports — copy propagation.
+pub use dataflow::copyprop::{CopyPropResult, CopySource, copy_propagation};
+
+// Re-exports — expression recovery.
+pub use analysis::expr::{
+    BlockExprTrees, ExprInstr, ExprNode, recover_block_expressions, recover_expressions,
+};

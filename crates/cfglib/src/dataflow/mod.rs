@@ -14,6 +14,7 @@
 //! of the provided analyses.
 
 pub mod constprop;
+pub mod copyprop;
 pub mod defuse;
 pub mod fixpoint;
 pub mod liveness;
