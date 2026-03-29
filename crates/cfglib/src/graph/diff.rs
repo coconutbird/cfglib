@@ -208,17 +208,9 @@ pub fn cfg_diff<I: FlowControl, J: FlowControl>(left: &Cfg<I>, right: &Cfg<J>) -
         .filter(|b| !right_matched.contains(b))
         .collect();
 
-    // Count live edges (skip removed edges).
-    let left_edge_count = left
-        .edges()
-        .iter()
-        .filter(|e| left.successor_edges(e.source()).contains(&e.id()))
-        .count();
-    let right_edge_count = right
-        .edges()
-        .iter()
-        .filter(|e| right.successor_edges(e.source()).contains(&e.id()))
-        .count();
+    // Count live edges.
+    let left_edge_count = left.edges().count();
+    let right_edge_count = right.edges().count();
 
     CfgDiff {
         matched,

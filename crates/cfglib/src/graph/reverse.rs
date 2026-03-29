@@ -44,13 +44,11 @@ pub fn reverse_cfg<I: Clone>(cfg: &Cfg<I>) -> Cfg<I> {
 
     // Reverse all live edges.
     for edge in cfg.edges() {
-        if cfg.successor_edges(edge.source()).contains(&edge.id()) {
-            rev.add_edge(edge.target(), edge.source(), edge.kind());
-        }
+        rev.add_edge(edge.target(), edge.source(), edge.kind());
     }
 
     // Set entry to exit block(s).
-    let exits = cfg.exit_blocks();
+    let exits: alloc::vec::Vec<BlockId> = cfg.exit_blocks().collect();
     if exits.len() == 1 {
         rev.set_entry(exits[0]);
     } else if exits.len() > 1 {

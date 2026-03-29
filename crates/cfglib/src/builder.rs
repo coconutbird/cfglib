@@ -598,7 +598,7 @@ mod tests {
         ])
         .unwrap();
         // The continue should create a back-edge to the header.
-        let has_back = cfg.edges().iter().any(|e| e.kind() == EdgeKind::Back);
+        let has_back = cfg.edges().any(|e| e.kind() == EdgeKind::Back);
         assert!(has_back);
         assert!(cfg.num_blocks() >= 3);
     }
@@ -616,14 +616,8 @@ mod tests {
         ])
         .unwrap();
         // continuec block has two successors: true->header, false->continue
-        let has_cond_true = cfg
-            .edges()
-            .iter()
-            .any(|e| e.kind() == EdgeKind::ConditionalTrue);
-        let has_cond_false = cfg
-            .edges()
-            .iter()
-            .any(|e| e.kind() == EdgeKind::ConditionalFalse);
+        let has_cond_true = cfg.edges().any(|e| e.kind() == EdgeKind::ConditionalTrue);
+        let has_cond_false = cfg.edges().any(|e| e.kind() == EdgeKind::ConditionalFalse);
         assert!(has_cond_true);
         assert!(has_cond_false);
         assert!(cfg.num_blocks() >= 4);
@@ -640,14 +634,8 @@ mod tests {
         ])
         .unwrap();
         // retc splits into ret_block (terminal) and cont_block (with b).
-        let has_cond_true = cfg
-            .edges()
-            .iter()
-            .any(|e| e.kind() == EdgeKind::ConditionalTrue);
-        let has_cond_false = cfg
-            .edges()
-            .iter()
-            .any(|e| e.kind() == EdgeKind::ConditionalFalse);
+        let has_cond_true = cfg.edges().any(|e| e.kind() == EdgeKind::ConditionalTrue);
+        let has_cond_false = cfg.edges().any(|e| e.kind() == EdgeKind::ConditionalFalse);
         assert!(has_cond_true);
         assert!(has_cond_false);
         assert!(cfg.num_blocks() >= 3);
@@ -679,10 +667,7 @@ mod tests {
         .unwrap();
         // The label should split into two blocks with a fallthrough edge.
         assert!(cfg.num_blocks() >= 2);
-        let has_fallthrough = cfg
-            .edges()
-            .iter()
-            .any(|e| e.kind() == EdgeKind::Fallthrough);
+        let has_fallthrough = cfg.edges().any(|e| e.kind() == EdgeKind::Fallthrough);
         assert!(has_fallthrough);
     }
 
@@ -704,7 +689,6 @@ mod tests {
         // switch block dispatches to multiple case arms.
         let switch_edges: Vec<_> = cfg
             .edges()
-            .iter()
             .filter(|e| e.kind() == EdgeKind::SwitchCase)
             .collect();
         assert!(switch_edges.len() >= 2); // at least first case + case + default
@@ -728,7 +712,6 @@ mod tests {
         // The break should wire to the post-switch merge block.
         let unconditional_edges: Vec<_> = cfg
             .edges()
-            .iter()
             .filter(|e| e.kind() == EdgeKind::Unconditional)
             .collect();
         assert!(!unconditional_edges.is_empty());
@@ -750,7 +733,7 @@ mod tests {
         ])
         .unwrap();
         assert!(cfg.num_blocks() >= 5);
-        let has_back = cfg.edges().iter().any(|e| e.kind() == EdgeKind::Back);
+        let has_back = cfg.edges().any(|e| e.kind() == EdgeKind::Back);
         assert!(has_back);
     }
 
@@ -768,7 +751,7 @@ mod tests {
         ])
         .unwrap();
         assert!(cfg.num_blocks() >= 5);
-        let has_back = cfg.edges().iter().any(|e| e.kind() == EdgeKind::Back);
+        let has_back = cfg.edges().any(|e| e.kind() == EdgeKind::Back);
         assert!(has_back);
     }
 
@@ -791,7 +774,7 @@ mod tests {
         // The break inside the switch should exit the switch.
         // The breakc after endswitch should exit the loop.
         assert!(cfg.num_blocks() >= 6);
-        let has_back = cfg.edges().iter().any(|e| e.kind() == EdgeKind::Back);
+        let has_back = cfg.edges().any(|e| e.kind() == EdgeKind::Back);
         assert!(has_back);
     }
 }

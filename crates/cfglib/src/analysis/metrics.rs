@@ -42,11 +42,7 @@ pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
     let reachable_count = reachable.len();
 
     // Count live edges.
-    let edge_count = cfg
-        .edges()
-        .iter()
-        .filter(|e| cfg.successor_edges(e.source()).contains(&e.id()))
-        .count();
+    let edge_count = cfg.edges().count();
 
     // Instruction count.
     let instruction_count: usize = cfg.blocks().iter().map(|b| b.instructions().len()).sum();
@@ -73,7 +69,7 @@ pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
         0.0
     };
 
-    let exit_count = cfg.exit_blocks().len();
+    let exit_count = cfg.exit_blocks().count();
 
     CfgMetrics {
         block_count: n,

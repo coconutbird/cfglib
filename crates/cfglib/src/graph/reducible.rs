@@ -144,8 +144,8 @@ fn split_node<I: Clone>(cfg: &mut Cfg<I>, target: BlockId) {
         .collect();
 
     for eid in to_redirect {
-        cfg.edges[eid.index()].target = copy;
-        cfg.preds[target.index()].retain(|&e| e != eid);
+        cfg.edges[eid.index()].as_mut().unwrap().target = copy;
+        cfg.preds[target.index()].retain(|e| *e != eid);
         cfg.preds[copy.index()].push(eid);
     }
 

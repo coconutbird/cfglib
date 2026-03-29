@@ -46,12 +46,7 @@ impl<I: FlowControl> Cfg<I> {
             writeln!(w, "    {id} [label=\"{label_prefix}{id}\\n{body}\"];",)?;
         }
 
-        for edge in &self.edges {
-            // Skip edges removed via remove_edge() — they are still
-            // in the arena but no longer referenced by adjacency lists.
-            if !self.succs[edge.source().index()].contains(&edge.id()) {
-                continue;
-            }
+        for edge in self.edges() {
             let (color, style, lbl) = match edge.kind() {
                 EdgeKind::Fallthrough => ("black", "solid", ""),
                 EdgeKind::ConditionalTrue => ("green4", "solid", "T"),

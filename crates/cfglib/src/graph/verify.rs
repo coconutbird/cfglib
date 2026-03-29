@@ -99,7 +99,7 @@ pub fn verify<I>(cfg: &Cfg<I>) -> VerifyResult {
     for (block_idx, _block) in cfg.blocks().iter().enumerate() {
         let bid = BlockId::from_raw(block_idx as u32);
         for &eid in cfg.successor_edges(bid) {
-            if eid.index() >= cfg.edges().len() {
+            if eid.index() >= cfg.edge_slots() {
                 errors.push(VerifyError {
                     message: alloc::format!("block {} successor edge {} out of bounds", bid, eid),
                 });
@@ -115,7 +115,7 @@ pub fn verify<I>(cfg: &Cfg<I>) -> VerifyResult {
             }
         }
         for &eid in cfg.predecessor_edges(bid) {
-            if eid.index() >= cfg.edges().len() {
+            if eid.index() >= cfg.edge_slots() {
                 errors.push(VerifyError {
                     message: alloc::format!("block {} predecessor edge {} out of bounds", bid, eid),
                 });

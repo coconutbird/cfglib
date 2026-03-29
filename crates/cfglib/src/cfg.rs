@@ -5,6 +5,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::ops::Index;
 use core::slice;
+use smallvec::SmallVec;
 
 use crate::block::{BasicBlock, BlockId};
 use crate::edge::{Edge, EdgeId, EdgeKind};
@@ -15,11 +16,12 @@ use crate::region::{Region, RegionId};
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Cfg<I> {
     pub(crate) blocks: Vec<BasicBlock<I>>,
-    pub(crate) edges: Vec<Edge>,
+    /// Edge arena — slots become `None` when removed via [`remove_edge`].
+    pub(crate) edges: Vec<Option<Edge>>,
     /// Successor edge ids per block (indexed by `BlockId`).
-    pub(crate) succs: Vec<Vec<EdgeId>>,
+    pub(crate) succs: Vec<SmallVec<[EdgeId; 2]>>,
     /// Predecessor edge ids per block (indexed by `BlockId`).
-    pub(crate) preds: Vec<Vec<EdgeId>>,
+    pub(crate) preds: Vec<SmallVec<[EdgeId; 4]>>,
     /// Entry block.
     pub(crate) entry: BlockId,
     /// Exception-handler regions (optional; empty for simple ISAs).
@@ -42,8 +44,8 @@ impl<I> Cfg<I> {
                 guard: None,
             }],
             edges: Vec::new(),
-            succs: alloc::vec![Vec::new()],
-            preds: alloc::vec![Vec::new()],
+            succs: alloc::vec![SmallVec::new()],
+            preds: alloc::vec![SmallVec::new()],
             entry,
             regions: Vec::new(),
         }
@@ -113,22 +115,26 @@ impl<I> Cfg<I> {
     ///
     /// # Panics
     ///
-    /// Panics if `id` does not refer to an edge in this CFG.
+    /// Panics if `id` does not refer to a live edge in this CFG.
     #[inline]
     pub fn edge(&self, id: EdgeId) -> &Edge {
-        debug_assert!(
-            id.index() < self.edges.len(),
-            "EdgeId {} out of range (num_edges = {})",
-            id,
-            self.edges.len(),
-        );
-        &self.edges[id.index()]
+        self.edges[id.index()]
+            .as_ref()
+            .expect("edge has been removed")
     }
 
-    /// All edges.
+    /// All live edges (skips tombstones left by [`remove_edge`]).
+    pub fn edges(&self) -> impl Iterator<Item = &Edge> {
+        self.edges.iter().filter_map(|slot| slot.as_ref())
+    }
+
+    /// Number of edge slots (including tombstones).
+    ///
+    /// This is the raw arena length, **not** the count of live edges.
+    /// Use `edges().count()` for the live edge count.
     #[inline]
-    pub fn edges(&self) -> &[Edge] {
-        &self.edges
+    pub(crate) fn edge_slots(&self) -> usize {
+        self.edges.len()
     }
 
     /// Successor edges for a block.
@@ -164,17 +170,17 @@ impl<I> Cfg<I> {
     }
 
     /// Successor block ids (allocation-free).
-    pub fn successors(&self, id: BlockId) -> Successors<'_> {
+    pub fn successors(&self, id: BlockId) -> Successors<'_, I> {
         Successors {
-            edges: &self.edges,
+            cfg: self,
             iter: self.succs[id.index()].iter(),
         }
     }
 
     /// Predecessor block ids (allocation-free).
-    pub fn predecessors(&self, id: BlockId) -> Predecessors<'_> {
+    pub fn predecessors(&self, id: BlockId) -> Predecessors<'_, I> {
         Predecessors {
-            edges: &self.edges,
+            cfg: self,
             iter: self.preds[id.index()].iter(),
         }
     }
@@ -185,22 +191,21 @@ impl<I> Cfg<I> {
         self.blocks.len()
     }
 
-    /// Number of edges.
+    /// Number of live edges (excludes tombstones).
     #[inline]
     pub fn num_edges(&self) -> usize {
-        self.edges.len()
+        self.edges.iter().filter(|e| e.is_some()).count()
     }
 
-    /// Returns the exit blocks — blocks with no outgoing edges.
+    /// Returns an iterator over exit blocks — blocks with no outgoing edges.
     ///
     /// These are the natural exit points of the control-flow graph
     /// (return blocks, terminators, etc.).
-    pub fn exit_blocks(&self) -> Vec<BlockId> {
+    pub fn exit_blocks(&self) -> impl Iterator<Item = BlockId> + '_ {
         self.blocks
             .iter()
             .filter(|b| self.succs[b.id().index()].is_empty())
             .map(|b| b.id())
-            .collect()
     }
 
     // ── Region methods ─────────────────────────────────────────────
@@ -246,8 +251,8 @@ impl<I> Cfg<I> {
             guard: None,
         });
 
-        self.succs.push(Vec::new());
-        self.preds.push(Vec::new());
+        self.succs.push(SmallVec::new());
+        self.preds.push(SmallVec::new());
 
         id
     }
@@ -281,14 +286,14 @@ impl<I> Cfg<I> {
             "too many edges: would overflow u32 EdgeId",
         );
         let id = EdgeId(self.edges.len() as u32);
-        self.edges.push(Edge {
+        self.edges.push(Some(Edge {
             id,
             source,
             target,
             kind,
             weight,
             call_site,
-        });
+        }));
 
         self.succs[source.index()].push(id);
         self.preds[target.index()].push(id);
@@ -299,19 +304,16 @@ impl<I> Cfg<I> {
     /// Remove an edge by id.
     ///
     /// Returns the removed [`Edge`], or `None` if the id is out of
-    /// range. The edge slot is **not** compacted — removed edges
-    /// leave a tombstone so that existing [`EdgeId`]s remain valid.
+    /// range or already removed. The edge slot is replaced with a
+    /// tombstone (`None`) so that existing [`EdgeId`]s remain valid.
     ///
     /// The successor and predecessor lists of the affected blocks are
     /// updated.
     pub fn remove_edge(&mut self, id: EdgeId) -> Option<Edge> {
-        if id.index() >= self.edges.len() {
-            return None;
-        }
-        let edge = self.edges[id.index()].clone();
-        // Remove from succs/preds.
-        self.succs[edge.source.index()].retain(|&e| e != id);
-        self.preds[edge.target.index()].retain(|&e| e != id);
+        let slot = self.edges.get_mut(id.index())?;
+        let edge = slot.take()?;
+        self.succs[edge.source.index()].retain(|e| *e != id);
+        self.preds[edge.target.index()].retain(|e| *e != id);
         Some(edge)
     }
 
@@ -333,9 +335,9 @@ impl<I> Cfg<I> {
         self.blocks[new_id.index()].instructions = tail_insts;
 
         // Move outgoing edges from `id` to `new_id`.
-        let outgoing: Vec<EdgeId> = self.succs[id.index()].drain(..).collect();
+        let outgoing: SmallVec<[EdgeId; 2]> = self.succs[id.index()].drain(..).collect();
         for &eid in &outgoing {
-            self.edges[eid.index()].source = new_id;
+            self.edges[eid.index()].as_mut().unwrap().source = new_id;
             self.succs[new_id.index()].push(eid);
         }
 
@@ -349,28 +351,24 @@ impl<I> Cfg<I> {
     ///
     /// This is useful for bypassing a block before removal.
     pub fn redirect_edges_to(&mut self, old: BlockId, new_target: BlockId) {
-        let incoming: Vec<EdgeId> = self.preds[old.index()].clone();
+        let incoming: SmallVec<[EdgeId; 4]> = self.preds[old.index()].clone();
         for eid in incoming {
-            self.edges[eid.index()].target = new_target;
-            self.preds[old.index()].retain(|&e| e != eid);
+            self.edges[eid.index()].as_mut().unwrap().target = new_target;
+            self.preds[old.index()].retain(|e| *e != eid);
             self.preds[new_target.index()].push(eid);
         }
     }
 
-    /// Mutable access to an edge's kind.
+    /// Mutable access to an edge.
     ///
     /// # Panics
     ///
-    /// Panics (debug) if `id` is out of range.
+    /// Panics if `id` is out of range or has been removed.
     #[inline]
     pub fn edge_mut(&mut self, id: EdgeId) -> &mut Edge {
-        debug_assert!(
-            id.index() < self.edges.len(),
-            "EdgeId {} out of range (num_edges = {})",
-            id,
-            self.edges.len(),
-        );
-        &mut self.edges[id.index()]
+        self.edges[id.index()]
+            .as_mut()
+            .expect("edge has been removed")
     }
 }
 
@@ -405,28 +403,28 @@ impl<I> Index<EdgeId> for Cfg<I> {
 
     /// Index into the CFG by [`EdgeId`].
     ///
-    /// Equivalent to [`Cfg::edge`] but usable with `cfg[id]` syntax.
-    ///
     /// # Panics
     ///
-    /// Panics if `id` does not refer to an edge in this CFG.
+    /// Panics if `id` does not refer to a live edge in this CFG.
     #[inline]
     fn index(&self, id: EdgeId) -> &Edge {
-        &self.edges[id.index()]
+        self.edges[id.index()]
+            .as_ref()
+            .expect("edge has been removed")
     }
 }
 
 /// Iterator over successor block ids (zero-allocation).
-pub struct Successors<'a> {
-    edges: &'a [Edge],
+pub struct Successors<'a, I> {
+    cfg: &'a Cfg<I>,
     iter: slice::Iter<'a, EdgeId>,
 }
 
-impl<'a> Iterator for Successors<'a> {
+impl<'a, I> Iterator for Successors<'a, I> {
     type Item = BlockId;
     #[inline]
     fn next(&mut self) -> Option<BlockId> {
-        self.iter.next().map(|&eid| self.edges[eid.index()].target)
+        self.iter.next().map(|&eid| self.cfg.edge(eid).target)
     }
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -434,19 +432,19 @@ impl<'a> Iterator for Successors<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for Successors<'a> {}
+impl<I> ExactSizeIterator for Successors<'_, I> {}
 
 /// Iterator over predecessor block ids (zero-allocation).
-pub struct Predecessors<'a> {
-    edges: &'a [Edge],
+pub struct Predecessors<'a, I> {
+    cfg: &'a Cfg<I>,
     iter: slice::Iter<'a, EdgeId>,
 }
 
-impl<'a> Iterator for Predecessors<'a> {
+impl<'a, I> Iterator for Predecessors<'a, I> {
     type Item = BlockId;
     #[inline]
     fn next(&mut self) -> Option<BlockId> {
-        self.iter.next().map(|&eid| self.edges[eid.index()].source)
+        self.iter.next().map(|&eid| self.cfg.edge(eid).source)
     }
     #[inline]
     fn size_hint(&self) -> (usize, Option<usize>) {
@@ -454,7 +452,7 @@ impl<'a> Iterator for Predecessors<'a> {
     }
 }
 
-impl<'a> ExactSizeIterator for Predecessors<'a> {}
+impl<I> ExactSizeIterator for Predecessors<'_, I> {}
 
 // ── Convenience dataflow method ────────────────────────────────────
 impl<I> Cfg<I> {
@@ -481,18 +479,15 @@ impl<I: Clone> Cfg<I> {
     /// Edges that cross the boundary (one endpoint outside the set)
     /// are dropped.
     pub fn subgraph(&self, blocks: &[BlockId]) -> Self {
-        use alloc::collections::BTreeMap;
-
         if blocks.is_empty() {
             return Self::new();
         }
 
         let mut new_cfg = Self::new();
 
-        // Map old BlockId → new BlockId.
-        let mut id_map: BTreeMap<BlockId, BlockId> = BTreeMap::new();
-        // Entry is already block 0.
-        id_map.insert(blocks[0], new_cfg.entry());
+        // Map old BlockId → new BlockId via dense Vec (O(1) lookup).
+        let mut id_map: Vec<Option<BlockId>> = alloc::vec![None; self.num_blocks()];
+        id_map[blocks[0].index()] = Some(new_cfg.entry());
 
         // Copy instructions into the entry block.
         let src = &self.blocks[blocks[0].index()];
@@ -511,7 +506,7 @@ impl<I: Clone> Cfg<I> {
         // Create remaining blocks.
         for &bid in &blocks[1..] {
             let new_id = new_cfg.new_block();
-            id_map.insert(bid, new_id);
+            id_map[bid.index()] = Some(new_id);
             let old_block = &self.blocks[bid.index()];
             for inst in old_block.instructions() {
                 new_cfg.block_mut(new_id).push(inst.clone());
@@ -524,16 +519,12 @@ impl<I: Clone> Cfg<I> {
             }
         }
 
-        // Copy edges that stay within the subgraph.
-        for edge in &self.edges {
-            if let (Some(&new_src), Some(&new_tgt)) =
-                (id_map.get(&edge.source()), id_map.get(&edge.target()))
-            {
-                // Skip ghost edges.
-                if !self.succs[edge.source().index()].contains(&edge.id()) {
-                    continue;
-                }
-                let eid = new_cfg.add_edge(new_src, new_tgt, edge.kind());
+        // Copy live edges that stay within the subgraph.
+        for edge in self.edges() {
+            let new_src = id_map.get(edge.source().index()).copied().flatten();
+            let new_tgt = id_map.get(edge.target().index()).copied().flatten();
+            if let (Some(ns), Some(nt)) = (new_src, new_tgt) {
+                let eid = new_cfg.add_edge(ns, nt, edge.kind());
                 if let Some(w) = edge.weight() {
                     new_cfg.edge_mut(eid).set_weight(Some(w));
                 }
@@ -549,9 +540,12 @@ impl<I: Clone> Cfg<I> {
 
 #[cfg(test)]
 mod tests {
+    extern crate alloc;
     use super::*;
     use crate::edge::{CallSite, EdgeKind};
     use crate::test_util::MockInst;
+    use alloc::vec;
+    use alloc::vec::Vec;
 
     #[test]
     fn edge_weight_roundtrip() {
@@ -614,5 +608,45 @@ mod tests {
         let g = cfg.block(b0).guard().unwrap();
         assert_eq!(g.predicate, "p0");
         assert!(g.when_true);
+    }
+
+    #[test]
+    fn remove_edge_tombstones_correctly() {
+        let mut cfg = Cfg::<MockInst>::new();
+        let b0 = cfg.entry();
+        let b1 = cfg.new_block();
+        let b2 = cfg.new_block();
+        let e1 = cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
+        let e2 = cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
+
+        // Both edges are live.
+        assert_eq!(cfg.num_edges(), 2);
+        assert_eq!(cfg.edges().count(), 2);
+
+        // Remove one edge.
+        let removed = cfg.remove_edge(e1).unwrap();
+        assert_eq!(removed.kind(), EdgeKind::ConditionalTrue);
+
+        // edges() should now skip the tombstone.
+        assert_eq!(cfg.edges().count(), 1);
+        let remaining: Vec<&Edge> = cfg.edges().collect();
+        assert_eq!(remaining[0].id(), e2);
+
+        // Successor list should only contain e2.
+        assert_eq!(cfg.successor_edges(b0).len(), 1);
+        assert_eq!(cfg.successor_edges(b0)[0], e2);
+
+        // Double-remove returns None.
+        assert!(cfg.remove_edge(e1).is_none());
+    }
+
+    #[test]
+    fn exit_blocks_iterator() {
+        let mut cfg = Cfg::<MockInst>::new();
+        let b1 = cfg.new_block();
+        cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+        // b1 has no outgoing edges — it's an exit block.
+        let exits: Vec<BlockId> = cfg.exit_blocks().collect();
+        assert_eq!(exits, vec![b1]);
     }
 }

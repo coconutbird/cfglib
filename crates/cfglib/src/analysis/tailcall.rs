@@ -34,8 +34,7 @@ pub struct TailCall {
 /// Returns all detected tail call sites.
 pub fn detect_tail_calls<I: FlowControl>(cfg: &Cfg<I>) -> Vec<TailCall> {
     let mut results = Vec::new();
-    let exit_blocks: alloc::collections::BTreeSet<BlockId> =
-        cfg.exit_blocks().into_iter().collect();
+    let exit_blocks: alloc::collections::BTreeSet<BlockId> = cfg.exit_blocks().collect();
 
     for block in cfg.blocks() {
         let bid = block.id();
