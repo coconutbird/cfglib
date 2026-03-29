@@ -7,10 +7,10 @@ extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use crate::ast::{AstNode, SwitchCase};
+use super::node::{AstNode, SwitchCase};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dominator::DominatorTree;
+use crate::graph::dominator::DominatorTree;
 use crate::edge::EdgeKind;
 
 /// Lift a [`Cfg`] into a structured [`AstNode`] tree.

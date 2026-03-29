@@ -12,8 +12,8 @@ use alloc::collections::BTreeSet;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dataflow::{DataDeps, Location};
-use crate::fixpoint::{self, Direction, FixpointResult, Problem};
+use super::{DataDeps, Location};
+use super::fixpoint::{self, Direction, FixpointResult, Problem};
 
 /// The liveness problem.
 pub struct LivenessProblem;
@@ -113,7 +113,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use crate::builder::CfgBuilder;
-    use crate::dataflow::{DataDeps, Location};
+    use super::{DataDeps, Location};
     use crate::flow::{FlowControl, FlowEffect};
 
     #[derive(Debug, Clone)]

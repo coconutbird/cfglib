@@ -11,8 +11,8 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::cfg::Cfg;
-use crate::dataflow::{DataDeps, DefSite, UseSite};
-use crate::reaching::{ReachingDef, ReachingDefs};
+use super::{DataDeps, DefSite, UseSite};
+use super::reaching::{ReachingDef, ReachingDefs};
 
 /// Def-use and use-def chain results.
 #[derive(Debug, Clone)]

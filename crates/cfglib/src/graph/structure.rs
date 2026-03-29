@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dominator::DominatorTree;
+use super::dominator::DominatorTree;
 use crate::edge::EdgeKind;
 
 /// A natural loop in the CFG.
@@ -153,7 +153,7 @@ mod tests {
     use alloc::borrow::Cow;
     use alloc::vec;
     use crate::builder::CfgBuilder;
-    use crate::dominator::DominatorTree;
+    use crate::graph::dominator::DominatorTree;
     use crate::flow::{FlowControl, FlowEffect};
 
     #[derive(Debug, Clone)]

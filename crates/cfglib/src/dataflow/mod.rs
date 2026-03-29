@@ -13,6 +13,11 @@
 //! locations each instruction reads from and writes to, then run any
 //! of the provided analyses.
 
+pub mod defuse;
+pub mod fixpoint;
+pub mod liveness;
+pub mod reaching;
+
 extern crate alloc;
 use alloc::vec::Vec;
 

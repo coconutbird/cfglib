@@ -20,37 +20,31 @@
 #![no_std]
 extern crate alloc;
 
-pub mod ast;
+// Core types.
 pub mod block;
 pub mod builder;
 pub mod cfg;
-pub mod dataflow;
-pub mod defuse;
-pub mod dominator;
-pub mod dot;
 pub mod edge;
-pub mod fixpoint;
 pub mod flow;
-pub mod liveness;
-pub mod lift;
 pub mod purity;
-pub mod reaching;
-pub mod structure;
-pub mod traverse;
+
+// Submodules.
+pub mod ast;
+pub mod dataflow;
+pub mod graph;
 
 // Re-exports for convenience.
-pub use ast::AstNode;
+pub use ast::{AstNode, lift};
 pub use block::{BasicBlock, BlockId};
 pub use builder::CfgBuilder;
 pub use cfg::Cfg;
 pub use dataflow::{DataDeps, DefSite, Location, UseSite};
-pub use defuse::DefUseChains;
-pub use dominator::DominatorTree;
+pub use dataflow::defuse::DefUseChains;
+pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
+pub use dataflow::liveness::Liveness;
+pub use dataflow::reaching::ReachingDefs;
 pub use edge::{Edge, EdgeId, EdgeKind};
-pub use fixpoint::{Direction, FixpointResult, Problem};
 pub use flow::{FlowControl, FlowEffect};
-pub use lift::lift;
-pub use liveness::Liveness;
+pub use graph::dominator::DominatorTree;
+pub use graph::structure::NaturalLoop;
 pub use purity::{Effect, Purity, SideEffects};
-pub use reaching::ReachingDefs;
-pub use structure::NaturalLoop;

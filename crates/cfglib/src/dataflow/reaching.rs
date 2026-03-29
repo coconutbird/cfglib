@@ -10,8 +10,8 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dataflow::{DataDeps, DefSite, Location};
-use crate::fixpoint::{self, Direction, FixpointResult, Problem};
+use super::{DataDeps, DefSite, Location};
+use super::fixpoint::{self, Direction, FixpointResult, Problem};
 
 /// A reaching definition: which location was defined, and where.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -118,7 +118,7 @@ mod tests {
     use alloc::borrow::Cow;
     use alloc::vec;
     use crate::builder::CfgBuilder;
-    use crate::dataflow::{DataDeps, Location};
+    use super::{DataDeps, Location};
     use crate::flow::{FlowControl, FlowEffect};
 
     /// Mock instruction that carries flow-control info AND data deps.
