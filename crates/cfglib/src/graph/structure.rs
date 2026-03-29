@@ -28,12 +28,24 @@ pub struct NaturalLoop {
 /// A back-edge: tail → header where header dominates tail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct BackEdge {
+    /// The block at the tail of the back-edge (the source of the jump).
     pub tail: BlockId,
+    /// The loop header block (the target of the back-edge).
     pub header: BlockId,
 }
 
 /// Find all back-edges in the CFG (edges where the target dominates
 /// the source).
+///
+/// An edge is considered a back-edge if **either**:
+/// - The builder already tagged it as [`EdgeKind::Back`] (explicit
+///   structural back-edges from `loop` / `continue`), **or**
+/// - The dominator tree confirms that the target dominates the source
+///   (catching any natural back-edges that the builder did not tag,
+///   e.g. from unstructured goto-style control flow).
+///
+/// The result is deduplicated, so an edge satisfying both conditions
+/// appears only once.
 pub fn find_back_edges<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackEdge> {
     let mut backs = Vec::new();
     for edge in cfg.edges() {

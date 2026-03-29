@@ -29,14 +29,34 @@ impl<I> Cfg<I> {
     }
 
     /// Look up a block by id.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not refer to a block in this CFG.
     #[inline]
     pub fn block(&self, id: BlockId) -> &BasicBlock<I> {
+        debug_assert!(
+            id.index() < self.blocks.len(),
+            "BlockId {} out of range (num_blocks = {})",
+            id,
+            self.blocks.len(),
+        );
         &self.blocks[id.index()]
     }
 
     /// Mutable access to a block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not refer to a block in this CFG.
     #[inline]
     pub fn block_mut(&mut self, id: BlockId) -> &mut BasicBlock<I> {
+        debug_assert!(
+            id.index() < self.blocks.len(),
+            "BlockId {} out of range (num_blocks = {})",
+            id,
+            self.blocks.len(),
+        );
         &mut self.blocks[id.index()]
     }
 
@@ -47,8 +67,18 @@ impl<I> Cfg<I> {
     }
 
     /// Look up an edge by id.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not refer to an edge in this CFG.
     #[inline]
     pub fn edge(&self, id: EdgeId) -> &Edge {
+        debug_assert!(
+            id.index() < self.edges.len(),
+            "EdgeId {} out of range (num_edges = {})",
+            id,
+            self.edges.len(),
+        );
         &self.edges[id.index()]
     }
 
@@ -59,14 +89,34 @@ impl<I> Cfg<I> {
     }
 
     /// Successor edges for a block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not refer to a block in this CFG.
     #[inline]
     pub fn successor_edges(&self, id: BlockId) -> &[EdgeId] {
+        debug_assert!(
+            id.index() < self.succs.len(),
+            "BlockId {} out of range for successor lookup (num_blocks = {})",
+            id,
+            self.succs.len(),
+        );
         &self.succs[id.index()]
     }
 
     /// Predecessor edges for a block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` does not refer to a block in this CFG.
     #[inline]
     pub fn predecessor_edges(&self, id: BlockId) -> &[EdgeId] {
+        debug_assert!(
+            id.index() < self.preds.len(),
+            "BlockId {} out of range for predecessor lookup (num_blocks = {})",
+            id,
+            self.preds.len(),
+        );
         &self.preds[id.index()]
     }
 
@@ -100,6 +150,11 @@ impl<I> Cfg<I> {
 
     /// Allocate a new empty block and return its id.
     pub(crate) fn new_block(&mut self) -> BlockId {
+        debug_assert!(
+            self.blocks.len() < u32::MAX as usize,
+            "too many blocks: would overflow u32 BlockId",
+        );
+
         let id = BlockId(self.blocks.len() as u32);
         self.blocks.push(BasicBlock {
             id,
@@ -115,6 +170,10 @@ impl<I> Cfg<I> {
 
     /// Add a directed edge and return its id.
     pub(crate) fn add_edge(&mut self, source: BlockId, target: BlockId, kind: EdgeKind) -> EdgeId {
+        debug_assert!(
+            self.edges.len() < u32::MAX as usize,
+            "too many edges: would overflow u32 EdgeId",
+        );
         let id = EdgeId(self.edges.len() as u32);
         self.edges.push(Edge {
             id,

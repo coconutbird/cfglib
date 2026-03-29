@@ -115,47 +115,10 @@ impl ReachingDefs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::borrow::Cow;
     use alloc::vec;
     use crate::builder::CfgBuilder;
-    use super::{InstrInfo, Location};
-    use crate::flow::{FlowControl, FlowEffect};
-
-    /// Mock instruction that carries flow-control info AND data deps.
-    #[derive(Debug, Clone)]
-    struct DfInst {
-        effect: FlowEffect,
-        name: &'static str,
-        uses: Vec<Location>,
-        defs: Vec<Location>,
-    }
-
-    impl FlowControl for DfInst {
-        fn flow_effect(&self) -> FlowEffect { self.effect }
-        fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.name) }
-    }
-
-    impl InstrInfo for DfInst {
-        fn uses(&self) -> &[Location] { &self.uses }
-        fn defs(&self) -> &[Location] { &self.defs }
-    }
-
-    fn ff(name: &'static str) -> DfInst {
-        DfInst { effect: FlowEffect::Fallthrough, name, uses: vec![], defs: vec![] }
-    }
-
-    fn def(name: &'static str, loc: u16) -> DfInst {
-        DfInst { effect: FlowEffect::Fallthrough, name, uses: vec![], defs: vec![Location(loc)] }
-    }
-
-    fn use_(name: &'static str, loc: u16) -> DfInst {
-        DfInst { effect: FlowEffect::Fallthrough, name, uses: vec![Location(loc)], defs: vec![] }
-    }
-
-    fn with_effect(mut inst: DfInst, effect: FlowEffect) -> DfInst {
-        inst.effect = effect;
-        inst
-    }
+    use crate::flow::FlowEffect;
+    use crate::test_util::{df_def as def, df_use as use_, df_ff as ff, df_with_effect as with_effect};
 
     // --- Linear CFG tests ---
 

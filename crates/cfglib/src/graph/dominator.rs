@@ -269,6 +269,11 @@ impl DominatorTree {
         // Convert RPO indices back to real BlockIds, skipping the
         // virtual exit. If a block's immediate post-dominator is the
         // virtual exit, record `None` (it's a top-level exit).
+        //
+        // NOTE: `BlockId(node as u32)` is safe here because real blocks
+        // are allocated with contiguous indices 0..n by `Cfg::new_block`,
+        // so the `usize` graph index and the `BlockId` raw value are
+        // identical.
         let mut idom_result = vec![None; n];
         for (rpo_idx, &dom) in doms.iter().enumerate() {
             if rpo_idx >= rpo.len() {

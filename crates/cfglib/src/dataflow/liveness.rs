@@ -109,38 +109,10 @@ impl Liveness {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::borrow::Cow;
     use alloc::vec;
-    use alloc::vec::Vec;
     use crate::builder::CfgBuilder;
-    use super::{InstrInfo, Location};
-    use crate::flow::{FlowControl, FlowEffect};
-
-    #[derive(Debug, Clone)]
-    struct DfInst {
-        effect: FlowEffect,
-        name: &'static str,
-        uses: Vec<Location>,
-        defs: Vec<Location>,
-    }
-
-    impl FlowControl for DfInst {
-        fn flow_effect(&self) -> FlowEffect { self.effect }
-        fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.name) }
-    }
-
-    impl InstrInfo for DfInst {
-        fn uses(&self) -> &[Location] { &self.uses }
-        fn defs(&self) -> &[Location] { &self.defs }
-    }
-
-    fn def(name: &'static str, loc: u16) -> DfInst {
-        DfInst { effect: FlowEffect::Fallthrough, name, uses: vec![], defs: vec![Location(loc)] }
-    }
-
-    fn use_(name: &'static str, loc: u16) -> DfInst {
-        DfInst { effect: FlowEffect::Fallthrough, name, uses: vec![Location(loc)], defs: vec![] }
-    }
+    use crate::flow::FlowEffect;
+    use crate::test_util::{DfInst, df_def as def, df_use as use_};
 
     #[test]
     fn liveness_linear_use_makes_live() {

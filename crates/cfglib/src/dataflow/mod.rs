@@ -97,6 +97,7 @@ impl core::fmt::Display for ProgramPoint {
     }
 }
 
-/// Backwards-compatible aliases.
+/// Alias for [`ProgramPoint`] used in definition contexts.
 pub type DefSite = ProgramPoint;
+/// Alias for [`ProgramPoint`] used in use-site contexts.
 pub type UseSite = ProgramPoint;

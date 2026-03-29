@@ -278,30 +278,34 @@ fn lift_case_body<I: Clone>(
 /// Only considers edges whose source is inside the loop (visited) and
 /// whose target is outside it (not visited), so nested loops don't
 /// confuse the search.
+///
+/// Instead of scanning every edge in the CFG, this only examines the
+/// successor edges of visited (in-loop) blocks, making it proportional
+/// to the loop body size rather than the entire CFG.
 fn find_loop_exit<I>(cfg: &Cfg<I>, header: BlockId, visited: &BTreeSet<u32>) -> Option<BlockId> {
-    // Collect all blocks that belong to this loop (visited blocks that
-    // are dominated by the header). We approximate: any visited block
-    // is part of the current loop scope.
-    for edge in cfg.edges() {
-        let src_in_loop = visited.contains(&edge.source().0);
-        let tgt_outside = !visited.contains(&edge.target().0);
-        let is_exit_edge = matches!(
-            edge.kind(),
-            EdgeKind::Unconditional | EdgeKind::ConditionalTrue | EdgeKind::ConditionalFalse
-        );
-        // The source must be in the loop and reachable from the header,
-        // and the target must be outside.
-        if src_in_loop && tgt_outside && is_exit_edge && edge.source() != header {
-            return Some(edge.target());
+    // First pass: look for exit edges from loop-body blocks (excluding
+    // the header, which is checked separately below).
+    for &block_raw in visited.iter() {
+        let block = BlockId(block_raw);
+        if block == header {
+            continue;
+        }
+        for &eid in cfg.successor_edges(block) {
+            let edge = cfg.edge(eid);
+            let is_exit_edge = matches!(
+                edge.kind(),
+                EdgeKind::Unconditional | EdgeKind::ConditionalTrue | EdgeKind::ConditionalFalse
+            );
+            if is_exit_edge && !visited.contains(&edge.target().0) {
+                return Some(edge.target());
+            }
         }
     }
     // Also check edges directly from the header (e.g., conditional break
     // at the header level).
-    for edge in cfg.edges() {
-        if edge.source() == header
-            && !visited.contains(&edge.target().0)
-            && edge.kind() != EdgeKind::Back
-        {
+    for &eid in cfg.successor_edges(header) {
+        let edge = cfg.edge(eid);
+        if !visited.contains(&edge.target().0) && edge.kind() != EdgeKind::Back {
             return Some(edge.target());
         }
     }

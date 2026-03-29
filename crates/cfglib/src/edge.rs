@@ -14,6 +14,12 @@ impl EdgeId {
     }
 }
 
+impl core::fmt::Display for EdgeId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "e{}", self.0)
+    }
+}
+
 /// The kind of a control-flow edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum EdgeKind {
@@ -33,6 +39,22 @@ pub enum EdgeKind {
     CallReturn,
     /// Edge for a switch/case arm.
     SwitchCase,
+}
+
+impl core::fmt::Display for EdgeKind {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let label = match self {
+            EdgeKind::Fallthrough => "fallthrough",
+            EdgeKind::ConditionalTrue => "true",
+            EdgeKind::ConditionalFalse => "false",
+            EdgeKind::Unconditional => "unconditional",
+            EdgeKind::Back => "back",
+            EdgeKind::Call => "call",
+            EdgeKind::CallReturn => "call_return",
+            EdgeKind::SwitchCase => "case",
+        };
+        f.write_str(label)
+    }
 }
 
 /// A directed edge between two basic blocks.
