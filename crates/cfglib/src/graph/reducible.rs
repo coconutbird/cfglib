@@ -34,17 +34,16 @@ pub fn make_reducible<I: Clone>(cfg: &mut Cfg<I>) -> usize {
             break;
         }
 
-        // Find irreducible edges: retreating edges where the target
-        // does NOT dominate the source.
+        // Find irreducible entries and split ONE per iteration.
+        // After each split the dominator tree is stale, so we
+        // must recompute before picking the next target.
         let irreducible_targets = find_irreducible_entries(cfg, &dom);
 
-        if irreducible_targets.is_empty() {
-            break; // Safety valve.
-        }
-
-        for target in &irreducible_targets {
-            split_node(cfg, *target);
+        if let Some(&target) = irreducible_targets.first() {
+            split_node(cfg, target);
             total_split += 1;
+        } else {
+            break; // Safety valve.
         }
     }
 

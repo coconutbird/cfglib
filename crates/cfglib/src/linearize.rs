@@ -95,12 +95,6 @@ pub fn linearize<I: Clone>(
         BlockOrder::Custom(ids) => ids,
     };
 
-    // Map block → position in layout for fallthrough detection.
-    let mut layout_pos = alloc::vec![usize::MAX; cfg.num_blocks()];
-    for (pos, &id) in sorted.iter().enumerate() {
-        layout_pos[id.index()] = pos;
-    }
-
     let mut out: Vec<LinearInst<I>> = Vec::new();
 
     for (pos, &id) in sorted.iter().enumerate() {
@@ -142,6 +136,15 @@ pub fn linearize<I: Clone>(
     out
 }
 
+/// Returns `true` if `kind` represents a fallthrough-like edge that
+/// can be satisfied by layout adjacency (no explicit jump needed).
+fn is_fallthrough_kind(kind: EdgeKind) -> bool {
+    matches!(
+        kind,
+        EdgeKind::Fallthrough | EdgeKind::ConditionalFalse | EdgeKind::CallReturn
+    )
+}
+
 /// Emit trailing jump/branch if the fallthrough doesn't reach the
 /// intended successor.
 fn emit_tail_jump<I: Clone>(
@@ -152,50 +155,37 @@ fn emit_tail_jump<I: Clone>(
     emitter: &dyn Emitter<I>,
     out: &mut Vec<LinearInst<I>>,
 ) {
-    match succ_edges.len() {
-        0 => { /* no successors — return/terminate block */ }
-        1 => {
-            let target = succ_edges[0].target();
-            if next_in_layout != Some(target) {
-                let label = block_label(cfg, target);
-                out.push(LinearInst {
-                    inst: emitter.emit_jump(&label),
-                    block: id,
-                    index: usize::MAX,
-                });
-            }
-            // else: fallthrough — no jump needed.
-        }
-        _ => {
-            // Multiple successors — find the conditional branch.
-            // Convention: ConditionalTrue / ConditionalFalse pair,
-            // or Jump + Fallthrough pair.
-            let true_edge = succ_edges
-                .iter()
-                .find(|e| matches!(e.kind(), EdgeKind::ConditionalTrue | EdgeKind::Jump));
-            let false_edge = succ_edges
-                .iter()
-                .find(|e| matches!(e.kind(), EdgeKind::ConditionalFalse | EdgeKind::Fallthrough));
+    if succ_edges.is_empty() {
+        return; // No successors — return/terminate block.
+    }
 
-            if let Some(te) = true_edge {
-                let label = block_label(cfg, te.target());
-                // Use the last instruction as the condition hint.
-                let block = cfg.block(id);
-                if let Some(last) = block.instructions().last() {
+    // Partition edges into the fallthrough candidate and everything else.
+    // At most one edge can be a fallthrough (satisfied by layout adjacency).
+    let fallthrough = succ_edges.iter().find(|e| is_fallthrough_kind(e.kind()));
+    let branches: Vec<_> = succ_edges
+        .iter()
+        .filter(|e| !is_fallthrough_kind(e.kind()))
+        .collect();
+
+    // Emit explicit jumps/branches for all non-fallthrough edges.
+    let last_inst = cfg.block(id).instructions().last();
+
+    for edge in &branches {
+        let label = block_label(cfg, edge.target());
+        match edge.kind() {
+            // Conditional edges → emit a conditional branch.
+            EdgeKind::ConditionalTrue => {
+                if let Some(cond) = last_inst {
                     out.push(LinearInst {
-                        inst: emitter.emit_conditional_branch(last, &label),
+                        inst: emitter.emit_conditional_branch(cond, &label),
                         block: id,
                         index: usize::MAX,
                     });
                 }
             }
-
-            // Emit unconditional jump for the false/fallthrough
-            // edge if it's not the layout successor.
-            if let Some(fe) = false_edge
-                && next_in_layout != Some(fe.target())
-            {
-                let label = block_label(cfg, fe.target());
+            // Everything else (Jump, SwitchCase, ExceptionHandler, etc.)
+            // → emit an unconditional jump.
+            _ => {
                 out.push(LinearInst {
                     inst: emitter.emit_jump(&label),
                     block: id,
@@ -203,5 +193,18 @@ fn emit_tail_jump<I: Clone>(
                 });
             }
         }
+    }
+
+    // Handle the fallthrough edge: emit a jump only if the layout
+    // successor is not the fallthrough target.
+    if let Some(ft) = fallthrough
+        && next_in_layout != Some(ft.target())
+    {
+        let label = block_label(cfg, ft.target());
+        out.push(LinearInst {
+            inst: emitter.emit_jump(&label),
+            block: id,
+            index: usize::MAX,
+        });
     }
 }
