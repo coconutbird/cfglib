@@ -166,4 +166,46 @@ mod tests {
             "r0 is live-out of entry because the true branch uses it"
         );
     }
+
+    #[test]
+    fn liveness_empty_single_block() {
+        // Empty CFG — no instructions, nothing should be live.
+        use crate::test_util::DfInst;
+        let cfg = CfgBuilder::build(alloc::vec::Vec::<DfInst>::new()).unwrap();
+        let live = Liveness::compute(&cfg);
+        assert!(!live.is_live_in(Location(0), cfg.entry()));
+        assert!(!live.is_live_out(Location(0), cfg.entry()));
+    }
+
+    #[test]
+    fn liveness_self_loop() {
+        // Self-loop: use r0 in a block that loops to itself.
+        // r0 is never defined → live-in = {r0}.
+        use crate::cfg::Cfg;
+        use crate::edge::EdgeKind;
+        use crate::test_util::DfInst;
+
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(use_("use_r0", 0));
+        cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
+        let live = Liveness::compute(&cfg);
+        assert!(
+            live.is_live_in(Location(0), cfg.entry()),
+            "r0 used but not defined in self-loop"
+        );
+    }
+
+    #[test]
+    fn liveness_all_live_locations() {
+        let cfg = CfgBuilder::build(vec![use_("use_r0", 0), use_("use_r1", 1), def("def_r2", 2)])
+            .unwrap();
+        let live = Liveness::compute(&cfg);
+        let all = live.all_live_locations(&cfg);
+        assert!(all.contains(&Location(0)));
+        assert!(all.contains(&Location(1)));
+        // r2 is defined but never used, so not live.
+        assert!(!all.contains(&Location(2)));
+    }
 }

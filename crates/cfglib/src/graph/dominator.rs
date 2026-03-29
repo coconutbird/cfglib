@@ -344,3 +344,106 @@ impl DominatorTree {
         DominatorTree { idom: idom_result }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cfg::Cfg;
+    use crate::edge::EdgeKind;
+    use crate::test_util::MockInst;
+
+    #[test]
+    fn single_block_cfg() {
+        let cfg: Cfg<MockInst> = Cfg::new();
+        let dom = DominatorTree::compute(&cfg);
+        assert_eq!(dom.idom(cfg.entry()), None);
+        assert!(dom.dominates(cfg.entry(), cfg.entry()));
+        assert!(dom.children(cfg.entry()).is_empty());
+    }
+
+    #[test]
+    fn linear_chain_dominance() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let b1 = cfg.new_block();
+        let b2 = cfg.new_block();
+        cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+        cfg.add_edge(b1, b2, EdgeKind::Fallthrough);
+        let dom = DominatorTree::compute(&cfg);
+        assert!(dom.dominates(cfg.entry(), b1));
+        assert!(dom.dominates(cfg.entry(), b2));
+        assert!(dom.dominates(b1, b2));
+        assert!(!dom.dominates(b2, b1));
+        assert_eq!(dom.idom(b1), Some(cfg.entry()));
+        assert_eq!(dom.idom(b2), Some(b1));
+    }
+
+    #[test]
+    fn diamond_idom_at_merge() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let a = cfg.new_block();
+        let b = cfg.new_block();
+        let merge = cfg.new_block();
+        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
+        cfg.add_edge(a, merge, EdgeKind::Fallthrough);
+        cfg.add_edge(b, merge, EdgeKind::Fallthrough);
+        let dom = DominatorTree::compute(&cfg);
+        // Merge block's idom should be entry (not a or b).
+        assert_eq!(dom.idom(merge), Some(cfg.entry()));
+        assert!(dom.dominates(cfg.entry(), a));
+        assert!(dom.dominates(cfg.entry(), b));
+        assert!(!dom.dominates(a, b));
+        assert!(!dom.dominates(b, a));
+    }
+
+    #[test]
+    fn self_loop_dominance() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
+        let dom = DominatorTree::compute(&cfg);
+        assert_eq!(dom.idom(cfg.entry()), None);
+        assert!(dom.dominates(cfg.entry(), cfg.entry()));
+    }
+
+    #[test]
+    fn unreachable_block_not_dominated() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let _unreachable = cfg.new_block();
+        let dom = DominatorTree::compute(&cfg);
+        // Entry still dominates itself.
+        assert!(dom.dominates(cfg.entry(), cfg.entry()));
+        // Unreachable block has no idom.
+        assert_eq!(dom.idom(_unreachable), None);
+    }
+
+    #[test]
+    fn depth_computation() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let b1 = cfg.new_block();
+        let b2 = cfg.new_block();
+        cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+        cfg.add_edge(b1, b2, EdgeKind::Fallthrough);
+        let dom = DominatorTree::compute(&cfg);
+        assert_eq!(dom.depth(cfg.entry()), Some(0));
+        assert_eq!(dom.depth(b1), Some(1));
+        assert_eq!(dom.depth(b2), Some(2));
+    }
+
+    #[test]
+    fn children_returns_immediate_children() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let a = cfg.new_block();
+        let b = cfg.new_block();
+        let c = cfg.new_block();
+        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
+        cfg.add_edge(a, c, EdgeKind::Fallthrough);
+        let dom = DominatorTree::compute(&cfg);
+        let mut entry_children = dom.children(cfg.entry());
+        entry_children.sort();
+        assert_eq!(entry_children.len(), 2);
+        assert!(entry_children.contains(&a));
+        assert!(entry_children.contains(&b));
+        assert_eq!(dom.children(a), vec![c]);
+    }
+}

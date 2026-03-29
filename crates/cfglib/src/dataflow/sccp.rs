@@ -173,4 +173,47 @@ mod tests {
         assert!(result.reachable_blocks.contains(&cfg.entry()));
         assert!(result.reachable_blocks.contains(&b));
     }
+
+    #[test]
+    fn diamond_all_reachable() {
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        let a = cfg.new_block();
+        let b = cfg.new_block();
+        let merge = cfg.new_block();
+        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
+        cfg.add_edge(a, merge, EdgeKind::Fallthrough);
+        cfg.add_edge(b, merge, EdgeKind::Fallthrough);
+        cfg.block_mut(a).push(df_def("da", 0));
+        cfg.block_mut(b).push(df_def("db", 0));
+        cfg.block_mut(merge).push(df_use("use", 0));
+        let dom = DominatorTree::compute(&cfg);
+        let phis = insert_phis(&cfg, &dom);
+        let result = sccp(&cfg, &phis);
+        assert!(result.reachable_blocks.contains(&merge));
+    }
+
+    #[test]
+    fn self_loop_reachable() {
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
+        let dom = DominatorTree::compute(&cfg);
+        let phis = insert_phis(&cfg, &dom);
+        let result = sccp(&cfg, &phis);
+        assert!(result.reachable_blocks.contains(&cfg.entry()));
+    }
+
+    #[test]
+    fn unreachable_block_excluded() {
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        let reachable = cfg.new_block();
+        let unreachable = cfg.new_block();
+        cfg.add_edge(cfg.entry(), reachable, EdgeKind::Fallthrough);
+        // unreachable has no incoming edges from entry
+        let dom = DominatorTree::compute(&cfg);
+        let phis = insert_phis(&cfg, &dom);
+        let result = sccp(&cfg, &phis);
+        assert!(result.reachable_blocks.contains(&reachable));
+        assert!(!result.reachable_blocks.contains(&unreachable));
+    }
 }

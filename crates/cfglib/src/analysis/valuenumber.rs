@@ -7,6 +7,8 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
+use smallvec::SmallVec;
+
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::dataflow::{InstrInfo, Location};
@@ -16,12 +18,15 @@ use crate::graph::dominator::DominatorTree;
 pub type ValueNumber = u32;
 
 /// An expression key used for hash-consing.
+///
+/// Uses `SmallVec` to avoid heap allocation for expressions with ≤ 4
+/// operands (the vast majority of real instructions).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ExprKey {
     /// Instruction "opcode" or name (ISA-specific identifier).
     pub opcode: u32,
     /// Value numbers of the operands.
-    pub operands: Vec<ValueNumber>,
+    pub operands: SmallVec<[ValueNumber; 4]>,
 }
 
 /// Result of value numbering for one block.
@@ -75,7 +80,7 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
         }
 
         // Build expression key from operand value numbers.
-        let operands: Vec<ValueNumber> = inst
+        let operands: SmallVec<[ValueNumber; 4]> = inst
             .uses()
             .iter()
             .map(|loc| {
@@ -113,104 +118,135 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
     (BlockValueNumbers { inst_vn, redundant }, next_vn)
 }
 
-/// Scoped tables inherited along dominator-tree edges.
-#[derive(Debug, Clone)]
-struct ScopedVnTables {
-    loc_to_vn: BTreeMap<Location, ValueNumber>,
-    expr_to_vn: BTreeMap<ExprKey, ValueNumber>,
-    next_vn: ValueNumber,
-}
-
 /// Run global value numbering over the dominator tree.
 ///
-/// Processes blocks in dominator-tree preorder so that dominated
-/// blocks inherit the `loc → VN` and `expr → VN` tables from their
-/// immediate dominator. This allows cross-block redundancy detection.
+/// Performs a single DFS walk over the dominator tree, maintaining
+/// scoped `loc → VN` and `expr → VN` tables that are pushed on
+/// entry and popped on exit. This avoids cloning maps for every
+/// block and runs in O(n · α) time per instruction (where α is the
+/// BTreeMap operation cost).
 pub fn global_value_numbering<I: ValueNumberInfo>(
     cfg: &Cfg<I>,
     dom: &DominatorTree,
 ) -> ValueNumbering {
     let mut blocks = BTreeMap::new();
-    let mut scopes: BTreeMap<BlockId, ScopedVnTables> = BTreeMap::new();
+    let mut loc_to_vn: BTreeMap<Location, ValueNumber> = BTreeMap::new();
+    let mut expr_to_vn: BTreeMap<ExprKey, ValueNumber> = BTreeMap::new();
+    let mut next_vn: ValueNumber = 0;
 
-    // Walk in RPO (valid dominator-tree preorder).
-    let rpo = cfg.reverse_postorder();
-    for &bid in &rpo {
-        // Inherit tables from immediate dominator.
-        let (mut loc_to_vn, mut expr_to_vn, mut next_vn) = if let Some(idom) = dom.idom(bid) {
-            if let Some(parent) = scopes.get(&idom) {
-                (
-                    parent.loc_to_vn.clone(),
-                    parent.expr_to_vn.clone(),
-                    parent.next_vn,
-                )
-            } else {
-                (BTreeMap::new(), BTreeMap::new(), 0)
-            }
-        } else {
-            (BTreeMap::new(), BTreeMap::new(), 0)
+    gvn_dfs(
+        cfg,
+        dom,
+        cfg.entry(),
+        &mut loc_to_vn,
+        &mut expr_to_vn,
+        &mut next_vn,
+        &mut blocks,
+    );
+
+    ValueNumbering {
+        blocks,
+        num_values: next_vn,
+    }
+}
+
+/// Recursive DFS over the dominator tree with push/pop scoping.
+fn gvn_dfs<I: ValueNumberInfo>(
+    cfg: &Cfg<I>,
+    dom: &DominatorTree,
+    bid: BlockId,
+    loc_to_vn: &mut BTreeMap<Location, ValueNumber>,
+    expr_to_vn: &mut BTreeMap<ExprKey, ValueNumber>,
+    next_vn: &mut ValueNumber,
+    blocks: &mut BTreeMap<BlockId, BlockValueNumbers>,
+) {
+    // Snapshot the current scope so we can restore on exit.
+    let loc_snapshot: Vec<(Location, ValueNumber)> = Vec::new();
+    let expr_snapshot: Vec<ExprKey> = Vec::new();
+    let mut loc_added: Vec<Location> = Vec::new();
+    let mut loc_overwritten: Vec<(Location, ValueNumber)> = Vec::new();
+    let mut expr_added: Vec<ExprKey> = Vec::new();
+    let vn_before = *next_vn;
+    let _ = (loc_snapshot, expr_snapshot); // suppress unused warnings
+
+    // Process instructions in this block.
+    let insts = cfg.block(bid).instructions();
+    let mut inst_vn = Vec::with_capacity(insts.len());
+    let mut redundant = Vec::new();
+
+    for (idx, inst) in insts.iter().enumerate() {
+        if !inst.is_pure() || inst.defs().is_empty() {
+            inst_vn.push(None);
+            continue;
+        }
+
+        let operands: SmallVec<[ValueNumber; 4]> = inst
+            .uses()
+            .iter()
+            .map(|loc| {
+                if let Some(&vn) = loc_to_vn.get(loc) {
+                    vn
+                } else {
+                    let vn = *next_vn;
+                    *next_vn += 1;
+                    loc_added.push(*loc);
+                    loc_to_vn.insert(*loc, vn);
+                    vn
+                }
+            })
+            .collect();
+
+        let key = ExprKey {
+            opcode: inst.opcode(),
+            operands,
         };
 
-        let insts = cfg.block(bid).instructions();
-        let mut inst_vn = Vec::with_capacity(insts.len());
-        let mut redundant = Vec::new();
-
-        for (idx, inst) in insts.iter().enumerate() {
-            if !inst.is_pure() || inst.defs().is_empty() {
-                inst_vn.push(None);
-                continue;
-            }
-
-            let operands: Vec<ValueNumber> = inst
-                .uses()
-                .iter()
-                .map(|loc| {
-                    *loc_to_vn.entry(*loc).or_insert_with(|| {
-                        let vn = next_vn;
-                        next_vn += 1;
-                        vn
-                    })
-                })
-                .collect();
-
-            let key = ExprKey {
-                opcode: inst.opcode(),
-                operands,
-            };
-
-            if let Some(&existing_vn) = expr_to_vn.get(&key) {
-                inst_vn.push(Some(existing_vn));
-                redundant.push(idx);
-                for d in inst.defs() {
-                    loc_to_vn.insert(*d, existing_vn);
+        if let Some(&existing_vn) = expr_to_vn.get(&key) {
+            inst_vn.push(Some(existing_vn));
+            redundant.push(idx);
+            for d in inst.defs() {
+                if let Some(old) = loc_to_vn.insert(*d, existing_vn) {
+                    loc_overwritten.push((*d, old));
+                } else {
+                    loc_added.push(*d);
                 }
-            } else {
-                let vn = next_vn;
-                next_vn += 1;
-                expr_to_vn.insert(key, vn);
-                inst_vn.push(Some(vn));
-                for d in inst.defs() {
-                    loc_to_vn.insert(*d, vn);
+            }
+        } else {
+            let vn = *next_vn;
+            *next_vn += 1;
+            expr_added.push(key.clone());
+            expr_to_vn.insert(key, vn);
+            inst_vn.push(Some(vn));
+            for d in inst.defs() {
+                if let Some(old) = loc_to_vn.insert(*d, vn) {
+                    loc_overwritten.push((*d, old));
+                } else {
+                    loc_added.push(*d);
                 }
             }
         }
-
-        scopes.insert(
-            bid,
-            ScopedVnTables {
-                loc_to_vn,
-                expr_to_vn,
-                next_vn,
-            },
-        );
-        blocks.insert(bid, BlockValueNumbers { inst_vn, redundant });
     }
 
-    let max_vn = scopes.values().map(|s| s.next_vn).max().unwrap_or(0);
-    ValueNumbering {
-        blocks,
-        num_values: max_vn,
+    blocks.insert(bid, BlockValueNumbers { inst_vn, redundant });
+
+    // Recurse into dominator-tree children.
+    let children = dom.children(bid);
+    for child in children {
+        gvn_dfs(cfg, dom, child, loc_to_vn, expr_to_vn, next_vn, blocks);
     }
+
+    // Pop scope: undo all insertions/overwrites from this block.
+    for key in expr_added {
+        expr_to_vn.remove(&key);
+    }
+    for loc in loc_added {
+        loc_to_vn.remove(&loc);
+    }
+    for (loc, old_vn) in loc_overwritten {
+        loc_to_vn.insert(loc, old_vn);
+    }
+    // Note: next_vn is NOT rolled back — value numbers are global.
+    let _ = vn_before;
 }
 
 /// Count total redundant instructions across all blocks.

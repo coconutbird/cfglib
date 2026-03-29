@@ -2,13 +2,16 @@
 //!
 //! Generalises the fixpoint engine to work over arbitrary lattices,
 //! enabling interval analysis, sign analysis, taint tracking, etc.
+//!
+//! Internally delegates to [`fixpoint::solve`](super::fixpoint::solve)
+//! so there is a single worklist implementation in the crate.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
-use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
+use crate::dataflow::fixpoint::{self, Direction, Problem};
 
 /// A lattice element for abstract interpretation.
 pub trait Lattice: Clone + PartialEq {
@@ -39,73 +42,64 @@ pub struct AbstractResult<L> {
     pub block_in: BTreeMap<BlockId, L>,
     /// Abstract state at each block exit.
     pub block_out: BTreeMap<BlockId, L>,
-    /// Number of fixpoint iterations.
-    pub iterations: usize,
+}
+
+/// Bridge that adapts an [`AbstractDomain`] into a [`Problem`] so we
+/// can reuse the generic fixpoint solver.
+struct AbstractProblem<D> {
+    _marker: core::marker::PhantomData<D>,
+}
+
+impl<I, D: AbstractDomain<I>> Problem<I> for AbstractProblem<D> {
+    type Fact = D;
+
+    fn direction(&self) -> Direction {
+        Direction::Forward
+    }
+
+    fn bottom(&self) -> D {
+        D::bottom()
+    }
+
+    fn entry_fact(&self) -> D {
+        D::entry_value()
+    }
+
+    fn meet(&self, a: &D, b: &D) -> D {
+        a.meet(b)
+    }
+
+    fn transfer(&self, cfg: &Cfg<I>, block: BlockId, input: &D) -> D {
+        let mut state = input.clone();
+        for inst in cfg.block(block).instructions() {
+            state = D::transfer(&state, inst);
+        }
+        state
+    }
 }
 
 /// Run abstract interpretation over a CFG.
 ///
-/// Forward analysis using a worklist algorithm. The abstract domain `D`
-/// determines both the lattice and the per-instruction transfer function.
+/// Forward analysis delegating to the generic fixpoint solver.
+/// The abstract domain `D` determines both the lattice and the
+/// per-instruction transfer function.
 pub fn abstract_interpret<I, D: AbstractDomain<I>>(cfg: &Cfg<I>) -> AbstractResult<D> {
-    let rpo = cfg.reverse_postorder();
-    let n = rpo.len();
-    let mut block_in: BTreeMap<BlockId, D> = BTreeMap::new();
-    let mut block_out: BTreeMap<BlockId, D> = BTreeMap::new();
+    let problem = AbstractProblem::<D> {
+        _marker: core::marker::PhantomData,
+    };
+    let result = fixpoint::solve(cfg, &problem);
 
-    // Initialise.
-    for &bid in &rpo {
-        block_in.insert(bid, D::bottom());
-        block_out.insert(bid, D::bottom());
-    }
-    block_in.insert(cfg.entry(), D::entry_value());
-
-    let mut worklist: Vec<BlockId> = rpo.clone();
-    let mut iterations = 0usize;
-    let max_iter = n.saturating_mul(20).max(200);
-
-    while let Some(bid) = worklist.pop() {
-        iterations += 1;
-        if iterations > max_iter {
-            break;
-        }
-
-        // Compute IN = meet of all predecessors' OUT.
-        let mut incoming = D::top();
-        let mut has_pred = false;
-        for pred in cfg.predecessors(bid) {
-            has_pred = true;
-            if let Some(out) = block_out.get(&pred) {
-                incoming = incoming.meet(out);
-            }
-        }
-        if !has_pred {
-            incoming = block_in.get(&bid).cloned().unwrap_or_else(D::bottom);
-        }
-
-        // Transfer through all instructions.
-        let mut state = incoming.clone();
-        for inst in cfg.block(bid).instructions() {
-            state = D::transfer(&state, inst);
-        }
-
-        let old_out = block_out.get(&bid).cloned().unwrap_or_else(D::bottom);
-        if state != old_out {
-            block_in.insert(bid, incoming);
-            block_out.insert(bid, state);
-            // Add successors to worklist.
-            for succ in cfg.successors(bid) {
-                if !worklist.contains(&succ) {
-                    worklist.push(succ);
-                }
-            }
-        }
+    // Convert Vec-indexed results to BTreeMap-keyed results.
+    let mut block_in = BTreeMap::new();
+    let mut block_out = BTreeMap::new();
+    for b in cfg.blocks() {
+        block_in.insert(b.id(), result.fact_in(b.id()).clone());
+        block_out.insert(b.id(), result.fact_out(b.id()).clone());
     }
 
     AbstractResult {
         block_in,
         block_out,
-        iterations,
     }
 }
 
@@ -178,7 +172,9 @@ mod tests {
         cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let result: AbstractResult<Sign> = abstract_interpret(&cfg);
-        assert!(result.iterations > 0);
+        // Entry block out should be present and equal to entry value
+        // (identity transfer).
         assert!(result.block_out.contains_key(&cfg.entry()));
+        assert_eq!(result.block_out[&cfg.entry()], Sign::Zero);
     }
 }

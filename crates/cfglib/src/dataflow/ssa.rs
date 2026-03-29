@@ -201,4 +201,41 @@ mod tests {
             assert!(df.frontier(b.id()).is_empty());
         }
     }
+
+    #[test]
+    fn single_block_no_phis() {
+        let cfg: Cfg<DfInst> = Cfg::new();
+        let dom = DominatorTree::compute(&cfg);
+        let phis = insert_phis(&cfg, &dom);
+        assert_eq!(phis.total_phis(), 0);
+    }
+
+    #[test]
+    fn self_loop_does_not_crash() {
+        // A self-loop should not cause infinite loops or panics in SSA.
+        use crate::edge::EdgeKind;
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        cfg.block_mut(cfg.entry()).push(df_def("def r0", 0));
+        cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
+        let dom = DominatorTree::compute(&cfg);
+        let _df = DominanceFrontiers::compute(&cfg, &dom);
+        let _phis = insert_phis(&cfg, &dom);
+        // Primarily a crash/hang test — just verify it completes.
+    }
+
+    #[test]
+    fn unreachable_block_no_crash() {
+        // Ensure SSA construction handles unreachable blocks gracefully.
+        use crate::edge::EdgeKind;
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        let reachable = cfg.new_block();
+        let _unreachable = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(df_def("a", 0));
+        cfg.block_mut(reachable).push(df_use("b", 0));
+        cfg.add_edge(cfg.entry(), reachable, EdgeKind::Fallthrough);
+        let dom = DominatorTree::compute(&cfg);
+        let phis = insert_phis(&cfg, &dom);
+        // Should not crash, no phis needed.
+        assert_eq!(phis.total_phis(), 0);
+    }
 }
