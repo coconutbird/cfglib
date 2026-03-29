@@ -5,7 +5,7 @@ extern crate alloc;
 use crate::block::BlockId;
 
 /// Opaque identifier for an edge within a [`Cfg`](crate::Cfg).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EdgeId(pub(crate) u32);
 

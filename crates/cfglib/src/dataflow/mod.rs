@@ -20,6 +20,7 @@ pub mod fixpoint;
 pub mod liveness;
 pub mod reaching;
 pub mod ssa;
+pub mod ssa_destruct;
 
 use crate::block::BlockId;
 

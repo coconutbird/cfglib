@@ -91,22 +91,29 @@ pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff, cfg_diff};
 pub use graph::dominator::DominatorTree;
 pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
 pub use graph::pdg::{Dependence, ProgramDependenceGraph};
+pub use graph::reverse::reverse_cfg;
 pub use graph::scc::{Scc, SccResult, tarjan_scc};
 pub use graph::structure::{
     BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, find_back_edges,
     insert_preheader, loop_exit_blocks,
 };
+pub use graph::verify::{VerifyError, VerifyResult, verify};
 
 // ── Re-exports: Analyses ────────────────────────────────────────────
 
 pub use analysis::expr::{
     BlockExprTrees, ExprInstr, ExprNode, recover_block_expressions, recover_expressions,
 };
+pub use analysis::metrics::{CfgMetrics, cfg_metrics};
+pub use analysis::tailcall::{TailCall, detect_tail_calls};
 pub use dataflow::constprop::{ConstPropProblem, ConstValue, ConstantFolder, constant_propagation};
 pub use dataflow::copyprop::{CopyPropResult, CopySource, copy_propagation};
+pub use dataflow::ssa_destruct::{PhiCopy, copies_by_predecessor, eliminate_phis};
 
 // ── Re-exports: Transforms & linearization ──────────────────────────
 
+pub use transform::contract::{contract_edge, split_node};
+pub use transform::loops::{RotationResult, find_loop_invariants, rotate_loop};
 pub use transform::{
     BlockOrder, Emitter, LinearInst, dead_code_elimination, linearize, merge_blocks,
     remove_empty_blocks, remove_unreachable, simplify, split_critical_edges,

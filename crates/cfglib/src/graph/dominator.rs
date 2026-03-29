@@ -134,6 +134,44 @@ impl DominatorTree {
         result
     }
 
+    /// Compute the depth of a block in the dominator tree.
+    ///
+    /// The entry block (or root) has depth 0. Each step toward a leaf
+    /// adds 1. Returns `None` if the block is unreachable (has no idom
+    /// chain to the root).
+    pub fn depth(&self, block: BlockId) -> Option<usize> {
+        let mut d = 0;
+        let mut cur = block;
+        loop {
+            match self.idom[cur.index()] {
+                None => return Some(d), // reached root
+                Some(parent) => {
+                    if parent == cur {
+                        return Some(d); // self-loop at root
+                    }
+                    d += 1;
+                    cur = parent;
+                }
+            }
+        }
+    }
+
+    /// Compute depths for all blocks at once.
+    ///
+    /// Returns a vector indexed by block index. Unreachable blocks get
+    /// `usize::MAX`.
+    pub fn depths(&self) -> Vec<usize> {
+        let n = self.idom.len();
+        let mut result = vec![usize::MAX; n];
+        for (i, slot) in result.iter_mut().enumerate().take(n) {
+            let bid = BlockId::from_raw(i as u32);
+            if let Some(d) = self.depth(bid) {
+                *slot = d;
+            }
+        }
+        result
+    }
+
     /// Compute the **post-dominator** tree for the given CFG.
     ///
     /// Post-dominators are computed by introducing a virtual exit node
