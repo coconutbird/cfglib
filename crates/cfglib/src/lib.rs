@@ -20,19 +20,33 @@
 #![no_std]
 extern crate alloc;
 
+pub mod ast;
 pub mod block;
 pub mod builder;
 pub mod cfg;
+pub mod dataflow;
+pub mod defuse;
 pub mod dominator;
 pub mod dot;
 pub mod edge;
+pub mod fixpoint;
 pub mod flow;
+pub mod liveness;
+pub mod lift;
+pub mod reaching;
 pub mod traverse;
 
 // Re-exports for convenience.
+pub use ast::AstNode;
 pub use block::{BasicBlock, BlockId};
 pub use builder::CfgBuilder;
 pub use cfg::Cfg;
+pub use dataflow::{DataDeps, DefSite, Location, UseSite};
+pub use defuse::DefUseChains;
 pub use dominator::DominatorTree;
 pub use edge::{Edge, EdgeId, EdgeKind};
+pub use fixpoint::{Direction, FixpointResult, Problem};
 pub use flow::{FlowControl, FlowEffect};
+pub use lift::lift;
+pub use liveness::Liveness;
+pub use reaching::ReachingDefs;
