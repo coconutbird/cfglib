@@ -1,8 +1,15 @@
 [package]
 name = "cfglib"
-version = "0.1.0"
-edition = "2024"
-description = "Generic control-flow graph library for binary analysis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+keywords.workspace = true
+categories.workspace = true
+description = "Generic, no_std control-flow graph library for binary analysis, decompilation, and compiler infrastructure"
+readme = "../../README.md"
 
 [features]
 default = []

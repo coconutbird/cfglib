@@ -8,3 +8,6 @@ edition = "2024"
 license = "MIT"
 repository = "https://github.com/coconutbird/cfglib"
 authors = ["coconutbird"]
+rust-version = "1.85"
+keywords = ["cfg", "control-flow", "compiler", "binary-analysis", "decompiler"]
+categories = ["compilers", "no-std"]
