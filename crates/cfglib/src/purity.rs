@@ -127,13 +127,13 @@ mod tests {
 
     #[test]
     fn pure_cfg() {
-        let cfg = CfgBuilder::build(vec![pure("add"), pure("mul")]);
+        let cfg = CfgBuilder::build(vec![pure("add"), pure("mul")]).unwrap();
         assert!(cfg_purity(&cfg).is_pure());
     }
 
     #[test]
     fn impure_cfg() {
-        let cfg = CfgBuilder::build(vec![pure("add"), impure("store", Effect::MemoryWrite)]);
+        let cfg = CfgBuilder::build(vec![pure("add"), impure("store", Effect::MemoryWrite)]).unwrap();
         let p = cfg_purity(&cfg);
         assert!(p.is_impure());
         if let Purity::Impure(effs) = p {
@@ -150,7 +150,7 @@ mod tests {
             PInst { effect: FlowEffect::ConditionalAlternate, name: "else", side: vec![] },
             pure("nop"),
             PInst { effect: FlowEffect::ConditionalClose, name: "endif", side: vec![] },
-        ]);
+        ]).unwrap();
         // Entry block (has "add") should be pure.
         assert!(block_purity(&cfg, cfg.entry()).is_pure());
         // The whole CFG is impure because one branch stores.

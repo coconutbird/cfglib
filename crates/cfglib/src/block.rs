@@ -47,9 +47,9 @@ impl<I> BasicBlock<I> {
         &self.instructions
     }
 
-    /// Mutable access to the instructions.
+    /// Mutable access to the instructions (as a slice).
     #[inline]
-    pub fn instructions_mut(&mut self) -> &mut Vec<I> {
+    pub fn instructions_mut(&mut self) -> &mut [I] {
         &mut self.instructions
     }
 

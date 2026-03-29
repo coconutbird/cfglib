@@ -7,14 +7,14 @@
 //!
 //! # Quick start
 //!
-//! ```ignore
+//! ```rust,no_run
 //! use cfglib::{Cfg, CfgBuilder, FlowControl, FlowEffect};
 //!
 //! // 1. Implement FlowControl for your instruction type.
 //! // 2. Build the CFG:
-//! let cfg = CfgBuilder::build(instructions);
+//! // let cfg = CfgBuilder::build(instructions)?;
 //! // 3. Traverse, compute dominators, or export to DOT:
-//! println!("{}", cfg.to_dot());
+//! // println!("{}", cfg.to_dot());
 //! ```
 
 #![no_std]
@@ -33,9 +33,13 @@ pub mod ast;
 pub mod dataflow;
 pub mod graph;
 
+// Shared test utilities.
+#[cfg(test)]
+pub(crate) mod test_util;
+
 // Re-exports — core types for building and traversing CFGs.
 pub use block::{BasicBlock, BlockId};
-pub use builder::CfgBuilder;
+pub use builder::{BuildError, CfgBuilder};
 pub use cfg::Cfg;
 pub use edge::{Edge, EdgeId, EdgeKind};
 pub use flow::{FlowControl, FlowEffect};

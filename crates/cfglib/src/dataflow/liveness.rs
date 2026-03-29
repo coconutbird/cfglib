@@ -147,7 +147,7 @@ mod tests {
         // bb0: def r0; use r0
         // r0 should be live-in (because use reads it) and NOT live-out
         // (nothing after the block reads it).
-        let cfg = CfgBuilder::build(vec![def("def_r0", 0), use_("use_r0", 0)]);
+        let cfg = CfgBuilder::build(vec![def("def_r0", 0), use_("use_r0", 0)]).unwrap();
         let live = Liveness::compute(&cfg);
         // r0 is used in the block → live-in should contain r0
         // (the def kills it, but the use is after the def so
@@ -160,7 +160,7 @@ mod tests {
     #[test]
     fn liveness_use_without_def_is_live_in() {
         // bb0: use r0 (no def) → r0 should be live-in
-        let cfg = CfgBuilder::build(vec![use_("use_r0", 0)]);
+        let cfg = CfgBuilder::build(vec![use_("use_r0", 0)]).unwrap();
         let live = Liveness::compute(&cfg);
         assert!(live.is_live_in(Location(0), cfg.entry()));
     }
@@ -168,7 +168,7 @@ mod tests {
     #[test]
     fn liveness_dead_def() {
         // bb0: def r0 (never used) → r0 should NOT be live anywhere
-        let cfg = CfgBuilder::build(vec![def("def_r0", 0)]);
+        let cfg = CfgBuilder::build(vec![def("def_r0", 0)]).unwrap();
         let live = Liveness::compute(&cfg);
         assert!(!live.is_live_in(Location(0), cfg.entry()));
         assert!(!live.is_live_out(Location(0), cfg.entry()));
@@ -187,7 +187,7 @@ mod tests {
             use_("use_r0", 0),
             DfInst { effect: FlowEffect::ConditionalAlternate, name: "else", uses: vec![], defs: vec![] },
             DfInst { effect: FlowEffect::ConditionalClose, name: "endif", uses: vec![], defs: vec![] },
-        ]);
+        ]).unwrap();
         let live = Liveness::compute(&cfg);
         assert!(live.is_live_out(Location(0), cfg.entry()),
             "r0 is live-out of entry because the true branch uses it");

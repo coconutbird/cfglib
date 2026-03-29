@@ -37,10 +37,10 @@ pub struct BackEdge {
 pub fn find_back_edges<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackEdge> {
     let mut backs = Vec::new();
     for edge in cfg.edges() {
-        if edge.kind == EdgeKind::Back || dom.dominates(edge.target, edge.source) {
+        if edge.kind() == EdgeKind::Back || dom.dominates(edge.target(), edge.source()) {
             backs.push(BackEdge {
-                tail: edge.source,
-                header: edge.target,
+                tail: edge.source(),
+                header: edge.target(),
             });
         }
     }
@@ -103,17 +103,21 @@ pub fn detect_loops<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
         });
     }
 
-    // Compute nesting depth: a loop L1 is nested inside L2 if
-    // L1.header ∈ L2.body and L1 ≠ L2.
-    let n = loops.len();
-    for i in 0..n {
-        let mut d = 0u32;
-        for j in 0..n {
-            if i != j && loops[j].body.contains(&loops[i].header) {
-                d += 1;
+    // Compute nesting depth in O(L × max_body) instead of O(L²):
+    // Build a map from block → number of loops containing it, then
+    // each loop's depth = (count of its header) − 1 (itself).
+    {
+        let block_count = cfg.num_blocks();
+        let mut containing: Vec<u32> = alloc::vec![0; block_count];
+        for lp in &loops {
+            for &b in &lp.body {
+                containing[b.index()] += 1;
             }
         }
-        loops[i].depth = d as usize;
+        for lp in loops.iter_mut() {
+            // Every loop's body includes its own header, so subtract 1.
+            lp.depth = (containing[lp.header.index()] - 1) as usize;
+        }
     }
 
     // Sort by depth (outermost first), then by header.
@@ -123,52 +127,69 @@ pub fn detect_loops<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
 
 /// Whether the CFG is reducible.
 ///
-/// A CFG is **reducible** if every back-edge `t → h` has the
-/// property that `h` dominates `t`. Since the builder already
-/// classifies back-edges, we just verify that no edge classified
-/// as `Back` violates the dominance property, and that there are
-/// no "cross" edges that create irreducible loops.
+/// A CFG is **reducible** if and only if every cycle in the graph
+/// contains a node that dominates all other nodes in that cycle.
+/// Equivalently, every retreating edge in a DFS is a back-edge
+/// (target dominates source).
+///
+/// This implementation checks every edge in the CFG: if `target`
+/// dominates `source` the edge is a natural back-edge (fine); any
+/// other edge where `target` was already visited but does **not**
+/// dominate `source` witnesses an irreducible cycle.
 pub fn is_reducible<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> bool {
-    for edge in cfg.edges() {
-        // An edge where the target dominates the source is a valid
-        // back-edge (natural loop). Any other edge that creates a
-        // cycle without the target dominating the source makes the
-        // CFG irreducible.
-        if edge.kind == EdgeKind::Back && !dom.dominates(edge.target, edge.source) {
-            return false;
+    // DFS to classify edges. An edge to an ancestor that doesn't
+    // dominate the source is irreducible.
+    let n = cfg.num_blocks();
+    if n == 0 {
+        return true;
+    }
+
+    const WHITE: u8 = 0;
+    const GRAY: u8 = 1;
+    const BLACK: u8 = 2;
+
+    let mut color = alloc::vec![WHITE; n];
+    let mut stack: Vec<(BlockId, bool)> = alloc::vec![(cfg.entry(), false)];
+
+    while let Some((node, processed)) = stack.pop() {
+        if processed {
+            color[node.index()] = BLACK;
+            continue;
+        }
+        if color[node.index()] != WHITE {
+            continue;
+        }
+        color[node.index()] = GRAY;
+        stack.push((node, true));
+
+        for succ in cfg.successors(node) {
+            match color[succ.index()] {
+                WHITE => stack.push((succ, false)),
+                GRAY => {
+                    // Retreating edge — must be a natural back-edge.
+                    if !dom.dominates(succ, node) {
+                        return false;
+                    }
+                }
+                _ => {} // Cross/forward edge — fine.
+            }
         }
     }
-    // Additionally check: are there non-Back edges that look like
-    // back-edges (target dominates source)? If so the builder
-    // mis-classified them but the CFG is still reducible.
-    // The real irreducibility test: attempt to collapse all natural
-    // loops — if any cycle remains it's irreducible.
-    // For our builder-constructed CFGs this simple check suffices.
     true
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::borrow::Cow;
     use alloc::vec;
     use crate::builder::CfgBuilder;
     use crate::graph::dominator::DominatorTree;
-    use crate::flow::{FlowControl, FlowEffect};
-
-    #[derive(Debug, Clone)]
-    struct MockInst(FlowEffect, &'static str);
-
-    impl FlowControl for MockInst {
-        fn flow_effect(&self) -> FlowEffect { self.0 }
-        fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.1) }
-    }
-
-    fn ff(name: &'static str) -> MockInst { MockInst(FlowEffect::Fallthrough, name) }
+    use crate::flow::FlowEffect;
+    use crate::test_util::{MockInst, ff};
 
     #[test]
     fn no_loops_in_linear_cfg() {
-        let cfg = CfgBuilder::build(vec![ff("a"), ff("b"), ff("c")]);
+        let cfg = CfgBuilder::build(vec![ff("a"), ff("b"), ff("c")]).unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert!(loops.is_empty());
@@ -181,7 +202,7 @@ mod tests {
             ff("body"),
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert_eq!(loops.len(), 1);
@@ -199,7 +220,7 @@ mod tests {
             MockInst(FlowEffect::ConditionalBreak, "breakc_outer"),
             MockInst(FlowEffect::LoopClose, "end_outer"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert_eq!(loops.len(), 2);
@@ -215,7 +236,7 @@ mod tests {
             MockInst(FlowEffect::ConditionalBreak, "breakc"),
             ff("body"),
             MockInst(FlowEffect::LoopClose, "endloop"),
-        ]);
+        ]).unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert_eq!(loops.len(), 1);
@@ -223,7 +244,7 @@ mod tests {
 
     #[test]
     fn linear_cfg_is_reducible() {
-        let cfg = CfgBuilder::build(vec![ff("a"), ff("b")]);
+        let cfg = CfgBuilder::build(vec![ff("a"), ff("b")]).unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(is_reducible(&cfg, &dom));
     }
@@ -234,7 +255,7 @@ mod tests {
             MockInst(FlowEffect::LoopOpen, "loop"),
             ff("body"),
             MockInst(FlowEffect::LoopClose, "endloop"),
-        ]);
+        ]).unwrap();
         let dom = DominatorTree::compute(&cfg);
         assert!(is_reducible(&cfg, &dom));
     }
@@ -247,7 +268,7 @@ mod tests {
             MockInst(FlowEffect::ConditionalAlternate, "else"),
             ff("else_body"),
             MockInst(FlowEffect::ConditionalClose, "endif"),
-        ]);
+        ]).unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert!(loops.is_empty());

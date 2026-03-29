@@ -3,11 +3,52 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use core::fmt;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::edge::EdgeKind;
 use crate::flow::{FlowControl, FlowEffect};
+
+/// Error returned when the instruction stream contains mismatched or
+/// unexpected structured control-flow markers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BuildError {
+    /// An `else` was encountered without a matching `if` scope.
+    UnmatchedElse,
+    /// An `endif` was encountered without a matching `if` scope.
+    UnmatchedEndIf,
+    /// An `endswitch` was encountered without a matching `switch` scope.
+    UnmatchedEndSwitch,
+    /// A `case` / `default` was encountered outside a `switch` scope.
+    UnmatchedSwitchCase,
+    /// An `endloop` was encountered without a matching `loop` scope.
+    UnmatchedEndLoop,
+    /// A `break` was encountered outside any breakable scope.
+    BreakOutsideScope,
+    /// A `continue` was encountered outside any loop scope.
+    ContinueOutsideLoop,
+    /// Scopes were still open at the end of the instruction stream.
+    UnclosedScopes {
+        /// Number of scopes remaining.
+        remaining: usize,
+    },
+}
+
+impl fmt::Display for BuildError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnmatchedElse => write!(f, "encountered `else` without matching `if`"),
+            Self::UnmatchedEndIf => write!(f, "encountered `endif` without matching `if`"),
+            Self::UnmatchedEndSwitch => write!(f, "encountered `endswitch` without matching `switch`"),
+            Self::UnmatchedSwitchCase => write!(f, "encountered `case` outside a `switch`"),
+            Self::UnmatchedEndLoop => write!(f, "encountered `endloop` without matching `loop`"),
+            Self::BreakOutsideScope => write!(f, "`break` outside any breakable scope"),
+            Self::ContinueOutsideLoop => write!(f, "`continue` outside any loop scope"),
+            Self::UnclosedScopes { remaining } => write!(f, "{remaining} unclosed scope(s) at end of input"),
+        }
+    }
+}
 
 /// Scope frames pushed onto the builder's stack to track structured regions.
 enum Scope {
@@ -46,8 +87,12 @@ pub struct CfgBuilder;
 impl CfgBuilder {
     /// Build a CFG from a flat instruction stream.
     ///
-    /// Declarations ([`FlowEffect::Declaration`]) are silently discarded.
-    pub fn build<I: FlowControl>(instructions: impl IntoIterator<Item = I>) -> Cfg<I> {
+    /// Returns an error if the instruction stream contains mismatched
+    /// structured control-flow markers (e.g. `else` without `if`).
+    ///
+    /// Declarations ([`FlowEffect::Declaration`]) are stored in the
+    /// current block but do not affect control flow.
+    pub fn build<I: FlowControl>(instructions: impl IntoIterator<Item = I>) -> Result<Cfg<I>, BuildError> {
         let mut cfg = Cfg {
             blocks: Vec::new(),
             edges: Vec::new(),
@@ -62,8 +107,6 @@ impl CfgBuilder {
         for inst in instructions {
             match inst.flow_effect() {
                 FlowEffect::Declaration => {
-                    // Skip declarations — they don't affect control flow.
-                    // Still store them in the current block for completeness.
                     cfg.block_mut(current).instructions.push(inst);
                 }
 
@@ -72,7 +115,6 @@ impl CfgBuilder {
                 }
 
                 FlowEffect::ConditionalOpen => {
-                    // `if` — end current block, start true-arm.
                     cfg.block_mut(current).instructions.push(inst);
                     let true_block = cfg.new_block();
                     cfg.add_edge(current, true_block, EdgeKind::ConditionalTrue);
@@ -84,47 +126,39 @@ impl CfgBuilder {
                 }
 
                 FlowEffect::ConditionalAlternate => {
-                    // `else` — end current arm, start the else arm.
-                    if let Some(Scope::If {
-                        pre_block,
-                        arm_exits,
-                    }) = scopes.last_mut()
-                    {
-                        arm_exits.push(current);
-                        let alt_block = cfg.new_block();
-                        cfg.add_edge(*pre_block, alt_block, EdgeKind::ConditionalFalse);
-                        cfg.block_mut(alt_block).instructions.push(inst);
-                        current = alt_block;
+                    match scopes.last_mut() {
+                        Some(Scope::If { pre_block, arm_exits }) => {
+                            arm_exits.push(current);
+                            let alt_block = cfg.new_block();
+                            cfg.add_edge(*pre_block, alt_block, EdgeKind::ConditionalFalse);
+                            cfg.block_mut(alt_block).instructions.push(inst);
+                            current = alt_block;
+                        }
+                        _ => return Err(BuildError::UnmatchedElse),
                     }
                 }
 
                 FlowEffect::ConditionalClose => {
-                    // `endif` — merge all arms.
-                    let merge = cfg.new_block();
-                    if let Some(Scope::If {
-                        pre_block,
-                        mut arm_exits,
-                    }) = scopes.pop()
-                    {
-                        // Current block is the last arm.
-                        arm_exits.push(current);
-                        for exit in &arm_exits {
-                            cfg.add_edge(*exit, merge, EdgeKind::Fallthrough);
+                    match scopes.pop() {
+                        Some(Scope::If { pre_block, mut arm_exits }) => {
+                            let merge = cfg.new_block();
+                            arm_exits.push(current);
+                            for exit in &arm_exits {
+                                cfg.add_edge(*exit, merge, EdgeKind::Fallthrough);
+                            }
+                            let has_false_edge = cfg.successor_edges(pre_block).iter().any(|&eid| {
+                                cfg.edge(eid).kind() == EdgeKind::ConditionalFalse
+                            });
+                            if !has_false_edge {
+                                cfg.add_edge(pre_block, merge, EdgeKind::ConditionalFalse);
+                            }
+                            current = merge;
                         }
-                        // If there was no else, the pre_block also
-                        // falls through to merge (false edge).
-                        let has_false_edge = cfg.successor_edges(pre_block).iter().any(|&eid| {
-                            cfg.edge(eid).kind == EdgeKind::ConditionalFalse
-                        });
-                        if !has_false_edge {
-                            cfg.add_edge(pre_block, merge, EdgeKind::ConditionalFalse);
-                        }
+                        _ => return Err(BuildError::UnmatchedEndIf),
                     }
-                    current = merge;
                 }
 
                 FlowEffect::SwitchOpen => {
-                    // `switch` — end current block, start first case arm.
                     cfg.block_mut(current).instructions.push(inst);
                     let first_case = cfg.new_block();
                     cfg.add_edge(current, first_case, EdgeKind::SwitchCase);
@@ -137,44 +171,36 @@ impl CfgBuilder {
                 }
 
                 FlowEffect::SwitchCase => {
-                    // `case` / `default` — end current arm, start new arm.
-                    if let Some(Scope::Switch {
-                        pre_block,
-                        arm_exits,
-                        ..
-                    }) = scopes.last_mut()
-                    {
-                        arm_exits.push(current);
-                        let case_block = cfg.new_block();
-                        cfg.add_edge(*pre_block, case_block, EdgeKind::SwitchCase);
-                        cfg.block_mut(case_block).instructions.push(inst);
-                        current = case_block;
+                    match scopes.last_mut() {
+                        Some(Scope::Switch { pre_block, arm_exits, .. }) => {
+                            arm_exits.push(current);
+                            let case_block = cfg.new_block();
+                            cfg.add_edge(*pre_block, case_block, EdgeKind::SwitchCase);
+                            cfg.block_mut(case_block).instructions.push(inst);
+                            current = case_block;
+                        }
+                        _ => return Err(BuildError::UnmatchedSwitchCase),
                     }
                 }
 
                 FlowEffect::SwitchClose => {
-                    // `endswitch` — merge all arms + breaks.
-                    let merge = cfg.new_block();
-                    if let Some(Scope::Switch {
-                        mut arm_exits,
-                        break_exits,
-                        ..
-                    }) = scopes.pop()
-                    {
-                        // Current block is the last arm.
-                        arm_exits.push(current);
-                        for exit in &arm_exits {
-                            cfg.add_edge(*exit, merge, EdgeKind::Fallthrough);
+                    match scopes.pop() {
+                        Some(Scope::Switch { mut arm_exits, break_exits, .. }) => {
+                            let merge = cfg.new_block();
+                            arm_exits.push(current);
+                            for exit in &arm_exits {
+                                cfg.add_edge(*exit, merge, EdgeKind::Fallthrough);
+                            }
+                            for brk in &break_exits {
+                                cfg.add_edge(*brk, merge, EdgeKind::Unconditional);
+                            }
+                            current = merge;
                         }
-                        for brk in &break_exits {
-                            cfg.add_edge(*brk, merge, EdgeKind::Unconditional);
-                        }
+                        _ => return Err(BuildError::UnmatchedEndSwitch),
                     }
-                    current = merge;
                 }
 
                 FlowEffect::LoopOpen => {
-                    // Start a loop — the current block falls through to the header.
                     cfg.block_mut(current).instructions.push(inst);
                     let header = cfg.new_block();
                     cfg.add_edge(current, header, EdgeKind::Fallthrough);
@@ -186,34 +212,33 @@ impl CfgBuilder {
                 }
 
                 FlowEffect::LoopClose => {
-                    // End a loop — back edge to header, wire breaks to post-loop.
-                    if let Some(Scope::Loop {
-                        header,
-                        break_exits,
-                    }) = scopes.pop()
-                    {
-                        cfg.add_edge(current, header, EdgeKind::Back);
-                        let post_loop = cfg.new_block();
-                        for brk in &break_exits {
-                            cfg.add_edge(*brk, post_loop, EdgeKind::Unconditional);
+                    match scopes.pop() {
+                        Some(Scope::Loop { header, break_exits }) => {
+                            cfg.add_edge(current, header, EdgeKind::Back);
+                            let post_loop = cfg.new_block();
+                            for brk in &break_exits {
+                                cfg.add_edge(*brk, post_loop, EdgeKind::Unconditional);
+                            }
+                            current = post_loop;
                         }
-                        current = post_loop;
+                        _ => return Err(BuildError::UnmatchedEndLoop),
                     }
                 }
 
                 FlowEffect::Break => {
                     cfg.block_mut(current).instructions.push(inst);
-                    // Register this block as a break target on the innermost
-                    // breakable scope (loop or switch).
-                    for scope in scopes.iter_mut().rev() {
+                    let found = scopes.iter_mut().rev().any(|scope| {
                         match scope {
                             Scope::Loop { break_exits, .. }
                             | Scope::Switch { break_exits, .. } => {
                                 break_exits.push(current);
-                                break;
+                                true
                             }
-                            _ => {}
+                            _ => false,
                         }
+                    });
+                    if !found {
+                        return Err(BuildError::BreakOutsideScope);
                     }
                     current = cfg.new_block();
                 }
@@ -224,26 +249,34 @@ impl CfgBuilder {
                     let cont_block = cfg.new_block();
                     cfg.add_edge(current, break_block, EdgeKind::ConditionalTrue);
                     cfg.add_edge(current, cont_block, EdgeKind::ConditionalFalse);
-                    for scope in scopes.iter_mut().rev() {
+                    let found = scopes.iter_mut().rev().any(|scope| {
                         match scope {
                             Scope::Loop { break_exits, .. }
                             | Scope::Switch { break_exits, .. } => {
                                 break_exits.push(break_block);
-                                break;
+                                true
                             }
-                            _ => {}
+                            _ => false,
                         }
+                    });
+                    if !found {
+                        return Err(BuildError::BreakOutsideScope);
                     }
                     current = cont_block;
                 }
 
                 FlowEffect::Continue => {
                     cfg.block_mut(current).instructions.push(inst);
-                    for scope in scopes.iter().rev() {
+                    let found = scopes.iter().rev().any(|scope| {
                         if let Scope::Loop { header, .. } = scope {
                             cfg.add_edge(current, *header, EdgeKind::Back);
-                            break;
+                            true
+                        } else {
+                            false
                         }
+                    });
+                    if !found {
+                        return Err(BuildError::ContinueOutsideLoop);
                     }
                     current = cfg.new_block();
                 }
@@ -251,11 +284,16 @@ impl CfgBuilder {
                 FlowEffect::ConditionalContinue => {
                     cfg.block_mut(current).instructions.push(inst);
                     let cont_block = cfg.new_block();
-                    for scope in scopes.iter().rev() {
+                    let found = scopes.iter().rev().any(|scope| {
                         if let Scope::Loop { header, .. } = scope {
                             cfg.add_edge(current, *header, EdgeKind::ConditionalTrue);
-                            break;
+                            true
+                        } else {
+                            false
                         }
+                    });
+                    if !found {
+                        return Err(BuildError::ContinueOutsideLoop);
                     }
                     cfg.add_edge(current, cont_block, EdgeKind::ConditionalFalse);
                     current = cont_block;
@@ -263,8 +301,6 @@ impl CfgBuilder {
 
                 FlowEffect::Return => {
                     cfg.block_mut(current).instructions.push(inst);
-                    // Terminal — no successor. Start a new unreachable block
-                    // in case there are more instructions.
                     current = cfg.new_block();
                 }
 
@@ -274,23 +310,19 @@ impl CfgBuilder {
                     let cont_block = cfg.new_block();
                     cfg.add_edge(current, ret_block, EdgeKind::ConditionalTrue);
                     cfg.add_edge(current, cont_block, EdgeKind::ConditionalFalse);
-                    // ret_block is terminal (no successors).
                     current = cont_block;
                 }
 
                 FlowEffect::Call | FlowEffect::ConditionalCall => {
-                    // For now, treat calls as fallthrough (intra-procedural CFG).
                     cfg.block_mut(current).instructions.push(inst);
                 }
 
                 FlowEffect::Terminate => {
                     cfg.block_mut(current).instructions.push(inst);
-                    // Terminal — like return but for discard/abort.
                     current = cfg.new_block();
                 }
 
                 FlowEffect::Label => {
-                    // End the current block and start a new labeled block.
                     let label_block = cfg.new_block();
                     if !cfg.block(current).is_empty() {
                         cfg.add_edge(current, label_block, EdgeKind::Fallthrough);
@@ -301,10 +333,14 @@ impl CfgBuilder {
             }
         }
 
+        if !scopes.is_empty() {
+            return Err(BuildError::UnclosedScopes { remaining: scopes.len() });
+        }
+
         // Remove trailing empty blocks with no predecessors.
         Self::trim_trailing_empty(&mut cfg);
 
-        cfg
+        Ok(cfg)
     }
 
     /// Remove empty blocks at the end that have no predecessors (dead code
@@ -327,29 +363,12 @@ impl CfgBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::borrow::Cow;
     use alloc::vec;
-
-    /// A mock instruction for testing the CFG builder.
-    #[derive(Debug, Clone)]
-    struct MockInst(FlowEffect, &'static str);
-
-    impl FlowControl for MockInst {
-        fn flow_effect(&self) -> FlowEffect {
-            self.0
-        }
-        fn display_mnemonic(&self) -> Cow<'_, str> {
-            Cow::Borrowed(self.1)
-        }
-    }
-
-    fn ff(name: &'static str) -> MockInst {
-        MockInst(FlowEffect::Fallthrough, name)
-    }
+    use crate::test_util::{MockInst, ff};
 
     #[test]
     fn linear_block() {
-        let cfg = CfgBuilder::build(vec![ff("a"), ff("b"), ff("c")]);
+        let cfg = CfgBuilder::build(vec![ff("a"), ff("b"), ff("c")]).unwrap();
         assert_eq!(cfg.num_blocks(), 1);
         assert_eq!(cfg.num_edges(), 0);
         assert_eq!(cfg.block(cfg.entry()).instructions().len(), 3);
@@ -360,7 +379,7 @@ mod tests {
         let cfg = CfgBuilder::build(vec![
             ff("a"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // One block with instructions, trailing empty block trimmed.
         assert_eq!(cfg.num_blocks(), 1);
         assert_eq!(cfg.block(cfg.entry()).instructions().len(), 2);
@@ -376,7 +395,7 @@ mod tests {
             MockInst(FlowEffect::ConditionalClose, "endif"),
             ff("c"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // bb0: [a, if]
         // bb1: [b]  (true arm)
         // bb2: []   (merge — c, ret)
@@ -397,7 +416,7 @@ mod tests {
             MockInst(FlowEffect::ConditionalClose, "endif"),
             ff("d"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // bb0: [a, if] → true(bb1), false(bb2)
         // bb1: [b]     → merge(bb3)
         // bb2: [else, c] → merge(bb3)
@@ -414,7 +433,7 @@ mod tests {
             ff("a"),
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // bb0: [loop]       → fallthrough to bb1 (header)
         // bb1: [a]          → back to bb1 (header)
         // bb2: [ret]        (post-loop, unreachable without break)
@@ -430,7 +449,7 @@ mod tests {
             MockInst(FlowEffect::Break, "break"),
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // post-loop block should be reachable from the break.
         assert!(cfg.num_blocks() >= 3);
     }
@@ -445,7 +464,7 @@ mod tests {
             ff("b"),
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // The breakc block should have two successors:
         // - true → break_block (which goes to post-loop)
         // - false → continue block (with b)
@@ -458,7 +477,7 @@ mod tests {
             MockInst(FlowEffect::Declaration, "dcl_temps"),
             ff("a"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // Declarations are included in the block.
         assert_eq!(cfg.num_blocks(), 1);
         assert_eq!(cfg.block(cfg.entry()).instructions().len(), 3);
@@ -472,7 +491,7 @@ mod tests {
             ff("mul"),
             MockInst(FlowEffect::ConditionalClose, "endif"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         let dot = cfg.to_dot();
         assert!(dot.contains("digraph cfg"));
         assert!(dot.contains("bb0"));
@@ -487,7 +506,7 @@ mod tests {
             ff("b"),
             MockInst(FlowEffect::ConditionalClose, "endif"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         let pre = cfg.dfs_preorder();
         // Entry should be first.
         assert_eq!(pre[0], cfg.entry());
@@ -504,7 +523,7 @@ mod tests {
             MockInst(FlowEffect::ConditionalClose, "endif"),
             ff("c"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         let dom = crate::graph::dominator::DominatorTree::compute(&cfg);
         // Entry dominates all blocks.
         for b in cfg.blocks() {
@@ -522,9 +541,9 @@ mod tests {
             ff("b"),
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // The continue should create a back-edge to the header.
-        let has_back = cfg.edges().iter().any(|e| e.kind == EdgeKind::Back);
+        let has_back = cfg.edges().iter().any(|e| e.kind() == EdgeKind::Back);
         assert!(has_back);
         assert!(cfg.num_blocks() >= 3);
     }
@@ -539,10 +558,10 @@ mod tests {
             ff("b"),
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // continuec block has two successors: true->header, false->continue
-        let has_cond_true = cfg.edges().iter().any(|e| e.kind == EdgeKind::ConditionalTrue);
-        let has_cond_false = cfg.edges().iter().any(|e| e.kind == EdgeKind::ConditionalFalse);
+        let has_cond_true = cfg.edges().iter().any(|e| e.kind() == EdgeKind::ConditionalTrue);
+        let has_cond_false = cfg.edges().iter().any(|e| e.kind() == EdgeKind::ConditionalFalse);
         assert!(has_cond_true);
         assert!(has_cond_false);
         assert!(cfg.num_blocks() >= 4);
@@ -556,10 +575,10 @@ mod tests {
             MockInst(FlowEffect::ConditionalReturn, "retc"),
             ff("b"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // retc splits into ret_block (terminal) and cont_block (with b).
-        let has_cond_true = cfg.edges().iter().any(|e| e.kind == EdgeKind::ConditionalTrue);
-        let has_cond_false = cfg.edges().iter().any(|e| e.kind == EdgeKind::ConditionalFalse);
+        let has_cond_true = cfg.edges().iter().any(|e| e.kind() == EdgeKind::ConditionalTrue);
+        let has_cond_false = cfg.edges().iter().any(|e| e.kind() == EdgeKind::ConditionalFalse);
         assert!(has_cond_true);
         assert!(has_cond_false);
         assert!(cfg.num_blocks() >= 3);
@@ -573,7 +592,7 @@ mod tests {
             MockInst(FlowEffect::Terminate, "abort"),
             ff("b"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // abort terminates the block; b starts a new (unreachable) block.
         assert!(cfg.num_blocks() >= 2);
     }
@@ -586,10 +605,10 @@ mod tests {
             MockInst(FlowEffect::Label, "label_0"),
             ff("b"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // The label should split into two blocks with a fallthrough edge.
         assert!(cfg.num_blocks() >= 2);
-        let has_fallthrough = cfg.edges().iter().any(|e| e.kind == EdgeKind::Fallthrough);
+        let has_fallthrough = cfg.edges().iter().any(|e| e.kind() == EdgeKind::Fallthrough);
         assert!(has_fallthrough);
     }
 
@@ -606,10 +625,10 @@ mod tests {
             MockInst(FlowEffect::SwitchClose, "endswitch"),
             ff("d"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // switch block dispatches to multiple case arms.
         let switch_edges: Vec<_> = cfg.edges().iter()
-            .filter(|e| e.kind == EdgeKind::SwitchCase)
+            .filter(|e| e.kind() == EdgeKind::SwitchCase)
             .collect();
         assert!(switch_edges.len() >= 2); // at least first case + case + default
         assert!(cfg.num_blocks() >= 5);
@@ -627,10 +646,10 @@ mod tests {
             MockInst(FlowEffect::SwitchClose, "endswitch"),
             ff("c"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // The break should wire to the post-switch merge block.
         let unconditional_edges: Vec<_> = cfg.edges().iter()
-            .filter(|e| e.kind == EdgeKind::Unconditional)
+            .filter(|e| e.kind() == EdgeKind::Unconditional)
             .collect();
         assert!(!unconditional_edges.is_empty());
         assert!(cfg.num_blocks() >= 4);
@@ -648,9 +667,9 @@ mod tests {
             MockInst(FlowEffect::ConditionalClose, "endif"),
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         assert!(cfg.num_blocks() >= 5);
-        let has_back = cfg.edges().iter().any(|e| e.kind == EdgeKind::Back);
+        let has_back = cfg.edges().iter().any(|e| e.kind() == EdgeKind::Back);
         assert!(has_back);
     }
 
@@ -665,9 +684,9 @@ mod tests {
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::ConditionalClose, "endif"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         assert!(cfg.num_blocks() >= 5);
-        let has_back = cfg.edges().iter().any(|e| e.kind == EdgeKind::Back);
+        let has_back = cfg.edges().iter().any(|e| e.kind() == EdgeKind::Back);
         assert!(has_back);
     }
 
@@ -685,11 +704,11 @@ mod tests {
             MockInst(FlowEffect::ConditionalBreak, "breakc"), // exits loop
             MockInst(FlowEffect::LoopClose, "endloop"),
             MockInst(FlowEffect::Return, "ret"),
-        ]);
+        ]).unwrap();
         // The break inside the switch should exit the switch.
         // The breakc after endswitch should exit the loop.
         assert!(cfg.num_blocks() >= 6);
-        let has_back = cfg.edges().iter().any(|e| e.kind == EdgeKind::Back);
+        let has_back = cfg.edges().iter().any(|e| e.kind() == EdgeKind::Back);
         assert!(has_back);
     }
 }

@@ -46,12 +46,12 @@ fn lift_region<I: Clone>(
         current = None;
 
         let succ_edges = cfg.successor_edges(block);
-        let has_ct = succ_edges.iter().any(|&e| cfg.edge(e).kind == EdgeKind::ConditionalTrue);
-        let has_cf = succ_edges.iter().any(|&e| cfg.edge(e).kind == EdgeKind::ConditionalFalse);
-        let has_sw = succ_edges.iter().any(|&e| cfg.edge(e).kind == EdgeKind::SwitchCase);
-        let has_back = succ_edges.iter().any(|&e| cfg.edge(e).kind == EdgeKind::Back);
+        let has_ct = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalTrue);
+        let has_cf = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalFalse);
+        let has_sw = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::SwitchCase);
+        let has_back = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::Back);
         let is_header = cfg.predecessor_edges(block).iter()
-            .any(|&e| cfg.edge(e).kind == EdgeKind::Back);
+            .any(|&e| cfg.edge(e).kind() == EdgeKind::Back);
 
         // --- Loop header ---
         if is_header {
@@ -125,9 +125,9 @@ fn lift_conditional<I: Clone>(
     let mut true_target = None;
     let mut false_target = None;
     for &eid in cfg.successor_edges(block) {
-        match cfg.edge(eid).kind {
-            EdgeKind::ConditionalTrue => true_target = Some(cfg.edge(eid).target),
-            EdgeKind::ConditionalFalse => false_target = Some(cfg.edge(eid).target),
+        match cfg.edge(eid).kind() {
+            EdgeKind::ConditionalTrue => true_target = Some(cfg.edge(eid).target()),
+            EdgeKind::ConditionalFalse => false_target = Some(cfg.edge(eid).target()),
             _ => {}
         }
     }
@@ -164,8 +164,8 @@ fn lift_switch<I: Clone>(
 
     for &eid in cfg.successor_edges(block) {
         let edge = cfg.edge(eid);
-        if edge.kind == EdgeKind::SwitchCase {
-            let cb = edge.target;
+        if edge.kind() == EdgeKind::SwitchCase {
+            let cb = edge.target();
             visited.insert(cb.0);
             let header_insts = cfg.block(cb).instructions().to_vec();
             // Lift the case body from successors of the case header.
@@ -197,9 +197,9 @@ fn lift_loop<I: Clone>(
 
     // Check if the header itself is a conditional or switch dispatch.
     let succ_edges = cfg.successor_edges(header);
-    let has_ct = succ_edges.iter().any(|&e| cfg.edge(e).kind == EdgeKind::ConditionalTrue);
-    let has_cf = succ_edges.iter().any(|&e| cfg.edge(e).kind == EdgeKind::ConditionalFalse);
-    let has_sw = succ_edges.iter().any(|&e| cfg.edge(e).kind == EdgeKind::SwitchCase);
+    let has_ct = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalTrue);
+    let has_cf = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalFalse);
+    let has_sw = succ_edges.iter().any(|&e| cfg.edge(e).kind() == EdgeKind::SwitchCase);
 
     if has_ct && has_cf {
         // Header is also a conditional — lift it as if/else inside the loop.
@@ -230,8 +230,8 @@ fn lift_loop<I: Clone>(
         }
         for &eid in succ_edges {
             let edge = cfg.edge(eid);
-            if edge.kind != EdgeKind::Back && !visited.contains(&edge.target.0) {
-                body.extend(lift_region(cfg, dom, pdom, edge.target, visited));
+            if edge.kind() != EdgeKind::Back && !visited.contains(&edge.target().0) {
+                body.extend(lift_region(cfg, dom, pdom, edge.target(), visited));
             }
         }
     }
@@ -272,11 +272,37 @@ fn lift_case_body<I: Clone>(
     body
 }
 
-/// Find the exit of a loop (block reachable via break that hasn't been visited).
-fn find_loop_exit<I>(cfg: &Cfg<I>, _header: BlockId, visited: &BTreeSet<u32>) -> Option<BlockId> {
+/// Find the exit of a loop (block reachable via break/conditional-break
+/// from within the loop body that hasn't been visited yet).
+///
+/// Only considers edges whose source is inside the loop (visited) and
+/// whose target is outside it (not visited), so nested loops don't
+/// confuse the search.
+fn find_loop_exit<I>(cfg: &Cfg<I>, header: BlockId, visited: &BTreeSet<u32>) -> Option<BlockId> {
+    // Collect all blocks that belong to this loop (visited blocks that
+    // are dominated by the header). We approximate: any visited block
+    // is part of the current loop scope.
     for edge in cfg.edges() {
-        if edge.kind == EdgeKind::Unconditional && !visited.contains(&edge.target.0) {
-            return Some(edge.target);
+        let src_in_loop = visited.contains(&edge.source().0);
+        let tgt_outside = !visited.contains(&edge.target().0);
+        let is_exit_edge = matches!(
+            edge.kind(),
+            EdgeKind::Unconditional | EdgeKind::ConditionalTrue | EdgeKind::ConditionalFalse
+        );
+        // The source must be in the loop and reachable from the header,
+        // and the target must be outside.
+        if src_in_loop && tgt_outside && is_exit_edge && edge.source() != header {
+            return Some(edge.target());
+        }
+    }
+    // Also check edges directly from the header (e.g., conditional break
+    // at the header level).
+    for edge in cfg.edges() {
+        if edge.source() == header
+            && !visited.contains(&edge.target().0)
+            && edge.kind() != EdgeKind::Back
+        {
+            return Some(edge.target());
         }
     }
     None
@@ -285,24 +311,14 @@ fn find_loop_exit<I>(cfg: &Cfg<I>, _header: BlockId, visited: &BTreeSet<u32>) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloc::borrow::Cow;
     use alloc::vec;
     use crate::builder::CfgBuilder;
-    use crate::flow::{FlowControl, FlowEffect};
-
-    #[derive(Debug, Clone)]
-    struct M(FlowEffect, &'static str);
-
-    impl FlowControl for M {
-        fn flow_effect(&self) -> FlowEffect { self.0 }
-        fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.1) }
-    }
-
-    fn ff(n: &'static str) -> M { M(FlowEffect::Fallthrough, n) }
+    use crate::flow::FlowEffect;
+    use crate::test_util::{MockInst, ff};
 
     /// Helper: build CFG then lift, return pseudocode.
-    fn lift_pseudo(insts: Vec<M>) -> alloc::string::String {
-        let cfg = CfgBuilder::build(insts);
+    fn lift_pseudo(insts: Vec<MockInst>) -> alloc::string::String {
+        let cfg = CfgBuilder::build(insts).unwrap();
         let ast = lift(&cfg);
         ast.to_pseudocode()
     }
@@ -311,7 +327,7 @@ mod tests {
 
     #[test]
     fn lift_linear() {
-        let p = lift_pseudo(vec![ff("a"), ff("b"), ff("c"), M(FlowEffect::Return, "ret")]);
+        let p = lift_pseudo(vec![ff("a"), ff("b"), ff("c"), MockInst(FlowEffect::Return, "ret")]);
         assert!(p.contains("a"), "should contain instruction a: {p}");
         assert!(p.contains("ret"), "should contain ret: {p}");
         // No control flow keywords.
@@ -325,11 +341,11 @@ mod tests {
     fn lift_if_no_else() {
         let p = lift_pseudo(vec![
             ff("a"),
-            M(FlowEffect::ConditionalOpen, "if"),
+            MockInst(FlowEffect::ConditionalOpen, "if"),
             ff("b"),
-            M(FlowEffect::ConditionalClose, "endif"),
+            MockInst(FlowEffect::ConditionalClose, "endif"),
             ff("c"),
-            M(FlowEffect::Return, "ret"),
+            MockInst(FlowEffect::Return, "ret"),
         ]);
         assert!(p.contains("if {"), "should have if: {p}");
         assert!(p.contains("b"), "then body should contain b: {p}");
@@ -340,13 +356,13 @@ mod tests {
     fn lift_if_else() {
         let p = lift_pseudo(vec![
             ff("a"),
-            M(FlowEffect::ConditionalOpen, "if"),
+            MockInst(FlowEffect::ConditionalOpen, "if"),
             ff("then_inst"),
-            M(FlowEffect::ConditionalAlternate, "else"),
+            MockInst(FlowEffect::ConditionalAlternate, "else"),
             ff("else_inst"),
-            M(FlowEffect::ConditionalClose, "endif"),
+            MockInst(FlowEffect::ConditionalClose, "endif"),
             ff("merge"),
-            M(FlowEffect::Return, "ret"),
+            MockInst(FlowEffect::Return, "ret"),
         ]);
         assert!(p.contains("if {"), "should have if: {p}");
         assert!(p.contains("then_inst"), "then arm: {p}");
@@ -359,10 +375,10 @@ mod tests {
     #[test]
     fn lift_simple_loop() {
         let p = lift_pseudo(vec![
-            M(FlowEffect::LoopOpen, "loop"),
+            MockInst(FlowEffect::LoopOpen, "loop"),
             ff("body"),
-            M(FlowEffect::LoopClose, "endloop"),
-            M(FlowEffect::Return, "ret"),
+            MockInst(FlowEffect::LoopClose, "endloop"),
+            MockInst(FlowEffect::Return, "ret"),
         ]);
         assert!(p.contains("loop {"), "should have loop: {p}");
         assert!(p.contains("body"), "loop body: {p}");
@@ -371,12 +387,12 @@ mod tests {
     #[test]
     fn lift_loop_with_break() {
         let p = lift_pseudo(vec![
-            M(FlowEffect::LoopOpen, "loop"),
+            MockInst(FlowEffect::LoopOpen, "loop"),
             ff("a"),
-            M(FlowEffect::ConditionalBreak, "breakc"),
+            MockInst(FlowEffect::ConditionalBreak, "breakc"),
             ff("b"),
-            M(FlowEffect::LoopClose, "endloop"),
-            M(FlowEffect::Return, "ret"),
+            MockInst(FlowEffect::LoopClose, "endloop"),
+            MockInst(FlowEffect::Return, "ret"),
         ]);
         assert!(p.contains("loop {"), "should have loop: {p}");
         // The breakc creates a conditional inside the loop
@@ -388,15 +404,15 @@ mod tests {
     #[test]
     fn lift_switch() {
         let p = lift_pseudo(vec![
-            M(FlowEffect::SwitchOpen, "switch"),
+            MockInst(FlowEffect::SwitchOpen, "switch"),
             ff("dispatch"),
-            M(FlowEffect::SwitchCase, "case0"),
+            MockInst(FlowEffect::SwitchCase, "case0"),
             ff("arm0"),
-            M(FlowEffect::SwitchCase, "case1"),
+            MockInst(FlowEffect::SwitchCase, "case1"),
             ff("arm1"),
-            M(FlowEffect::SwitchClose, "endswitch"),
+            MockInst(FlowEffect::SwitchClose, "endswitch"),
             ff("after"),
-            M(FlowEffect::Return, "ret"),
+            MockInst(FlowEffect::Return, "ret"),
         ]);
         assert!(p.contains("switch {"), "should have switch: {p}");
         assert!(p.contains("case {"), "should have case: {p}");
@@ -407,14 +423,14 @@ mod tests {
     #[test]
     fn lift_if_in_loop() {
         let p = lift_pseudo(vec![
-            M(FlowEffect::LoopOpen, "loop"),
-            M(FlowEffect::ConditionalOpen, "if"),
+            MockInst(FlowEffect::LoopOpen, "loop"),
+            MockInst(FlowEffect::ConditionalOpen, "if"),
             ff("then"),
-            M(FlowEffect::ConditionalAlternate, "else"),
+            MockInst(FlowEffect::ConditionalAlternate, "else"),
             ff("else_body"),
-            M(FlowEffect::ConditionalClose, "endif"),
-            M(FlowEffect::LoopClose, "endloop"),
-            M(FlowEffect::Return, "ret"),
+            MockInst(FlowEffect::ConditionalClose, "endif"),
+            MockInst(FlowEffect::LoopClose, "endloop"),
+            MockInst(FlowEffect::Return, "ret"),
         ]);
         assert!(p.contains("loop {"), "should have loop: {p}");
         assert!(p.contains("if {"), "should have if inside loop: {p}");
@@ -423,13 +439,13 @@ mod tests {
     #[test]
     fn lift_loop_in_if() {
         let p = lift_pseudo(vec![
-            M(FlowEffect::ConditionalOpen, "if"),
-            M(FlowEffect::LoopOpen, "loop"),
+            MockInst(FlowEffect::ConditionalOpen, "if"),
+            MockInst(FlowEffect::LoopOpen, "loop"),
             ff("body"),
-            M(FlowEffect::ConditionalBreak, "breakc"),
-            M(FlowEffect::LoopClose, "endloop"),
-            M(FlowEffect::ConditionalClose, "endif"),
-            M(FlowEffect::Return, "ret"),
+            MockInst(FlowEffect::ConditionalBreak, "breakc"),
+            MockInst(FlowEffect::LoopClose, "endloop"),
+            MockInst(FlowEffect::ConditionalClose, "endif"),
+            MockInst(FlowEffect::Return, "ret"),
         ]);
         // Should have both if and loop structures
         let has_if = p.contains("if {");
@@ -441,7 +457,7 @@ mod tests {
 
     #[test]
     fn lift_returns_sequence_or_single() {
-        let cfg = CfgBuilder::build(vec![ff("a"), M(FlowEffect::Return, "ret")]);
+        let cfg = CfgBuilder::build(vec![ff("a"), MockInst(FlowEffect::Return, "ret")]).unwrap();
         let ast = lift(&cfg);
         // Should be a Block or Return, not an empty Sequence.
         assert!(!ast.is_empty(), "should not be empty");
@@ -451,11 +467,11 @@ mod tests {
     fn lift_conditional_produces_if_node() {
         let cfg = CfgBuilder::build(vec![
             ff("a"),
-            M(FlowEffect::ConditionalOpen, "if"),
+            MockInst(FlowEffect::ConditionalOpen, "if"),
             ff("b"),
-            M(FlowEffect::ConditionalClose, "endif"),
-            M(FlowEffect::Return, "ret"),
-        ]);
+            MockInst(FlowEffect::ConditionalClose, "endif"),
+            MockInst(FlowEffect::Return, "ret"),
+        ]).unwrap();
         let ast = lift(&cfg);
         // Walk the AST to find an IfThenElse node.
         let found = has_node_kind(&ast, |n| matches!(n, AstNode::IfThenElse { .. }));
@@ -465,11 +481,11 @@ mod tests {
     #[test]
     fn lift_loop_produces_loop_node() {
         let cfg = CfgBuilder::build(vec![
-            M(FlowEffect::LoopOpen, "loop"),
+            MockInst(FlowEffect::LoopOpen, "loop"),
             ff("x"),
-            M(FlowEffect::LoopClose, "endloop"),
-            M(FlowEffect::Return, "ret"),
-        ]);
+            MockInst(FlowEffect::LoopClose, "endloop"),
+            MockInst(FlowEffect::Return, "ret"),
+        ]).unwrap();
         let ast = lift(&cfg);
         let found = has_node_kind(&ast, |n| matches!(n, AstNode::Loop { .. }));
         assert!(found, "should contain Loop node: {ast:?}");
@@ -478,15 +494,15 @@ mod tests {
     #[test]
     fn lift_switch_produces_switch_node() {
         let cfg = CfgBuilder::build(vec![
-            M(FlowEffect::SwitchOpen, "switch"),
+            MockInst(FlowEffect::SwitchOpen, "switch"),
             ff("d"),
-            M(FlowEffect::SwitchCase, "c1"),
+            MockInst(FlowEffect::SwitchCase, "c1"),
             ff("a1"),
-            M(FlowEffect::SwitchCase, "c2"),
+            MockInst(FlowEffect::SwitchCase, "c2"),
             ff("a2"),
-            M(FlowEffect::SwitchClose, "endswitch"),
-            M(FlowEffect::Return, "ret"),
-        ]);
+            MockInst(FlowEffect::SwitchClose, "endswitch"),
+            MockInst(FlowEffect::Return, "ret"),
+        ]).unwrap();
         let ast = lift(&cfg);
         let found = has_node_kind(&ast, |n| matches!(n, AstNode::Switch { .. }));
         assert!(found, "should contain Switch node: {ast:?}");

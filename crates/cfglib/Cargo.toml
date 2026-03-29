@@ -6,6 +6,5 @@ description = "Generic control-flow graph library for binary analysis"
 
 [features]
 default = []
-std = []
 
 [dependencies]

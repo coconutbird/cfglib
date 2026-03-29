@@ -74,11 +74,11 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
 }
 
 /// Result of a reaching definitions analysis with convenient query methods.
-pub struct ReachingDefs<F> {
-    inner: FixpointResult<F>,
+pub struct ReachingDefs {
+    inner: FixpointResult<BTreeSet<ReachingDef>>,
 }
 
-impl ReachingDefs<BTreeSet<ReachingDef>> {
+impl ReachingDefs {
     /// Run reaching definitions on the given CFG.
     pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
         let result = fixpoint::solve(cfg, &ReachingDefsProblem);
@@ -162,7 +162,7 @@ mod tests {
     #[test]
     fn reaching_linear_single_def() {
         // bb0: def r0; use r0
-        let cfg = CfgBuilder::build(vec![def("def_r0", 0), use_("use_r0", 0)]);
+        let cfg = CfgBuilder::build(vec![def("def_r0", 0), use_("use_r0", 0)]).unwrap();
         let rd = ReachingDefs::compute(&cfg);
         let out = rd.reaching_out(cfg.entry());
         assert_eq!(out.len(), 1);
@@ -172,7 +172,7 @@ mod tests {
     #[test]
     fn reaching_linear_kill_redefinition() {
         // bb0: def r0; def r0 (again) — first def should be killed
-        let cfg = CfgBuilder::build(vec![def("def1", 0), def("def2", 0)]);
+        let cfg = CfgBuilder::build(vec![def("def1", 0), def("def2", 0)]).unwrap();
         let rd = ReachingDefs::compute(&cfg);
         let out = rd.reaching_out(cfg.entry());
         assert_eq!(out.len(), 1);
@@ -183,7 +183,7 @@ mod tests {
     #[test]
     fn reaching_linear_two_locations() {
         // bb0: def r0; def r1 — both should reach the exit
-        let cfg = CfgBuilder::build(vec![def("def_r0", 0), def("def_r1", 1)]);
+        let cfg = CfgBuilder::build(vec![def("def_r0", 0), def("def_r1", 1)]).unwrap();
         let rd = ReachingDefs::compute(&cfg);
         let out = rd.reaching_out(cfg.entry());
         assert_eq!(out.len(), 2);
@@ -204,7 +204,7 @@ mod tests {
             def("def_false", 0),
             with_effect(ff("endif"), FlowEffect::ConditionalClose),
             use_("use_r0", 0),
-        ]);
+        ]).unwrap();
         let merge_block = cfg.blocks().last().unwrap().id();
         let rd = ReachingDefs::compute(&cfg);
         let defs_at_merge = rd.defs_of_at_entry(Location(0), merge_block);
@@ -222,7 +222,7 @@ mod tests {
             use_("read", 0),
             def("update", 0),
             with_effect(ff("endloop"), FlowEffect::LoopClose),
-        ]);
+        ]).unwrap();
         let rd = ReachingDefs::compute(&cfg);
         // The loop header should have defs reaching from both
         // the pre-loop init and the loop body update (via back-edge).

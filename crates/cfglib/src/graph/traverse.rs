@@ -36,29 +36,33 @@ impl<I> Cfg<I> {
     }
 
     /// Depth-first postorder traversal starting from the entry block.
+    ///
+    /// Uses an explicit stack to avoid stack overflow on deep graphs.
     pub fn dfs_postorder(&self) -> Vec<BlockId> {
         let mut visited = vec![false; self.num_blocks()];
         let mut order = Vec::with_capacity(self.num_blocks());
-        Self::dfs_postorder_visit(self, self.entry, &mut visited, &mut order);
+        let mut stack: Vec<(BlockId, bool)> = vec![(self.entry, false)];
+
+        while let Some((id, processed)) = stack.pop() {
+            if processed {
+                order.push(id);
+                continue;
+            }
+            if visited[id.index()] {
+                continue;
+            }
+            visited[id.index()] = true;
+            stack.push((id, true));
+            // Push successors in reverse so leftmost is visited first.
+            let succs: Vec<BlockId> = self.successors(id).collect();
+            for &s in succs.iter().rev() {
+                if !visited[s.index()] {
+                    stack.push((s, false));
+                }
+            }
+        }
+
         order
-    }
-
-    fn dfs_postorder_visit(
-        cfg: &Cfg<I>,
-        id: BlockId,
-        visited: &mut Vec<bool>,
-        order: &mut Vec<BlockId>,
-    ) {
-        if visited[id.index()] {
-            return;
-        }
-
-        visited[id.index()] = true;
-        for s in cfg.successors(id) {
-            Self::dfs_postorder_visit(cfg, s, visited, order);
-        }
-
-        order.push(id);
     }
 
     /// Reverse postorder — a topological ordering useful for data-flow analysis.

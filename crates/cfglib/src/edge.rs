@@ -39,11 +39,37 @@ pub enum EdgeKind {
 #[derive(Debug, Clone)]
 pub struct Edge {
     /// Edge identity.
-    pub id: EdgeId,
+    pub(crate) id: EdgeId,
     /// Source block.
-    pub source: BlockId,
+    pub(crate) source: BlockId,
     /// Target block.
-    pub target: BlockId,
+    pub(crate) target: BlockId,
     /// Classification.
-    pub kind: EdgeKind,
+    pub(crate) kind: EdgeKind,
+}
+
+impl Edge {
+    /// The edge's unique identifier.
+    #[inline]
+    pub fn id(&self) -> EdgeId {
+        self.id
+    }
+
+    /// The source block of this edge.
+    #[inline]
+    pub fn source(&self) -> BlockId {
+        self.source
+    }
+
+    /// The target block of this edge.
+    #[inline]
+    pub fn target(&self) -> BlockId {
+        self.target
+    }
+
+    /// The classification of this edge.
+    #[inline]
+    pub fn kind(&self) -> EdgeKind {
+        self.kind
+    }
 }

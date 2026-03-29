@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn defuse_linear_chain() {
         // bb0: def r0 (idx 0); use r0 (idx 1)
-        let cfg = CfgBuilder::build(vec![def("def_r0", 0), use_("use_r0", 0)]);
+        let cfg = CfgBuilder::build(vec![def("def_r0", 0), use_("use_r0", 0)]).unwrap();
         let chains = DefUseChains::compute(&cfg);
 
         let def_site = DefSite { block: BlockId(0), inst_idx: 0 };
@@ -167,7 +167,7 @@ mod tests {
     #[test]
     fn defuse_dead_def_detected() {
         // bb0: def r0; def r1 — r0 never used, r1 never used
-        let cfg = CfgBuilder::build(vec![def("def_r0", 0), def("def_r1", 1)]);
+        let cfg = CfgBuilder::build(vec![def("def_r0", 0), def("def_r1", 1)]).unwrap();
         let chains = DefUseChains::compute(&cfg);
         let dead = chains.dead_defs();
         assert_eq!(dead.len(), 2, "both defs are dead");
@@ -181,7 +181,7 @@ mod tests {
             def("def1", 0),
             def("def2", 0),
             use_("use", 0),
-        ]);
+        ]).unwrap();
         let chains = DefUseChains::compute(&cfg);
         let dead = chains.dead_defs();
         assert_eq!(dead.len(), 1);
@@ -195,7 +195,7 @@ mod tests {
             def("def", 0),
             use_("use1", 0),
             use_("use2", 0),
-        ]);
+        ]).unwrap();
         let chains = DefUseChains::compute(&cfg);
         let def_site = DefSite { block: BlockId(0), inst_idx: 0 };
         assert_eq!(chains.uses_of(def_site).len(), 2);

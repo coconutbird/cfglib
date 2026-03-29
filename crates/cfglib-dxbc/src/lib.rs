@@ -16,7 +16,7 @@ extern crate alloc;
 use alloc::borrow::Cow;
 
 use dxbc::shex::{Instruction, Opcode, Program};
-use cfglib::{Cfg, CfgBuilder, FlowControl, FlowEffect};
+use cfglib::{BuildError, Cfg, CfgBuilder, FlowControl, FlowEffect};
 
 /// Newtype wrapper around a `dxbc` instruction to satisfy the orphan rule.
 #[derive(Debug, Clone)]
@@ -129,6 +129,9 @@ fn is_declaration(op: Opcode) -> bool {
 }
 
 /// Build a control-flow graph from a decoded shader program.
-pub fn build_cfg(program: &Program) -> Cfg<Sm4Instruction> {
+///
+/// Returns an error if the shader contains mismatched structured
+/// control-flow instructions (e.g. `else` without `if`).
+pub fn build_cfg(program: &Program) -> Result<Cfg<Sm4Instruction>, BuildError> {
     CfgBuilder::build(program.instructions.iter().cloned().map(Sm4Instruction))
 }

@@ -136,9 +136,12 @@ impl DominatorTree {
 
     /// Compute the **post-dominator** tree for the given CFG.
     ///
-    /// Post-dominators are computed by running the dominator algorithm
-    /// on the reverse graph (predecessors become successors) starting
-    /// from exit blocks (blocks with no successors).
+    /// Post-dominators are computed by introducing a virtual exit node
+    /// connected from all exit blocks (blocks with no successors), then
+    /// running the dominator algorithm on the reverse graph starting
+    /// from that virtual exit.
+    ///
+    /// This correctly handles CFGs with multiple exit points.
     pub fn compute_post<I>(cfg: &Cfg<I>) -> Self {
         let n = cfg.num_blocks();
         if n == 0 {
@@ -154,67 +157,92 @@ impl DominatorTree {
             .collect();
 
         // If no natural exits, fall back to the last block.
-        let virtual_exit = if exits.is_empty() {
-            BlockId((n - 1) as u32)
-        } else if exits.len() == 1 {
-            exits[0]
+        let exit_set: Vec<BlockId> = if exits.is_empty() {
+            vec![BlockId((n - 1) as u32)]
         } else {
-            // Multiple exits — we pick the first and treat it as the
-            // virtual root. For structured CFGs this is usually fine.
-            exits[0]
+            exits
         };
 
-        // Compute reverse-postorder on the **reversed** graph.
-        let mut visited = vec![false; n];
-        let mut rpo = Vec::with_capacity(n);
+        // We introduce a virtual exit node at index `n`. This node
+        // has edges **from** every real exit block. In the reversed
+        // graph it becomes the unique entry from which we run the
+        // dominator algorithm.
+        let virt = n; // virtual exit index (not a real BlockId)
+        let total = n + 1;
 
-        fn reverse_dfs_post<I>(
-            cfg: &Cfg<I>,
-            block: BlockId,
-            visited: &mut Vec<bool>,
-            order: &mut Vec<BlockId>,
-        ) {
-            visited[block.index()] = true;
-            for pred in cfg.predecessors(block) {
-                if !visited[pred.index()] {
-                    reverse_dfs_post(cfg, pred, visited, order);
+        // Build reverse-graph adjacency: rev_succs[u] = predecessors
+        // of u in the original graph (i.e. successors in the reversed
+        // graph).
+        let mut rev_succs: Vec<Vec<usize>> = vec![Vec::new(); total];
+        for edge in cfg.edges() {
+            rev_succs[edge.target().index()].push(edge.source().index());
+        }
+        // Virtual exit's reverse-successors are the real exit blocks.
+        for &ex in &exit_set {
+            rev_succs[virt].push(ex.index());
+        }
+
+        // Iterative DFS postorder on the reverse graph, starting from
+        // the virtual exit.
+        let mut visited = vec![false; total];
+        let mut rpo: Vec<usize> = Vec::with_capacity(total);
+        {
+            let mut stack: Vec<(usize, bool)> = vec![(virt, false)];
+            while let Some((node, processed)) = stack.pop() {
+                if processed {
+                    rpo.push(node);
+                    continue;
+                }
+                if visited[node] {
+                    continue;
+                }
+                visited[node] = true;
+                stack.push((node, true));
+                for &succ in rev_succs[node].iter().rev() {
+                    if !visited[succ] {
+                        stack.push((succ, false));
+                    }
                 }
             }
-            order.push(block);
+            rpo.reverse();
         }
 
-        reverse_dfs_post(cfg, virtual_exit, &mut visited, &mut rpo);
-        rpo.reverse(); // Now in reverse postorder of the reversed graph.
-
-        // Map BlockId → RPO index.
-        let mut rpo_num = vec![u32::MAX; n];
-        for (i, &id) in rpo.iter().enumerate() {
-            rpo_num[id.index()] = i as u32;
+        // Map node index → RPO position.
+        let mut rpo_num = vec![u32::MAX; total];
+        for (i, &node) in rpo.iter().enumerate() {
+            rpo_num[node] = i as u32;
         }
 
-        let mut doms: Vec<Option<u32>> = vec![None; n];
-        let exit_rpo = rpo_num[virtual_exit.index()] as usize;
-        doms[exit_rpo] = Some(exit_rpo as u32);
+        let mut doms: Vec<Option<u32>> = vec![None; total];
+        let virt_rpo = rpo_num[virt] as usize;
+        doms[virt_rpo] = Some(virt_rpo as u32);
 
         let mut changed = true;
         while changed {
             changed = false;
             for &b in &rpo {
-                if b == virtual_exit {
+                if b == virt {
                     continue;
                 }
-                let b_rpo = rpo_num[b.index()];
+                let b_rpo = rpo_num[b];
                 if b_rpo == u32::MAX {
                     continue;
                 }
                 let b_rpo = b_rpo as usize;
 
-                // In the reversed graph, successors are predecessors.
-                let rev_preds: Vec<BlockId> = cfg.successors(b).collect();
+                // Predecessors in the reverse graph = successors in
+                // the original graph + virtual exit if b is an exit.
+                let mut rev_preds: Vec<usize> = cfg
+                    .successors(BlockId(b as u32))
+                    .map(|s| s.index())
+                    .collect();
+                if exit_set.iter().any(|e| e.index() == b) {
+                    rev_preds.push(virt);
+                }
 
                 let mut new_idom = None;
                 for &p in &rev_preds {
-                    let p_rpo = rpo_num[p.index()];
+                    let p_rpo = rpo_num[p];
                     if p_rpo != u32::MAX && doms[p_rpo as usize].is_some() {
                         new_idom = Some(p_rpo);
                         break;
@@ -225,7 +253,7 @@ impl DominatorTree {
                 };
 
                 for &p in &rev_preds {
-                    let p_rpo = rpo_num[p.index()];
+                    let p_rpo = rpo_num[p];
                     if p_rpo != u32::MAX && doms[p_rpo as usize].is_some() && p_rpo != new_idom {
                         new_idom = Self::intersect(&doms, p_rpo, new_idom);
                     }
@@ -238,17 +266,37 @@ impl DominatorTree {
             }
         }
 
-        // Convert RPO indices back to BlockIds.
+        // Convert RPO indices back to real BlockIds, skipping the
+        // virtual exit. If a block's immediate post-dominator is the
+        // virtual exit, record `None` (it's a top-level exit).
         let mut idom_result = vec![None; n];
         for (rpo_idx, &dom) in doms.iter().enumerate() {
-            if rpo_idx < rpo.len() {
-                let block = rpo[rpo_idx];
-                idom_result[block.index()] = dom.map(|d| rpo[d as usize]);
+            if rpo_idx >= rpo.len() {
+                continue;
             }
+            let node = rpo[rpo_idx];
+            if node == virt {
+                continue;
+            }
+            idom_result[node] = dom.map(|d| {
+                let real = rpo[d as usize];
+                if real == virt {
+                    // Post-dominator is virtual exit → top-level.
+                    // We'll clean this up below.
+                    BlockId(node as u32)
+                } else {
+                    BlockId(real as u32)
+                }
+            });
         }
 
-        // Exit post-dominates itself — represented as None.
-        idom_result[virtual_exit.index()] = None;
+        // Blocks whose idom maps to themselves had the virtual exit
+        // as their post-dominator — set to None.
+        for i in 0..n {
+            if idom_result[i] == Some(BlockId(i as u32)) {
+                idom_result[i] = None;
+            }
+        }
 
         DominatorTree { idom: idom_result }
     }

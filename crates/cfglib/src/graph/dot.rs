@@ -47,7 +47,7 @@ impl<I: FlowControl> Cfg<I> {
         }
 
         for edge in &self.edges {
-            let (color, style, lbl) = match edge.kind {
+            let (color, style, lbl) = match edge.kind() {
                 EdgeKind::Fallthrough => ("black", "solid", ""),
                 EdgeKind::ConditionalTrue => ("green4", "solid", "T"),
                 EdgeKind::ConditionalFalse => ("red", "solid", "F"),
@@ -60,7 +60,7 @@ impl<I: FlowControl> Cfg<I> {
             write!(
                 w,
                 "    {} -> {} [color={color} style={style}",
-                edge.source, edge.target,
+                edge.source(), edge.target(),
             )?;
 
             if !lbl.is_empty() {
