@@ -33,7 +33,9 @@ pub mod fixpoint;
 pub mod flow;
 pub mod liveness;
 pub mod lift;
+pub mod purity;
 pub mod reaching;
+pub mod structure;
 pub mod traverse;
 
 // Re-exports for convenience.
@@ -49,4 +51,6 @@ pub use fixpoint::{Direction, FixpointResult, Problem};
 pub use flow::{FlowControl, FlowEffect};
 pub use lift::lift;
 pub use liveness::Liveness;
+pub use purity::{Effect, Purity, SideEffects};
 pub use reaching::ReachingDefs;
+pub use structure::NaturalLoop;
