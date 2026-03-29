@@ -69,6 +69,40 @@ pub enum AstNode<I> {
         /// Instructions in the return block (includes the return itself).
         instructions: Vec<I>,
     },
+
+    // ── Unstructured / CPU-ISA nodes ────────────────────────────────
+    /// A label target (used after irreducible CFG lowering).
+    Label {
+        /// The label name.
+        name: alloc::string::String,
+        /// Body following the label.
+        body: Vec<AstNode<I>>,
+    },
+
+    /// An unconditional goto (used for irreducible control flow).
+    Goto {
+        /// Target label name.
+        target: alloc::string::String,
+    },
+
+    /// A try/catch/finally region.
+    TryCatch {
+        /// The protected body (try block).
+        try_body: Vec<AstNode<I>>,
+        /// Handler arms.
+        handlers: Vec<CatchHandler<I>>,
+        /// Finally body (empty if no finally).
+        finally_body: Vec<AstNode<I>>,
+    },
+}
+
+/// A single handler arm inside a [`AstNode::TryCatch`].
+#[derive(Debug, Clone)]
+pub struct CatchHandler<I> {
+    /// The entry block of the handler.
+    pub entry: BlockId,
+    /// The body of the handler.
+    pub body: Vec<AstNode<I>>,
 }
 
 /// A single case arm inside a [`AstNode::Switch`].
@@ -130,6 +164,25 @@ impl<I> AstNode<I> {
                         body: c.body.into_iter().map(AstNode::simplify).collect(),
                     })
                     .collect(),
+            },
+            AstNode::Label { name, body } => AstNode::Label {
+                name,
+                body: body.into_iter().map(AstNode::simplify).collect(),
+            },
+            AstNode::TryCatch {
+                try_body,
+                handlers,
+                finally_body,
+            } => AstNode::TryCatch {
+                try_body: try_body.into_iter().map(AstNode::simplify).collect(),
+                handlers: handlers
+                    .into_iter()
+                    .map(|h| CatchHandler {
+                        entry: h.entry,
+                        body: h.body.into_iter().map(AstNode::simplify).collect(),
+                    })
+                    .collect(),
+                finally_body: finally_body.into_iter().map(AstNode::simplify).collect(),
             },
             other => other,
         }
@@ -252,6 +305,47 @@ fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize)
         }
         AstNode::Return { instructions } => {
             write_insts(out, instructions, depth);
+        }
+        AstNode::Label { name, body } => {
+            write_indent(out, depth);
+            out.push_str(name);
+            out.push_str(":\n");
+            for child in body {
+                write_node(out, child, depth + 1);
+            }
+        }
+        AstNode::Goto { target } => {
+            write_indent(out, depth);
+            out.push_str("goto ");
+            out.push_str(target);
+            out.push_str(";\n");
+        }
+        AstNode::TryCatch {
+            try_body,
+            handlers,
+            finally_body,
+        } => {
+            write_indent(out, depth);
+            out.push_str("try {\n");
+            for child in try_body {
+                write_node(out, child, depth + 1);
+            }
+            for handler in handlers {
+                write_indent(out, depth);
+                out.push_str("} catch {\n");
+                for child in &handler.body {
+                    write_node(out, child, depth + 1);
+                }
+            }
+            if !finally_body.is_empty() {
+                write_indent(out, depth);
+                out.push_str("} finally {\n");
+                for child in finally_body {
+                    write_node(out, child, depth + 1);
+                }
+            }
+            write_indent(out, depth);
+            out.push_str("}\n");
         }
     }
 }

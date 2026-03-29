@@ -56,6 +56,12 @@ impl<I: FlowControl> Cfg<I> {
                 EdgeKind::Call => ("purple", "solid", "call"),
                 EdgeKind::CallReturn => ("purple", "dashed", "ret"),
                 EdgeKind::SwitchCase => ("orange", "dotted", "case"),
+                EdgeKind::Jump => ("blue", "bold", "jmp"),
+                EdgeKind::IndirectJump => ("blue", "dotted", "ijmp"),
+                EdgeKind::IndirectCall => ("purple", "dotted", "icall"),
+                EdgeKind::ExceptionHandler => ("darkred", "solid", "handler"),
+                EdgeKind::ExceptionUnwind => ("darkred", "dashed", "unwind"),
+                EdgeKind::ExceptionLeave => ("darkred", "dotted", "leave"),
             };
             write!(
                 w,

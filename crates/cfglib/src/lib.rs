@@ -28,11 +28,14 @@ pub mod cfg;
 pub mod edge;
 pub mod flow;
 pub mod purity;
+pub mod region;
 
 // Submodules.
 pub mod ast;
 pub mod dataflow;
 pub mod graph;
+pub mod linearize;
+pub mod transform;
 
 // Shared test utilities.
 #[cfg(test)]

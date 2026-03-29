@@ -105,6 +105,7 @@ impl CfgBuilder {
             succs: Vec::new(),
             preds: Vec::new(),
             entry: BlockId(0),
+            regions: Vec::new(),
         };
 
         let mut current = cfg.new_block();
@@ -337,6 +338,44 @@ impl CfgBuilder {
                     }
                     cfg.block_mut(label_block).instructions.push(inst);
                     current = label_block;
+                }
+
+                // ── Unstructured / CPU-ISA flow ──────────────────
+                FlowEffect::Jump => {
+                    // Unconditional jump — terminates the current block.
+                    // The target edge must be wired by the ISA adapter
+                    // after the builder finishes (via `add_edge`).
+                    cfg.block_mut(current).instructions.push(inst);
+                    current = cfg.new_block();
+                }
+
+                FlowEffect::ConditionalJump => {
+                    // Conditional jump — splits into taken/not-taken.
+                    // The taken target edge must be wired by the ISA
+                    // adapter after the builder finishes.
+                    cfg.block_mut(current).instructions.push(inst);
+                    let cont_block = cfg.new_block();
+                    cfg.add_edge(current, cont_block, EdgeKind::ConditionalFalse);
+                    current = cont_block;
+                }
+
+                FlowEffect::IndirectJump => {
+                    // Computed jump — terminates the block. All possible
+                    // targets must be wired by the ISA adapter.
+                    cfg.block_mut(current).instructions.push(inst);
+                    current = cfg.new_block();
+                }
+
+                FlowEffect::IndirectCall => {
+                    // Indirect call — stays in the block (like Call).
+                    cfg.block_mut(current).instructions.push(inst);
+                }
+
+                FlowEffect::MayThrow => {
+                    // Potentially-throwing instruction — stays in block.
+                    // Exception edges are added by the ISA adapter or
+                    // region model.
+                    cfg.block_mut(current).instructions.push(inst);
                 }
             }
         }

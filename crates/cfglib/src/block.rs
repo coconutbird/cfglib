@@ -10,6 +10,15 @@ use alloc::vec::Vec;
 pub struct BlockId(pub(crate) u32);
 
 impl BlockId {
+    /// Create a `BlockId` from a raw `u32` index.
+    ///
+    /// This is intended for ISA frontends that discover blocks by
+    /// decoding and need to construct IDs directly.
+    #[inline]
+    pub fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
     /// Returns the raw index.
     #[inline]
     pub fn index(self) -> usize {
@@ -63,5 +72,27 @@ impl<I> BasicBlock<I> {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.instructions.is_empty()
+    }
+
+    /// Append an instruction to the end of the block.
+    #[inline]
+    pub fn push(&mut self, inst: I) {
+        self.instructions.push(inst);
+    }
+
+    /// Set or replace the block's human-readable label.
+    #[inline]
+    pub fn set_label(&mut self, label: impl Into<String>) {
+        self.label = Some(label.into());
+    }
+
+    /// Mutable access to the instruction vector.
+    ///
+    /// This gives full `Vec` control (insert, remove, drain, etc.)
+    /// unlike [`instructions_mut`](Self::instructions_mut) which
+    /// returns only a mutable slice.
+    #[inline]
+    pub fn instructions_vec_mut(&mut self) -> &mut Vec<I> {
+        &mut self.instructions
     }
 }

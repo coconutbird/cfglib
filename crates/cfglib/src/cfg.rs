@@ -8,6 +8,7 @@ use core::slice;
 
 use crate::block::{BasicBlock, BlockId};
 use crate::edge::{Edge, EdgeId, EdgeKind};
+use crate::region::{Region, RegionId};
 
 /// A control-flow graph over instruction type `I`.
 #[derive(Debug, Clone)]
@@ -20,13 +21,52 @@ pub struct Cfg<I> {
     pub(crate) preds: Vec<Vec<EdgeId>>,
     /// Entry block.
     pub(crate) entry: BlockId,
+    /// Exception-handler regions (optional; empty for simple ISAs).
+    pub(crate) regions: Vec<Region>,
 }
 
 impl<I> Cfg<I> {
+    /// Create an empty CFG with a single entry block.
+    ///
+    /// This is the primary constructor for ISA frontends that build
+    /// the graph manually (as opposed to [`CfgBuilder::build`] which
+    /// processes a structured instruction stream).
+    pub fn new() -> Self {
+        let entry = BlockId(0);
+        Self {
+            blocks: alloc::vec![BasicBlock {
+                id: entry,
+                instructions: Vec::new(),
+                label: None,
+            }],
+            edges: Vec::new(),
+            succs: alloc::vec![Vec::new()],
+            preds: alloc::vec![Vec::new()],
+            entry,
+            regions: Vec::new(),
+        }
+    }
+
     /// The entry block of the graph.
     #[inline]
     pub fn entry(&self) -> BlockId {
         self.entry
+    }
+
+    /// Change the entry block of the graph.
+    ///
+    /// # Panics
+    ///
+    /// Panics (debug) if `id` does not refer to a block in this CFG.
+    #[inline]
+    pub fn set_entry(&mut self, id: BlockId) {
+        debug_assert!(
+            id.index() < self.blocks.len(),
+            "BlockId {} out of range (num_blocks = {})",
+            id,
+            self.blocks.len(),
+        );
+        self.entry = id;
     }
 
     /// Look up a block by id.
@@ -161,8 +201,36 @@ impl<I> Cfg<I> {
             .collect()
     }
 
+    // ── Region methods ─────────────────────────────────────────────
+
+    /// All exception-handler regions.
+    #[inline]
+    pub fn regions(&self) -> &[Region] {
+        &self.regions
+    }
+
+    /// Add a region and return its id.
+    pub fn add_region(&mut self, mut region: Region) -> RegionId {
+        let id = RegionId(self.regions.len() as u32);
+        region.id = id;
+        self.regions.push(region);
+        id
+    }
+
+    /// Returns the innermost region that protects `block`, if any.
+    pub fn protecting_region(&self, block: BlockId) -> Option<&Region> {
+        // Return the deepest (last-added) region whose protected set
+        // contains this block.
+        self.regions
+            .iter()
+            .rev()
+            .find(|r| r.protected_blocks.contains(&block))
+    }
+
+    // ── Block / edge mutation ─────────────────────────────────────
+
     /// Allocate a new empty block and return its id.
-    pub(crate) fn new_block(&mut self) -> BlockId {
+    pub fn new_block(&mut self) -> BlockId {
         debug_assert!(
             self.blocks.len() < u32::MAX as usize,
             "too many blocks: would overflow u32 BlockId",
@@ -182,7 +250,7 @@ impl<I> Cfg<I> {
     }
 
     /// Add a directed edge and return its id.
-    pub(crate) fn add_edge(&mut self, source: BlockId, target: BlockId, kind: EdgeKind) -> EdgeId {
+    pub fn add_edge(&mut self, source: BlockId, target: BlockId, kind: EdgeKind) -> EdgeId {
         debug_assert!(
             self.edges.len() < u32::MAX as usize,
             "too many edges: would overflow u32 EdgeId",
@@ -199,6 +267,91 @@ impl<I> Cfg<I> {
         self.preds[target.index()].push(id);
 
         id
+    }
+
+    /// Remove an edge by id.
+    ///
+    /// Returns the removed [`Edge`], or `None` if the id is out of
+    /// range. The edge slot is **not** compacted — removed edges
+    /// leave a tombstone so that existing [`EdgeId`]s remain valid.
+    ///
+    /// The successor and predecessor lists of the affected blocks are
+    /// updated.
+    pub fn remove_edge(&mut self, id: EdgeId) -> Option<Edge> {
+        if id.index() >= self.edges.len() {
+            return None;
+        }
+        let edge = self.edges[id.index()].clone();
+        // Remove from succs/preds.
+        self.succs[edge.source.index()].retain(|&e| e != id);
+        self.preds[edge.target.index()].retain(|&e| e != id);
+        Some(edge)
+    }
+
+    /// Split a block at instruction index `at`.
+    ///
+    /// Instructions `[at..]` are moved into a new block. A
+    /// [`Fallthrough`](EdgeKind::Fallthrough) edge is inserted from
+    /// the original block to the new one, and all outgoing edges of
+    /// the original block are transferred to the new block.
+    ///
+    /// Returns the id of the newly created block.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `id` is out of range or `at > instructions.len()`.
+    pub fn split_block(&mut self, id: BlockId, at: usize) -> BlockId {
+        let tail_insts: Vec<I> = self.blocks[id.index()].instructions.split_off(at);
+        let new_id = self.new_block();
+        self.blocks[new_id.index()].instructions = tail_insts;
+
+        // Move outgoing edges from `id` to `new_id`.
+        let outgoing: Vec<EdgeId> = self.succs[id.index()].drain(..).collect();
+        for &eid in &outgoing {
+            self.edges[eid.index()].source = new_id;
+            self.succs[new_id.index()].push(eid);
+        }
+
+        // Insert fallthrough edge from original to new block.
+        self.add_edge(id, new_id, EdgeKind::Fallthrough);
+
+        new_id
+    }
+
+    /// Redirect all edges that target `old` to target `new_target` instead.
+    ///
+    /// This is useful for bypassing a block before removal.
+    pub fn redirect_edges_to(&mut self, old: BlockId, new_target: BlockId) {
+        let incoming: Vec<EdgeId> = self.preds[old.index()].clone();
+        for eid in incoming {
+            self.edges[eid.index()].target = new_target;
+            self.preds[old.index()].retain(|&e| e != eid);
+            self.preds[new_target.index()].push(eid);
+        }
+    }
+
+    /// Mutable access to an edge's kind.
+    ///
+    /// # Panics
+    ///
+    /// Panics (debug) if `id` is out of range.
+    #[inline]
+    pub fn edge_mut(&mut self, id: EdgeId) -> &mut Edge {
+        debug_assert!(
+            id.index() < self.edges.len(),
+            "EdgeId {} out of range (num_edges = {})",
+            id,
+            self.edges.len(),
+        );
+        &mut self.edges[id.index()]
+    }
+}
+
+// ── Default impl ──────────────────────────────────────────────────
+
+impl<I> Default for Cfg<I> {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

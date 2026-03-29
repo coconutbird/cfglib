@@ -29,7 +29,7 @@ pub enum EdgeKind {
     ConditionalTrue,
     /// Not-taken branch of a conditional (the "false" / merge path).
     ConditionalFalse,
-    /// Unconditional jump.
+    /// Unconditional jump (structured break/switch exit).
     Unconditional,
     /// Back-edge to a loop header.
     Back,
@@ -39,6 +39,20 @@ pub enum EdgeKind {
     CallReturn,
     /// Edge for a switch/case arm.
     SwitchCase,
+
+    // ── Unstructured / CPU-ISA edges ──────────────────────────────
+    /// Direct jump (goto / `jmp` / `b`).
+    Jump,
+    /// Computed / indirect jump (`jmp [rax]`, jump table).
+    IndirectJump,
+    /// Indirect call (`call [vtable]`).
+    IndirectCall,
+    /// Edge into an exception-handler entry block.
+    ExceptionHandler,
+    /// Edge from a potentially-throwing instruction to a handler.
+    ExceptionUnwind,
+    /// Edge from a protected region to the normal continuation.
+    ExceptionLeave,
 }
 
 impl core::fmt::Display for EdgeKind {
@@ -52,6 +66,12 @@ impl core::fmt::Display for EdgeKind {
             EdgeKind::Call => "call",
             EdgeKind::CallReturn => "call_return",
             EdgeKind::SwitchCase => "case",
+            EdgeKind::Jump => "jump",
+            EdgeKind::IndirectJump => "indirect_jump",
+            EdgeKind::IndirectCall => "indirect_call",
+            EdgeKind::ExceptionHandler => "handler",
+            EdgeKind::ExceptionUnwind => "unwind",
+            EdgeKind::ExceptionLeave => "leave",
         };
         f.write_str(label)
     }
