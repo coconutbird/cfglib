@@ -13,6 +13,7 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
+use crate::dataflow::InstrInfo;
 
 /// Categories of side effects an instruction may have.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -27,17 +28,6 @@ pub enum Effect {
     Call,
     /// Any other unclassified side effect.
     Other,
-}
-
-/// Trait that an instruction type implements to declare its side
-/// effects beyond simple register defs/uses.
-///
-/// If an instruction has **no** effects, the CFG region containing
-/// only such instructions is considered *pure*.
-pub trait SideEffects {
-    /// Return the list of side effects this instruction causes.
-    /// An empty vec means the instruction is pure.
-    fn effects(&self) -> Vec<Effect>;
 }
 
 /// Purity verdict for a block or CFG.
@@ -62,10 +52,10 @@ impl Purity {
 }
 
 /// Analyse purity of a single block.
-pub fn block_purity<I: SideEffects>(cfg: &Cfg<I>, block: BlockId) -> Purity {
+pub fn block_purity<I: InstrInfo>(cfg: &Cfg<I>, block: BlockId) -> Purity {
     let mut all = Vec::new();
     for inst in cfg.block(block).instructions() {
-        all.extend(inst.effects());
+        all.extend_from_slice(inst.effects());
     }
     if all.is_empty() {
         Purity::Pure
@@ -77,11 +67,11 @@ pub fn block_purity<I: SideEffects>(cfg: &Cfg<I>, block: BlockId) -> Purity {
 }
 
 /// Analyse purity of the entire CFG.
-pub fn cfg_purity<I: SideEffects>(cfg: &Cfg<I>) -> Purity {
+pub fn cfg_purity<I: InstrInfo>(cfg: &Cfg<I>) -> Purity {
     let mut all = Vec::new();
     for b in cfg.blocks() {
         for inst in b.instructions() {
-            all.extend(inst.effects());
+            all.extend_from_slice(inst.effects());
         }
     }
     if all.is_empty() {
@@ -94,7 +84,7 @@ pub fn cfg_purity<I: SideEffects>(cfg: &Cfg<I>) -> Purity {
 }
 
 /// Collect per-block purity for every block in the CFG.
-pub fn all_block_purities<I: SideEffects>(cfg: &Cfg<I>) -> Vec<(BlockId, Purity)> {
+pub fn all_block_purities<I: InstrInfo>(cfg: &Cfg<I>) -> Vec<(BlockId, Purity)> {
     cfg.blocks()
         .iter()
         .map(|b| (b.id(), block_purity(cfg, b.id())))
@@ -121,8 +111,10 @@ mod tests {
         fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.name) }
     }
 
-    impl SideEffects for PInst {
-        fn effects(&self) -> Vec<Effect> { self.side.clone() }
+    impl InstrInfo for PInst {
+        fn uses(&self) -> &[crate::dataflow::Location] { &[] }
+        fn defs(&self) -> &[crate::dataflow::Location] { &[] }
+        fn effects(&self) -> &[Effect] { &self.side }
     }
 
     fn pure(name: &'static str) -> PInst {

@@ -40,7 +40,7 @@ impl DominatorTree {
                     continue;
                 }
                 let b_rpo = rpo_num[b.index()] as usize;
-                let preds = cfg.predecessors(b);
+                let preds: Vec<BlockId> = cfg.predecessors(b).collect();
 
                 // Find the first processed predecessor.
                 let mut new_idom = None;
@@ -210,7 +210,7 @@ impl DominatorTree {
                 let b_rpo = b_rpo as usize;
 
                 // In the reversed graph, successors are predecessors.
-                let rev_preds = cfg.successors(b);
+                let rev_preds: Vec<BlockId> = cfg.successors(b).collect();
 
                 let mut new_idom = None;
                 for &p in &rev_preds {

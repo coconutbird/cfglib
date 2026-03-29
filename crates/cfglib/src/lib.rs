@@ -33,18 +33,13 @@ pub mod ast;
 pub mod dataflow;
 pub mod graph;
 
-// Re-exports for convenience.
-pub use ast::{AstNode, lift};
+// Re-exports — core types for building and traversing CFGs.
 pub use block::{BasicBlock, BlockId};
 pub use builder::CfgBuilder;
 pub use cfg::Cfg;
-pub use dataflow::{DataDeps, DefSite, Location, UseSite};
-pub use dataflow::defuse::DefUseChains;
-pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
-pub use dataflow::liveness::Liveness;
-pub use dataflow::reaching::ReachingDefs;
 pub use edge::{Edge, EdgeId, EdgeKind};
 pub use flow::{FlowControl, FlowEffect};
-pub use graph::dominator::DominatorTree;
-pub use graph::structure::NaturalLoop;
-pub use purity::{Effect, Purity, SideEffects};
+
+// Re-exports — data flow and analysis.
+pub use dataflow::{InstrInfo, Location, ProgramPoint};
+pub use purity::Effect;

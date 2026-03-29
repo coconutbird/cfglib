@@ -100,7 +100,7 @@ fn lift_region<I: Clone>(
             id: block,
             instructions: cfg.block(block).instructions().to_vec(),
         });
-        let succs = cfg.successors(block);
+        let succs: Vec<BlockId> = cfg.successors(block).collect();
         if succs.len() == 1 && !visited.contains(&succs[0].0) {
             current = Some(succs[0]);
         }

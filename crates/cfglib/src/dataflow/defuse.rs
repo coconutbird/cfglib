@@ -11,7 +11,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::cfg::Cfg;
-use super::{DataDeps, DefSite, UseSite};
+use super::{InstrInfo, DefSite, UseSite};
 use super::reaching::{ReachingDef, ReachingDefs};
 
 /// Def-use and use-def chain results.
@@ -26,7 +26,7 @@ pub struct DefUseChains {
 
 impl DefUseChains {
     /// Compute def-use and use-def chains for the given CFG.
-    pub fn compute<I: DataDeps>(cfg: &Cfg<I>) -> Self {
+    pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
         let reaching = ReachingDefs::compute(cfg);
 
         let mut def_use: BTreeMap<DefSite, BTreeSet<UseSite>> = BTreeMap::new();
@@ -49,7 +49,7 @@ impl DefUseChains {
 
                 // For each location this instruction uses, find all
                 // reaching defs of that location at this point.
-                for loc in inst.uses() {
+                for &loc in inst.uses() {
                     let suppliers: BTreeSet<DefSite> = current_reaching
                         .iter()
                         .filter(|rd| rd.location == loc)
@@ -69,10 +69,10 @@ impl DefUseChains {
                         block,
                         inst_idx: idx,
                     };
-                    for loc in &defs {
+                    for loc in defs {
                         current_reaching.retain(|rd| rd.location != *loc);
                     }
-                    for loc in defs {
+                    for &loc in defs {
                         current_reaching.insert(ReachingDef {
                             location: loc,
                             site: def_site,
@@ -120,7 +120,7 @@ mod tests {
     use alloc::vec::Vec;
     use crate::block::BlockId;
     use crate::builder::CfgBuilder;
-    use crate::dataflow::{DataDeps, DefSite, Location};
+    use crate::dataflow::{InstrInfo, DefSite, Location};
     use crate::flow::{FlowControl, FlowEffect};
 
     #[derive(Debug, Clone)]
@@ -136,9 +136,9 @@ mod tests {
         fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.name) }
     }
 
-    impl DataDeps for DfInst {
-        fn uses(&self) -> Vec<Location> { self.uses.clone() }
-        fn defs(&self) -> Vec<Location> { self.defs.clone() }
+    impl InstrInfo for DfInst {
+        fn uses(&self) -> &[Location] { &self.uses }
+        fn defs(&self) -> &[Location] { &self.defs }
     }
 
     fn def(name: &'static str, loc: u16) -> DfInst {

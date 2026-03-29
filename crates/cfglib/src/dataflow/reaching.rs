@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use super::{DataDeps, DefSite, Location};
+use super::{InstrInfo, DefSite, Location};
 use super::fixpoint::{self, Direction, FixpointResult, Problem};
 
 /// A reaching definition: which location was defined, and where.
@@ -25,7 +25,7 @@ pub struct ReachingDef {
 /// The reaching definitions problem.
 pub struct ReachingDefsProblem;
 
-impl<I: DataDeps> Problem<I> for ReachingDefsProblem {
+impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
     type Fact = BTreeSet<ReachingDef>;
 
     fn direction(&self) -> Direction {
@@ -56,11 +56,11 @@ impl<I: DataDeps> Problem<I> for ReachingDefsProblem {
                     inst_idx: idx,
                 };
                 // Kill: remove all previous defs of the same locations.
-                for loc in &defs {
+                for loc in defs {
                     out.retain(|rd| rd.location != *loc);
                 }
                 // Gen: add the new defs.
-                for loc in defs {
+                for &loc in defs {
                     out.insert(ReachingDef {
                         location: loc,
                         site,
@@ -80,7 +80,7 @@ pub struct ReachingDefs<F> {
 
 impl ReachingDefs<BTreeSet<ReachingDef>> {
     /// Run reaching definitions on the given CFG.
-    pub fn compute<I: DataDeps>(cfg: &Cfg<I>) -> Self {
+    pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
         let result = fixpoint::solve(cfg, &ReachingDefsProblem);
         Self { inner: result }
     }
@@ -118,7 +118,7 @@ mod tests {
     use alloc::borrow::Cow;
     use alloc::vec;
     use crate::builder::CfgBuilder;
-    use super::{DataDeps, Location};
+    use super::{InstrInfo, Location};
     use crate::flow::{FlowControl, FlowEffect};
 
     /// Mock instruction that carries flow-control info AND data deps.
@@ -135,9 +135,9 @@ mod tests {
         fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.name) }
     }
 
-    impl DataDeps for DfInst {
-        fn uses(&self) -> Vec<Location> { self.uses.clone() }
-        fn defs(&self) -> Vec<Location> { self.defs.clone() }
+    impl InstrInfo for DfInst {
+        fn uses(&self) -> &[Location] { &self.uses }
+        fn defs(&self) -> &[Location] { &self.defs }
     }
 
     fn ff(name: &'static str) -> DfInst {

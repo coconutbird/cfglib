@@ -12,13 +12,13 @@ use alloc::collections::BTreeSet;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use super::{DataDeps, Location};
+use super::{InstrInfo, Location};
 use super::fixpoint::{self, Direction, FixpointResult, Problem};
 
 /// The liveness problem.
 pub struct LivenessProblem;
 
-impl<I: DataDeps> Problem<I> for LivenessProblem {
+impl<I: InstrInfo> Problem<I> for LivenessProblem {
     type Fact = BTreeSet<Location>;
 
     fn direction(&self) -> Direction {
@@ -50,10 +50,10 @@ impl<I: DataDeps> Problem<I> for LivenessProblem {
         for inst in insts.iter().rev() {
             // Kill: locations defined here are no longer live above.
             for loc in inst.defs() {
-                live.remove(&loc);
+                live.remove(loc);
             }
             // Gen: locations used here are live above.
-            for loc in inst.uses() {
+            for &loc in inst.uses() {
                 live.insert(loc);
             }
         }
@@ -69,7 +69,7 @@ pub struct Liveness {
 
 impl Liveness {
     /// Run liveness analysis on the given CFG.
-    pub fn compute<I: DataDeps>(cfg: &Cfg<I>) -> Self {
+    pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
         let result = fixpoint::solve(cfg, &LivenessProblem);
         Self { inner: result }
     }
@@ -95,7 +95,7 @@ impl Liveness {
     }
 
     /// All locations that are live somewhere in the program.
-    pub fn all_live_locations<I: DataDeps>(&self, cfg: &Cfg<I>) -> BTreeSet<Location> {
+    pub fn all_live_locations<I: InstrInfo>(&self, cfg: &Cfg<I>) -> BTreeSet<Location> {
         let mut all = BTreeSet::new();
         for b in cfg.blocks() {
             all.extend(self.live_in(b.id()));
@@ -113,7 +113,7 @@ mod tests {
     use alloc::vec;
     use alloc::vec::Vec;
     use crate::builder::CfgBuilder;
-    use super::{DataDeps, Location};
+    use super::{InstrInfo, Location};
     use crate::flow::{FlowControl, FlowEffect};
 
     #[derive(Debug, Clone)]
@@ -129,9 +129,9 @@ mod tests {
         fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.name) }
     }
 
-    impl DataDeps for DfInst {
-        fn uses(&self) -> Vec<Location> { self.uses.clone() }
-        fn defs(&self) -> Vec<Location> { self.defs.clone() }
+    impl InstrInfo for DfInst {
+        fn uses(&self) -> &[Location] { &self.uses }
+        fn defs(&self) -> &[Location] { &self.defs }
     }
 
     fn def(name: &'static str, loc: u16) -> DfInst {

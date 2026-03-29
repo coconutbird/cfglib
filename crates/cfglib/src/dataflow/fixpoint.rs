@@ -86,7 +86,7 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
         Direction::Backward => {
             // For backward analysis, initialise all exit blocks.
             for b in cfg.blocks() {
-                if cfg.successors(b.id()).is_empty() {
+                if cfg.successor_edges(b.id()).is_empty() {
                     block_out[b.id().index()] = problem.entry_fact();
                     block_in[b.id().index()] =
                         problem.transfer(cfg, b.id(), &block_out[b.id().index()]);
@@ -109,15 +109,17 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
         match problem.direction() {
             Direction::Forward => {
                 // IN = meet of all predecessors' OUT.
-                let preds = cfg.predecessors(block);
-                let mut merged = if preds.is_empty() {
-                    problem.entry_fact()
-                } else {
-                    block_out[preds[0].index()].clone()
+                let mut preds = cfg.predecessors(block);
+                let merged = match preds.next() {
+                    None => problem.entry_fact(),
+                    Some(first) => {
+                        let mut m = block_out[first.index()].clone();
+                        for p in preds {
+                            m = problem.meet(&m, &block_out[p.index()]);
+                        }
+                        m
+                    }
                 };
-                for &p in preds.iter().skip(1) {
-                    merged = problem.meet(&merged, &block_out[p.index()]);
-                }
                 block_in[block.index()] = merged;
 
                 let new_out = problem.transfer(cfg, block, &block_in[block.index()]);
@@ -130,15 +132,17 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
             }
             Direction::Backward => {
                 // OUT = meet of all successors' IN.
-                let succs = cfg.successors(block);
-                let mut merged = if succs.is_empty() {
-                    problem.entry_fact()
-                } else {
-                    block_in[succs[0].index()].clone()
+                let mut succs = cfg.successors(block);
+                let merged = match succs.next() {
+                    None => problem.entry_fact(),
+                    Some(first) => {
+                        let mut m = block_in[first.index()].clone();
+                        for s in succs {
+                            m = problem.meet(&m, &block_in[s.index()]);
+                        }
+                        m
+                    }
                 };
-                for &s in succs.iter().skip(1) {
-                    merged = problem.meet(&merged, &block_in[s.index()]);
-                }
                 block_out[block.index()] = merged;
 
                 let new_in = problem.transfer(cfg, block, &block_out[block.index()]);

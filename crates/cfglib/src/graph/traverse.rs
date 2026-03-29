@@ -24,7 +24,8 @@ impl<I> Cfg<I> {
             order.push(id);
 
             // Push successors in reverse so the first successor is visited first.
-            let succs = self.successors(id);
+            // Collect into a small buffer to reverse iteration order.
+            let succs: Vec<BlockId> = self.successors(id).collect();
             for &s in succs.iter().rev() {
                 if !visited[s.index()] {
                     stack.push(s);

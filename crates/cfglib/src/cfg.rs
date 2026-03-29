@@ -3,6 +3,7 @@
 
 extern crate alloc;
 use alloc::vec::Vec;
+use core::slice;
 
 use crate::block::{BasicBlock, BlockId};
 use crate::edge::{Edge, EdgeId, EdgeKind};
@@ -69,20 +70,20 @@ impl<I> Cfg<I> {
         &self.preds[id.index()]
     }
 
-    /// Successor block ids.
-    pub fn successors(&self, id: BlockId) -> Vec<BlockId> {
-        self.succs[id.index()]
-            .iter()
-            .map(|&eid| self.edges[eid.index()].target)
-            .collect()
+    /// Successor block ids (allocation-free).
+    pub fn successors(&self, id: BlockId) -> Successors<'_> {
+        Successors {
+            edges: &self.edges,
+            iter: self.succs[id.index()].iter(),
+        }
     }
 
-    /// Predecessor block ids.
-    pub fn predecessors(&self, id: BlockId) -> Vec<BlockId> {
-        self.preds[id.index()]
-            .iter()
-            .map(|&eid| self.edges[eid.index()].source)
-            .collect()
+    /// Predecessor block ids (allocation-free).
+    pub fn predecessors(&self, id: BlockId) -> Predecessors<'_> {
+        Predecessors {
+            edges: &self.edges,
+            iter: self.preds[id.index()].iter(),
+        }
     }
 
     /// Number of basic blocks.
@@ -128,3 +129,44 @@ impl<I> Cfg<I> {
         id
     }
 }
+
+
+/// Iterator over successor block ids (zero-allocation).
+pub struct Successors<'a> {
+    edges: &'a [Edge],
+    iter: slice::Iter<'a, EdgeId>,
+}
+
+impl<'a> Iterator for Successors<'a> {
+    type Item = BlockId;
+    #[inline]
+    fn next(&mut self) -> Option<BlockId> {
+        self.iter.next().map(|&eid| self.edges[eid.index()].target)
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl<'a> ExactSizeIterator for Successors<'a> {}
+
+/// Iterator over predecessor block ids (zero-allocation).
+pub struct Predecessors<'a> {
+    edges: &'a [Edge],
+    iter: slice::Iter<'a, EdgeId>,
+}
+
+impl<'a> Iterator for Predecessors<'a> {
+    type Item = BlockId;
+    #[inline]
+    fn next(&mut self) -> Option<BlockId> {
+        self.iter.next().map(|&eid| self.edges[eid.index()].source)
+    }
+    #[inline]
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.iter.size_hint()
+    }
+}
+
+impl<'a> ExactSizeIterator for Predecessors<'a> {}

@@ -382,8 +382,7 @@ mod tests {
         // bb2: []   (merge — c, ret)
         assert!(cfg.num_blocks() >= 3);
         // Entry has two successors: true arm + false arm (merge).
-        let entry_succs = cfg.successors(cfg.entry());
-        assert_eq!(entry_succs.len(), 2);
+        assert_eq!(cfg.successor_edges(cfg.entry()).len(), 2);
     }
 
     #[test]
@@ -404,8 +403,7 @@ mod tests {
         // bb2: [else, c] → merge(bb3)
         // bb3: [d, ret]
         assert!(cfg.num_blocks() >= 4);
-        let entry_succs = cfg.successors(cfg.entry());
-        assert_eq!(entry_succs.len(), 2);
+        assert_eq!(cfg.successor_edges(cfg.entry()).len(), 2);
     }
 
     #[test]
@@ -507,7 +505,7 @@ mod tests {
             ff("c"),
             MockInst(FlowEffect::Return, "ret"),
         ]);
-        let dom = crate::DominatorTree::compute(&cfg);
+        let dom = crate::graph::dominator::DominatorTree::compute(&cfg);
         // Entry dominates all blocks.
         for b in cfg.blocks() {
             assert!(dom.dominates(cfg.entry(), b.id()));
