@@ -62,7 +62,10 @@ pub use graph::structure::{BackEdge, NaturalLoop, detect_loops, find_back_edges}
 // Re-exports — transforms and linearization.
 pub use linearize::{BlockOrder, Emitter, LinearInst, linearize};
 pub use region::{Handler, HandlerKind, Region, RegionId};
-pub use transform::{merge_blocks, remove_empty_blocks, remove_unreachable, simplify};
+pub use transform::{
+    dead_code_elimination, merge_blocks, remove_empty_blocks, remove_unreachable, simplify,
+    split_critical_edges,
+};
 
 // Re-exports — SSA.
 pub use ssa::{DominanceFrontiers, PhiMap, PhiNode, insert_phis};
@@ -72,3 +75,10 @@ pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
 
 // Re-exports — loop canonicalization.
 pub use graph::structure::{CanonicalLoop, canonicalize_loops, insert_preheader, loop_exit_blocks};
+
+// Re-exports — SCC and CDG.
+pub use graph::cdg::ControlDependenceGraph;
+pub use graph::scc::{Scc, SccResult, tarjan_scc};
+
+// Re-exports — constant propagation.
+pub use dataflow::constprop::{ConstPropProblem, ConstValue, ConstantFolder, constant_propagation};
