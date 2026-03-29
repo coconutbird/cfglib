@@ -87,8 +87,10 @@ pub use dataflow::{InstrInfo, Location, ProgramPoint};
 // ── Re-exports: Graph algorithms ────────────────────────────────────
 
 pub use graph::cdg::ControlDependenceGraph;
+pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff, cfg_diff};
 pub use graph::dominator::DominatorTree;
 pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
+pub use graph::pdg::{Dependence, ProgramDependenceGraph};
 pub use graph::scc::{Scc, SccResult, tarjan_scc};
 pub use graph::structure::{
     BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, find_back_edges,
