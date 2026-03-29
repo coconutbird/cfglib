@@ -5,6 +5,7 @@ pub mod cdg;
 pub mod diff;
 pub mod dominator;
 pub mod dot;
+pub mod eh;
 pub mod inc_dom;
 pub mod interval;
 pub mod loopnest;

@@ -13,12 +13,16 @@
 //! locations each instruction reads from and writes to, then run any
 //! of the provided analyses.
 
+pub mod abs_int;
 pub mod constprop;
 pub mod copyprop;
 pub mod defuse;
 pub mod fixpoint;
 pub mod liveness;
+pub mod memssa;
+pub mod phi_web;
 pub mod reaching;
+pub mod sccp;
 pub mod ssa;
 pub mod ssa_destruct;
 

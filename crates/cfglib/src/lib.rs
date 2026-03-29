@@ -90,6 +90,7 @@ pub use graph::callgraph::{CallEdge, CallGraph, FunctionId, FunctionNode};
 pub use graph::cdg::ControlDependenceGraph;
 pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff, cfg_diff};
 pub use graph::dominator::DominatorTree;
+pub use graph::eh::{EhBlockKind, EhEdge, EhModel, build_eh_model, cleanup_blocks, landing_pads};
 pub use graph::inc_dom::{IncrementalUpdate, update_after_edge_insert, update_after_edge_remove};
 pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
 pub use graph::loopnest::{LoopNestNode, LoopNestingTree};
@@ -111,13 +112,18 @@ pub use analysis::expr::{
 };
 pub use analysis::metrics::{CfgMetrics, cfg_metrics};
 pub use analysis::pattern::{CfgPattern, detect_patterns};
+pub use analysis::profile::CfgProfile;
 pub use analysis::tailcall::{TailCall, detect_tail_calls};
 pub use analysis::valuenumber::{
     BlockValueNumbers, ValueNumber, ValueNumberInfo, ValueNumbering, count_redundant,
     global_value_numbering, local_value_numbering,
 };
+pub use dataflow::abs_int::{AbstractDomain, AbstractResult, Lattice, abstract_interpret};
 pub use dataflow::constprop::{ConstPropProblem, ConstValue, ConstantFolder, constant_propagation};
 pub use dataflow::copyprop::{CopyPropResult, CopySource, copy_propagation};
+pub use dataflow::memssa::{MemoryAccess, MemoryEffect, MemorySSA, build_memory_ssa};
+pub use dataflow::phi_web::{PhiWeb, PhiWebs, compute_phi_webs};
+pub use dataflow::sccp::{SccpResult, sccp};
 pub use dataflow::ssa_destruct::{PhiCopy, copies_by_predecessor, eliminate_phis};
 
 // ── Re-exports: Transforms & linearization ──────────────────────────
@@ -125,6 +131,7 @@ pub use dataflow::ssa_destruct::{PhiCopy, copies_by_predecessor, eliminate_phis}
 pub use transform::coloring::{ColorAssignment, InterferenceGraph, color_graph};
 pub use transform::contract::{contract_edge, split_node};
 pub use transform::loops::{RotationResult, find_loop_invariants, rotate_loop};
+pub use transform::pre::{PreResult, analyse_pre, eliminate_pre};
 pub use transform::{
     BlockOrder, Emitter, LinearInst, dead_code_elimination, linearize, merge_blocks,
     remove_empty_blocks, remove_unreachable, simplify, split_critical_edges,

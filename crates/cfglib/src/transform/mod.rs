@@ -15,6 +15,7 @@ pub mod critical;
 pub mod dce;
 pub mod linearize;
 pub mod loops;
+pub mod pre;
 
 // Re-export all pass entry points at the `transform` level for convenience.
 pub use cleanup::{merge_blocks, remove_empty_blocks, remove_unreachable, simplify};
