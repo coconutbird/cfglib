@@ -1,4 +1,4 @@
-//! AST lifting — reconstruct structured control flow from a [`Cfg`].
+//! AST lifting — reconstruct structured control flow from a [`Cfg`](crate::Cfg).
 //!
 //! Takes a flat control-flow graph and produces a tree of [`AstNode`]s
 //! representing `if/else`, `loop`, `switch`, and linear sequences.

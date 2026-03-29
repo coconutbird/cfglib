@@ -29,7 +29,7 @@ impl<I> Cfg<I> {
     /// Create an empty CFG with a single entry block.
     ///
     /// This is the primary constructor for ISA frontends that build
-    /// the graph manually (as opposed to [`CfgBuilder::build`] which
+    /// the graph manually (as opposed to [`crate::CfgBuilder::build`] which
     /// processes a structured instruction stream).
     pub fn new() -> Self {
         let entry = BlockId(0);

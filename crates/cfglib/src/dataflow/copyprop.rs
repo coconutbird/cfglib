@@ -133,93 +133,19 @@ mod tests {
     use crate::cfg::Cfg;
     use crate::dataflow::Location;
     use crate::edge::EdgeKind;
-    use crate::flow::{FlowControl, FlowEffect};
-    use alloc::borrow::Cow;
-    use alloc::vec;
-    use alloc::vec::Vec;
-
-    /// A test instruction that supports copy semantics.
-    #[derive(Debug, Clone)]
-    struct CopyInst {
-        name: &'static str,
-        uses: Vec<Location>,
-        defs: Vec<Location>,
-        is_copy: bool,
-    }
-
-    impl FlowControl for CopyInst {
-        fn flow_effect(&self) -> FlowEffect {
-            FlowEffect::Fallthrough
-        }
-        fn display_mnemonic(&self) -> Cow<'_, str> {
-            Cow::Borrowed(self.name)
-        }
-    }
-
-    impl InstrInfo for CopyInst {
-        fn uses(&self) -> &[Location] {
-            &self.uses
-        }
-        fn defs(&self) -> &[Location] {
-            &self.defs
-        }
-    }
-
-    impl CopySource for CopyInst {
-        fn as_copy(&self) -> Option<(Location, Location)> {
-            if self.is_copy && self.defs.len() == 1 && self.uses.len() == 1 {
-                Some((self.defs[0], self.uses[0]))
-            } else {
-                None
-            }
-        }
-        fn rewrite_use(&mut self, old: Location, new: Location) {
-            for u in &mut self.uses {
-                if *u == old {
-                    *u = new;
-                }
-            }
-        }
-    }
-
-    fn copy_inst(name: &'static str, dst: u16, src: u16) -> CopyInst {
-        CopyInst {
-            name,
-            uses: vec![Location(src)],
-            defs: vec![Location(dst)],
-            is_copy: true,
-        }
-    }
-
-    fn def_inst(name: &'static str, dst: u16) -> CopyInst {
-        CopyInst {
-            name,
-            uses: vec![],
-            defs: vec![Location(dst)],
-            is_copy: false,
-        }
-    }
-
-    fn use_inst(name: &'static str, src: u16) -> CopyInst {
-        CopyInst {
-            name,
-            uses: vec![Location(src)],
-            defs: vec![],
-            is_copy: false,
-        }
-    }
+    use crate::test_util::{DfInst, df_copy, df_def, df_use};
 
     #[test]
     fn simple_copy_propagation() {
         // def r0; copy r1 = r0; use r1 → use r0, remove copy.
-        let mut cfg: Cfg<CopyInst> = Cfg::new();
+        let mut cfg: Cfg<DfInst> = Cfg::new();
         let exit = cfg.new_block();
         cfg.block_mut(cfg.entry())
             .instructions_vec_mut()
-            .extend([def_inst("def_r0", 0), copy_inst("mov", 1, 0)]);
+            .extend([df_def("def_r0", 0), df_copy("mov", 1, 0)]);
         cfg.block_mut(exit)
             .instructions_vec_mut()
-            .push(use_inst("use_r1", 1));
+            .push(df_use("use_r1", 1));
         cfg.add_edge(cfg.entry(), exit, EdgeKind::Fallthrough);
 
         let result = copy_propagation(&mut cfg);
@@ -234,12 +160,12 @@ mod tests {
     #[test]
     fn copy_chain_propagation() {
         // def r0; copy r1 = r0; copy r2 = r1; use r2 → use r0.
-        let mut cfg: Cfg<CopyInst> = Cfg::new();
+        let mut cfg: Cfg<DfInst> = Cfg::new();
         cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
-            def_inst("def_r0", 0),
-            copy_inst("mov1", 1, 0),
-            copy_inst("mov2", 2, 1),
-            use_inst("use_r2", 2),
+            df_def("def_r0", 0),
+            df_copy("mov1", 1, 0),
+            df_copy("mov2", 2, 1),
+            df_use("use_r2", 2),
         ]);
 
         let result = copy_propagation(&mut cfg);

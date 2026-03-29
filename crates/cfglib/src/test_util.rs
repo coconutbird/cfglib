@@ -1,12 +1,26 @@
 //! Shared test helpers for cfglib.
 //!
-//! Provides a minimal [`MockInst`] type that implements [`FlowControl`]
-//! for use in unit tests across all modules.
+//! Provides mock instruction types used across all test modules:
+//!
+//! - [`MockInst`] — minimal, flow-effect only (for graph/transform tests).
+//! - [`DfInst`] — full-featured: flow + defs/uses + effects + optional
+//!   copy semantics, expression decomposition, and constant values.
+//!
+//! `DfInst` implements **all** instruction traits (`FlowControl`,
+//! `InstrInfo`, `CopySource`, `ExprInstr`) so test modules don't need
+//! to define their own instruction types.
 
 extern crate alloc;
 use alloc::borrow::Cow;
+use alloc::vec::Vec;
 
+use crate::analysis::expr::ExprInstr;
+use crate::dataflow::copyprop::CopySource;
+use crate::dataflow::{InstrInfo, Location};
 use crate::flow::{FlowControl, FlowEffect};
+use crate::purity::Effect;
+
+// ── MockInst (flow-only) ────────────────────────────────────────────
 
 /// A minimal mock instruction carrying only flow-effect and mnemonic.
 #[derive(Debug, Clone)]
@@ -26,17 +40,12 @@ pub fn ff(name: &'static str) -> MockInst {
     MockInst(FlowEffect::Fallthrough, name)
 }
 
-// ── Data-flow mock instruction ──────────────────────────────────────
+// ── DfInst (full-featured mock) ─────────────────────────────────────
 
-use crate::dataflow::{InstrInfo, Location};
-use crate::purity::Effect;
-use alloc::vec::Vec;
-
-/// A mock instruction that carries both control-flow classification
-/// **and** data-flow information (defs/uses/side-effects).
+/// A mock instruction that carries control-flow, data-flow, and
+/// optional higher-level semantics (copy, expression, constant).
 ///
-/// Used by data-flow and purity analysis tests across `reaching`,
-/// `liveness`, `defuse`, and `purity` modules.
+/// Used across all analysis and transform test modules.
 #[derive(Debug, Clone)]
 pub struct DfInst {
     /// Control-flow classification.
@@ -49,6 +58,13 @@ pub struct DfInst {
     pub defs: Vec<Location>,
     /// Side effects (memory, I/O, etc.).
     pub side_effects: Vec<Effect>,
+    /// If `true`, this instruction is a simple copy (`defs[0] := uses[0]`).
+    pub is_copy: bool,
+    /// Expression operator name (e.g. `"add"`, `"mul"`). `None` for
+    /// instructions that can't be decomposed into expressions.
+    pub op: Option<&'static str>,
+    /// If set, this instruction loads a constant value.
+    pub constant: Option<i64>,
 }
 
 impl FlowControl for DfInst {
@@ -72,37 +88,67 @@ impl InstrInfo for DfInst {
     }
 }
 
-/// Create a [`DfInst`] that defines a single location.
-pub fn df_def(name: &'static str, loc: u16) -> DfInst {
+impl CopySource for DfInst {
+    fn as_copy(&self) -> Option<(Location, Location)> {
+        if self.is_copy && self.defs.len() == 1 && self.uses.len() == 1 {
+            Some((self.defs[0], self.uses[0]))
+        } else {
+            None
+        }
+    }
+    fn rewrite_use(&mut self, old: Location, new: Location) {
+        for u in &mut self.uses {
+            if *u == old {
+                *u = new;
+            }
+        }
+    }
+}
+
+impl ExprInstr for DfInst {
+    fn as_expr(&self) -> Option<(&str, &[Location])> {
+        self.op.map(|op| (op, self.uses.as_slice()))
+    }
+    fn as_const(&self) -> Option<i64> {
+        self.constant
+    }
+}
+
+// ── DfInst constructors ─────────────────────────────────────────────
+
+/// Default fields for a `DfInst` (no copy, no expr, no constant).
+fn df_base(name: &'static str) -> DfInst {
     DfInst {
         effect: FlowEffect::Fallthrough,
         name,
         uses: Vec::new(),
-        defs: alloc::vec![Location(loc)],
+        defs: Vec::new(),
         side_effects: Vec::new(),
+        is_copy: false,
+        op: None,
+        constant: None,
+    }
+}
+
+/// Create a [`DfInst`] that defines a single location.
+pub fn df_def(name: &'static str, loc: u16) -> DfInst {
+    DfInst {
+        defs: alloc::vec![Location(loc)],
+        ..df_base(name)
     }
 }
 
 /// Create a [`DfInst`] that uses a single location.
 pub fn df_use(name: &'static str, loc: u16) -> DfInst {
     DfInst {
-        effect: FlowEffect::Fallthrough,
-        name,
         uses: alloc::vec![Location(loc)],
-        defs: Vec::new(),
-        side_effects: Vec::new(),
+        ..df_base(name)
     }
 }
 
-/// Create a plain [`DfInst`] with no defs, uses, or side effects (fallthrough).
+/// Create a plain [`DfInst`] with no defs, uses, or side effects.
 pub fn df_ff(name: &'static str) -> DfInst {
-    DfInst {
-        effect: FlowEffect::Fallthrough,
-        name,
-        uses: Vec::new(),
-        defs: Vec::new(),
-        side_effects: Vec::new(),
-    }
+    df_base(name)
 }
 
 /// Override the flow effect of a [`DfInst`].
@@ -113,16 +159,42 @@ pub fn df_with_effect(mut inst: DfInst, effect: FlowEffect) -> DfInst {
 
 /// Create a pure [`DfInst`] (no side effects, no defs/uses).
 pub fn df_pure(name: &'static str) -> DfInst {
-    df_ff(name)
+    df_base(name)
 }
 
 /// Create an impure [`DfInst`] with a single side effect.
 pub fn df_impure(name: &'static str, e: Effect) -> DfInst {
     DfInst {
-        effect: FlowEffect::Fallthrough,
-        name,
-        uses: Vec::new(),
-        defs: Vec::new(),
         side_effects: alloc::vec![e],
+        ..df_base(name)
+    }
+}
+
+/// Create a copy instruction (`dst := src`).
+pub fn df_copy(name: &'static str, dst: u16, src: u16) -> DfInst {
+    DfInst {
+        defs: alloc::vec![Location(dst)],
+        uses: alloc::vec![Location(src)],
+        is_copy: true,
+        ..df_base(name)
+    }
+}
+
+/// Create an expression instruction (`dst = op(srcs...)`).
+pub fn df_op(name: &'static str, op: &'static str, dst: u16, srcs: &[u16]) -> DfInst {
+    DfInst {
+        defs: alloc::vec![Location(dst)],
+        uses: srcs.iter().map(|&s| Location(s)).collect(),
+        op: Some(op),
+        ..df_base(name)
+    }
+}
+
+/// Create a constant-load instruction (`dst = constant`).
+pub fn df_const(name: &'static str, dst: u16, val: i64) -> DfInst {
+    DfInst {
+        defs: alloc::vec![Location(dst)],
+        constant: Some(val),
+        ..df_base(name)
     }
 }

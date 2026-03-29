@@ -1,9 +1,9 @@
 //! Generic control-flow graph library for binary analysis.
 //!
 //! This crate provides an ISA-agnostic [`Cfg<I>`] data structure and a
-//! builder that converts any flat instruction stream into a structured
-//! control-flow graph. The only requirement is that the instruction type
-//! implements the [`FlowControl`] trait.
+//! suite of analyses, transforms, and visualization tools for working
+//! with control-flow graphs. The only requirement is that the
+//! instruction type `I` implements the [`FlowControl`] trait.
 //!
 //! # Quick start
 //!
@@ -16,10 +16,30 @@
 //! // 3. Traverse, compute dominators, or export to DOT:
 //! // println!("{}", cfg.to_dot());
 //! ```
+//!
+//! # Trait hierarchy
+//!
+//! Instruction types implement progressively richer traits depending on
+//! which analyses they want to use:
+//!
+//! ```text
+//! FlowControl              (required — control-flow classification)
+//!   └─ SwitchCandidate     (optional — switch table recovery)
+//!
+//! InstrInfo                (optional — defs/uses/effects for dataflow)
+//!   ├─ CopySource          (optional — copy propagation)
+//!   ├─ ConstantFolder      (optional — constant propagation)
+//!   └─ ExprInstr           (optional — expression tree recovery)
+//! ```
+//!
+//! Additionally, [`Problem`] is the trait for pluggable dataflow
+//! analyses, and [`Emitter`] is the trait for linearization output.
 
 #![no_std]
 #![warn(missing_docs)]
 extern crate alloc;
+
+// ── Modules ─────────────────────────────────────────────────────────
 
 // Core types.
 pub mod block;
@@ -30,63 +50,71 @@ pub mod flow;
 pub mod purity;
 pub mod region;
 
-// Submodules.
-pub mod analysis;
-pub mod ast;
-pub mod dataflow;
+// Graph algorithms.
 pub mod graph;
-pub mod linearize;
+
+// Dataflow framework and analyses.
+pub mod dataflow;
+
+// Higher-level analyses.
+pub mod analysis;
+
+// AST lifting / structural recovery.
+pub mod ast;
+
+// SSA construction.
 pub mod ssa;
+
+// Transforms and linearization.
+pub mod linearize;
 pub mod transform;
 
-// Shared test utilities.
+// Shared test utilities (crate-internal).
 #[cfg(test)]
 pub(crate) mod test_util;
 
-// Re-exports — core types for building and traversing CFGs.
+// ── Re-exports: Core ────────────────────────────────────────────────
+
 pub use block::{BasicBlock, BlockId, Guard};
 pub use builder::{BuildError, CfgBuilder};
 pub use cfg::Cfg;
 pub use edge::{CallSite, Edge, EdgeId, EdgeKind};
 pub use flow::{FlowControl, FlowEffect};
+pub use purity::Effect;
+pub use region::{Handler, HandlerKind, Region, RegionId};
 
-// Re-exports — data flow and analysis.
+// ── Re-exports: Dataflow framework ──────────────────────────────────
+
 pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
 pub use dataflow::{InstrInfo, Location, ProgramPoint};
-pub use purity::Effect;
 
-// Re-exports — graph analysis.
+// ── Re-exports: Graph algorithms ────────────────────────────────────
+
+pub use graph::cdg::ControlDependenceGraph;
 pub use graph::dominator::DominatorTree;
-pub use graph::structure::{BackEdge, NaturalLoop, detect_loops, find_back_edges};
+pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
+pub use graph::scc::{Scc, SccResult, tarjan_scc};
+pub use graph::structure::{
+    BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, find_back_edges,
+    insert_preheader, loop_exit_blocks,
+};
 
-// Re-exports — transforms and linearization.
+// ── Re-exports: SSA ─────────────────────────────────────────────────
+
+pub use ssa::{DominanceFrontiers, PhiMap, PhiNode, insert_phis};
+
+// ── Re-exports: Analyses ────────────────────────────────────────────
+
+pub use analysis::expr::{
+    BlockExprTrees, ExprInstr, ExprNode, recover_block_expressions, recover_expressions,
+};
+pub use dataflow::constprop::{ConstPropProblem, ConstValue, ConstantFolder, constant_propagation};
+pub use dataflow::copyprop::{CopyPropResult, CopySource, copy_propagation};
+
+// ── Re-exports: Transforms & linearization ──────────────────────────
+
 pub use linearize::{BlockOrder, Emitter, LinearInst, linearize};
-pub use region::{Handler, HandlerKind, Region, RegionId};
 pub use transform::{
     dead_code_elimination, merge_blocks, remove_empty_blocks, remove_unreachable, simplify,
     split_critical_edges,
-};
-
-// Re-exports — SSA.
-pub use ssa::{DominanceFrontiers, PhiMap, PhiNode, insert_phis};
-
-// Re-exports — interval analysis.
-pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
-
-// Re-exports — loop canonicalization.
-pub use graph::structure::{CanonicalLoop, canonicalize_loops, insert_preheader, loop_exit_blocks};
-
-// Re-exports — SCC and CDG.
-pub use graph::cdg::ControlDependenceGraph;
-pub use graph::scc::{Scc, SccResult, tarjan_scc};
-
-// Re-exports — constant propagation.
-pub use dataflow::constprop::{ConstPropProblem, ConstValue, ConstantFolder, constant_propagation};
-
-// Re-exports — copy propagation.
-pub use dataflow::copyprop::{CopyPropResult, CopySource, copy_propagation};
-
-// Re-exports — expression recovery.
-pub use analysis::expr::{
-    BlockExprTrees, ExprInstr, ExprNode, recover_block_expressions, recover_expressions,
 };

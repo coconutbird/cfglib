@@ -190,76 +190,17 @@ pub fn recover_expressions<I: ExprInstr>(cfg: &Cfg<I>) -> Vec<BlockExprTrees> {
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::{InstrInfo, Location};
-    use crate::flow::{FlowControl, FlowEffect};
-    use alloc::borrow::Cow;
-    use alloc::vec;
-    use alloc::vec::Vec;
-
-    #[derive(Debug, Clone)]
-    struct ExprTestInst {
-        name: &'static str,
-        op: Option<&'static str>,
-        uses: Vec<Location>,
-        defs: Vec<Location>,
-        constant: Option<i64>,
-    }
-
-    impl FlowControl for ExprTestInst {
-        fn flow_effect(&self) -> FlowEffect {
-            FlowEffect::Fallthrough
-        }
-        fn display_mnemonic(&self) -> Cow<'_, str> {
-            Cow::Borrowed(self.name)
-        }
-    }
-
-    impl InstrInfo for ExprTestInst {
-        fn uses(&self) -> &[Location] {
-            &self.uses
-        }
-        fn defs(&self) -> &[Location] {
-            &self.defs
-        }
-    }
-
-    impl ExprInstr for ExprTestInst {
-        fn as_expr(&self) -> Option<(&str, &[Location])> {
-            self.op.map(|op| (op, self.uses.as_slice()))
-        }
-        fn as_const(&self) -> Option<i64> {
-            self.constant
-        }
-    }
-
-    fn op(name: &'static str, op: &'static str, dst: u16, srcs: &[u16]) -> ExprTestInst {
-        ExprTestInst {
-            name,
-            op: Some(op),
-            uses: srcs.iter().map(|&s| Location(s)).collect(),
-            defs: vec![Location(dst)],
-            constant: None,
-        }
-    }
-
-    fn konst(name: &'static str, dst: u16, val: i64) -> ExprTestInst {
-        ExprTestInst {
-            name,
-            op: None,
-            uses: vec![],
-            defs: vec![Location(dst)],
-            constant: Some(val),
-        }
-    }
+    use crate::dataflow::Location;
+    use crate::test_util::{DfInst, df_const, df_op};
 
     #[test]
     fn recover_simple_expression_tree() {
         // mul t0, r1, r2    (t0 = r1 * r2)
         // add t1, r0, t0    (t1 = r0 + t0 = r0 + r1 * r2)
-        let mut cfg: Cfg<ExprTestInst> = Cfg::new();
+        let mut cfg: Cfg<DfInst> = Cfg::new();
         cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
-            op("mul", "mul", 10, &[1, 2]),  // t0(loc10) = r1 * r2
-            op("add", "add", 11, &[0, 10]), // t1(loc11) = r0 + t0
+            df_op("mul", "mul", 10, &[1, 2]),  // t0(loc10) = r1 * r2
+            df_op("add", "add", 11, &[0, 10]), // t1(loc11) = r0 + t0
         ]);
 
         let trees = recover_block_expressions(&cfg, cfg.entry());
@@ -293,10 +234,10 @@ mod tests {
     #[test]
     fn constant_folding_in_tree() {
         // const t0 = 42; add t1, r0, t0 → add(Leaf(r0), Const(42))
-        let mut cfg: Cfg<ExprTestInst> = Cfg::new();
+        let mut cfg: Cfg<DfInst> = Cfg::new();
         cfg.block_mut(cfg.entry())
             .instructions_vec_mut()
-            .extend([konst("ldc", 10, 42), op("add", "add", 11, &[0, 10])]);
+            .extend([df_const("ldc", 10, 42), df_op("add", "add", 11, &[0, 10])]);
 
         let trees = recover_block_expressions(&cfg, cfg.entry());
         assert_eq!(trees.roots.len(), 1);
@@ -313,11 +254,11 @@ mod tests {
     fn multi_use_not_inlined() {
         // mul t0, r1, r2; add t1, r0, t0; sub t2, t0, r3
         // t0 has 2 uses → should NOT be inlined, stays as Leaf.
-        let mut cfg: Cfg<ExprTestInst> = Cfg::new();
+        let mut cfg: Cfg<DfInst> = Cfg::new();
         cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
-            op("mul", "mul", 10, &[1, 2]),
-            op("add", "add", 11, &[0, 10]),
-            op("sub", "sub", 12, &[10, 3]),
+            df_op("mul", "mul", 10, &[1, 2]),
+            df_op("add", "add", 11, &[0, 10]),
+            df_op("sub", "sub", 12, &[10, 3]),
         ]);
 
         let trees = recover_block_expressions(&cfg, cfg.entry());

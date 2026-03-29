@@ -1,7 +1,7 @@
 //! Data flow analysis framework.
 //!
 //! Provides generic infrastructure for computing data flow properties
-//! over a [`Cfg`]:
+//! over a [`Cfg`](crate::Cfg):
 //!
 //! - **Reaching definitions** — which writes can reach a given point
 //! - **Liveness** — which variables are live at each point

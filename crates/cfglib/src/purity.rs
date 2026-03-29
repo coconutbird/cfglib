@@ -4,7 +4,7 @@
 //! side effects) or **impure** based on the instruction-level side
 //! effect declarations.
 //!
-//! An instruction type implements [`SideEffects`] to declare whether
+//! An instruction type implements [`Effect`]-based side-effect declarations to declare whether
 //! it touches memory, I/O, or other global state beyond its explicit
 //! def/use set.
 
