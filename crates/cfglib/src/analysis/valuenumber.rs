@@ -113,27 +113,103 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
     (BlockValueNumbers { inst_vn, redundant }, next_vn)
 }
 
+/// Scoped tables inherited along dominator-tree edges.
+#[derive(Debug, Clone)]
+struct ScopedVnTables {
+    loc_to_vn: BTreeMap<Location, ValueNumber>,
+    expr_to_vn: BTreeMap<ExprKey, ValueNumber>,
+    next_vn: ValueNumber,
+}
+
 /// Run global value numbering over the dominator tree.
 ///
 /// Processes blocks in dominator-tree preorder so that dominated
-/// blocks inherit value numbers from their dominators.
+/// blocks inherit the `loc → VN` and `expr → VN` tables from their
+/// immediate dominator. This allows cross-block redundancy detection.
 pub fn global_value_numbering<I: ValueNumberInfo>(
     cfg: &Cfg<I>,
-    _dom: &DominatorTree,
+    dom: &DominatorTree,
 ) -> ValueNumbering {
-    let rpo = cfg.reverse_postorder();
     let mut blocks = BTreeMap::new();
-    let mut next_vn: ValueNumber = 0;
+    let mut scopes: BTreeMap<BlockId, ScopedVnTables> = BTreeMap::new();
 
+    // Walk in RPO (valid dominator-tree preorder).
+    let rpo = cfg.reverse_postorder();
     for &bid in &rpo {
-        let (bvn, new_next) = local_value_numbering(cfg, bid, next_vn);
-        next_vn = new_next;
-        blocks.insert(bid, bvn);
+        // Inherit tables from immediate dominator.
+        let (mut loc_to_vn, mut expr_to_vn, mut next_vn) = if let Some(idom) = dom.idom(bid) {
+            if let Some(parent) = scopes.get(&idom) {
+                (
+                    parent.loc_to_vn.clone(),
+                    parent.expr_to_vn.clone(),
+                    parent.next_vn,
+                )
+            } else {
+                (BTreeMap::new(), BTreeMap::new(), 0)
+            }
+        } else {
+            (BTreeMap::new(), BTreeMap::new(), 0)
+        };
+
+        let insts = cfg.block(bid).instructions();
+        let mut inst_vn = Vec::with_capacity(insts.len());
+        let mut redundant = Vec::new();
+
+        for (idx, inst) in insts.iter().enumerate() {
+            if !inst.is_pure() || inst.defs().is_empty() {
+                inst_vn.push(None);
+                continue;
+            }
+
+            let operands: Vec<ValueNumber> = inst
+                .uses()
+                .iter()
+                .map(|loc| {
+                    *loc_to_vn.entry(*loc).or_insert_with(|| {
+                        let vn = next_vn;
+                        next_vn += 1;
+                        vn
+                    })
+                })
+                .collect();
+
+            let key = ExprKey {
+                opcode: inst.opcode(),
+                operands,
+            };
+
+            if let Some(&existing_vn) = expr_to_vn.get(&key) {
+                inst_vn.push(Some(existing_vn));
+                redundant.push(idx);
+                for d in inst.defs() {
+                    loc_to_vn.insert(*d, existing_vn);
+                }
+            } else {
+                let vn = next_vn;
+                next_vn += 1;
+                expr_to_vn.insert(key, vn);
+                inst_vn.push(Some(vn));
+                for d in inst.defs() {
+                    loc_to_vn.insert(*d, vn);
+                }
+            }
+        }
+
+        scopes.insert(
+            bid,
+            ScopedVnTables {
+                loc_to_vn,
+                expr_to_vn,
+                next_vn,
+            },
+        );
+        blocks.insert(bid, BlockValueNumbers { inst_vn, redundant });
     }
 
+    let max_vn = scopes.values().map(|s| s.next_vn).max().unwrap_or(0);
     ValueNumbering {
         blocks,
-        num_values: next_vn,
+        num_values: max_vn,
     }
 }
 
@@ -220,7 +296,9 @@ mod tests {
     }
 
     #[test]
-    fn gvn_across_blocks() {
+    fn gvn_detects_cross_block_redundancy() {
+        // Block 0: t2 = op1(loc0, loc1)
+        // Block 1: t3 = op1(loc0, loc1)  ← redundant (same expr, dominator has it)
         let mut cfg: Cfg<VnInst> = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
@@ -232,6 +310,38 @@ mod tests {
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);
         let vn = global_value_numbering(&cfg, &dom);
-        assert!(vn.num_values > 0);
+        // The instruction in block b should be marked redundant.
+        let b_vn = &vn.blocks[&b];
+        assert_eq!(
+            b_vn.redundant.len(),
+            1,
+            "cross-block redundancy not detected"
+        );
+        assert_eq!(b_vn.redundant[0], 0);
+        // Both instructions should share the same value number.
+        let entry_vn = vn.blocks[&cfg.entry()].inst_vn[0].unwrap();
+        let b_inst_vn = b_vn.inst_vn[0].unwrap();
+        assert_eq!(entry_vn, b_inst_vn);
+    }
+
+    #[test]
+    fn gvn_no_cross_block_without_dominance() {
+        // Diamond: entry → A, entry → B. Same expr in A and B.
+        // Neither dominates the other, so no redundancy.
+        let mut cfg: Cfg<VnInst> = Cfg::new();
+        let a = cfg.new_block();
+        let b = cfg.new_block();
+        cfg.block_mut(a)
+            .instructions_vec_mut()
+            .push(vn_inst(1, &[0, 1], &[2]));
+        cfg.block_mut(b)
+            .instructions_vec_mut()
+            .push(vn_inst(1, &[0, 1], &[3]));
+        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
+        let dom = DominatorTree::compute(&cfg);
+        let vn = global_value_numbering(&cfg, &dom);
+        assert!(vn.blocks[&a].redundant.is_empty());
+        assert!(vn.blocks[&b].redundant.is_empty());
     }
 }

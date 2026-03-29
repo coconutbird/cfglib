@@ -151,6 +151,24 @@ mod tests {
     }
 
     #[test]
+    fn pre_detects_cross_block_redundancy() {
+        // Block 0 computes op1(loc0, loc1), block 1 computes the same.
+        // Block 0 dominates block 1, so the second is redundant.
+        let mut cfg: Cfg<PreInst> = Cfg::new();
+        let b = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(pi(1, &[0, 1], &[2]));
+        cfg.block_mut(b)
+            .instructions_vec_mut()
+            .push(pi(1, &[0, 1], &[3]));
+        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        let dom = DominatorTree::compute(&cfg);
+        let result = analyse_pre(&cfg, &dom);
+        assert_eq!(result.eliminated, 1);
+    }
+
+    #[test]
     fn pre_no_redundancy() {
         let mut cfg: Cfg<PreInst> = Cfg::new();
         let b = cfg.new_block();
