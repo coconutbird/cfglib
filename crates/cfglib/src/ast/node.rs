@@ -12,7 +12,7 @@ use crate::block::BlockId;
 /// A node in the reconstructed AST.
 ///
 /// Generic over the instruction type `I`, matching [`Cfg<I>`](crate::Cfg).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AstNode<I> {
     /// A basic block — leaf node containing the original instructions.
     Block {
@@ -106,7 +106,7 @@ pub enum AstNode<I> {
 }
 
 /// A single handler arm inside a [`AstNode::TryCatch`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatchHandler<I> {
     /// The entry block of the handler.
     pub entry: BlockId,
@@ -115,7 +115,7 @@ pub struct CatchHandler<I> {
 }
 
 /// A single case arm inside a [`AstNode::Switch`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SwitchCase<I> {
     /// The case block ID from the CFG.
     pub id: BlockId,

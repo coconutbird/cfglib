@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 /// Opaque identifier for a basic block within a [`Cfg`](crate::Cfg).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BlockId(pub(crate) u32);
 
 impl BlockId {
@@ -38,6 +39,7 @@ impl core::fmt::Display for BlockId {
 /// register/flag rather than a branch (ARM IT blocks, GPU wave
 /// predication, x86 CMOV sequences, etc.).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Guard {
     /// Predicate register or condition name (ISA-specific).
     pub predicate: String,
@@ -47,7 +49,8 @@ pub struct Guard {
 }
 
 /// A basic block containing a linear sequence of instructions.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BasicBlock<I> {
     /// Block identity.
     pub(crate) id: BlockId,

@@ -33,7 +33,7 @@ impl Scc {
 }
 
 /// Result of Tarjan's SCC computation.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SccResult {
     /// SCCs in **reverse topological order** (leaves first).
     pub sccs: Vec<Scc>,

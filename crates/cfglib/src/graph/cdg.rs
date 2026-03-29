@@ -18,7 +18,7 @@ use crate::cfg::Cfg;
 use crate::graph::dominator::DominatorTree;
 
 /// The control dependence graph.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlDependenceGraph {
     /// `dependences[b]` = set of blocks that `b` is control-dependent on.
     /// i.e. "b executes conditionally because of a branch in these blocks".

@@ -133,3 +133,95 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
 pub fn constant_propagation<I: ConstantFolder>(cfg: &Cfg<I>) -> FixpointResult<ConstFact> {
     fixpoint::solve(cfg, &ConstPropProblem)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cfg::Cfg;
+    use crate::edge::EdgeKind;
+    use crate::test_util::{DfInst, df_const, df_def, df_use};
+
+    #[test]
+    fn meet_top_with_const() {
+        assert_eq!(
+            ConstValue::Top.meet(ConstValue::Const(42)),
+            ConstValue::Const(42)
+        );
+        assert_eq!(
+            ConstValue::Const(42).meet(ConstValue::Top),
+            ConstValue::Const(42)
+        );
+    }
+
+    #[test]
+    fn meet_same_const() {
+        assert_eq!(
+            ConstValue::Const(7).meet(ConstValue::Const(7)),
+            ConstValue::Const(7)
+        );
+    }
+
+    #[test]
+    fn meet_different_consts_is_bottom() {
+        assert_eq!(
+            ConstValue::Const(1).meet(ConstValue::Const(2)),
+            ConstValue::Bottom
+        );
+    }
+
+    #[test]
+    fn meet_bottom_absorbs() {
+        assert_eq!(
+            ConstValue::Bottom.meet(ConstValue::Const(5)),
+            ConstValue::Bottom
+        );
+        assert_eq!(
+            ConstValue::Const(5).meet(ConstValue::Bottom),
+            ConstValue::Bottom
+        );
+        assert_eq!(ConstValue::Bottom.meet(ConstValue::Top), ConstValue::Bottom);
+    }
+
+    #[test]
+    fn is_const_and_as_const() {
+        assert!(ConstValue::Const(1).is_const());
+        assert_eq!(ConstValue::Const(1).as_const(), Some(1));
+        assert!(!ConstValue::Top.is_const());
+        assert_eq!(ConstValue::Top.as_const(), None);
+        assert!(!ConstValue::Bottom.is_const());
+        assert_eq!(ConstValue::Bottom.as_const(), None);
+    }
+
+    #[test]
+    fn constant_propagation_tracks_const_def() {
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        let exit = cfg.new_block();
+        // Entry: const 42 → loc0, then use loc0
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .extend([df_const("load_42", 0, 42)]);
+        cfg.block_mut(exit)
+            .instructions_vec_mut()
+            .push(df_use("use0", 0));
+        cfg.add_edge(cfg.entry(), exit, EdgeKind::Fallthrough);
+
+        let result = constant_propagation(&cfg);
+        let fact_out = result.fact_out(cfg.entry());
+        let loc0 = crate::dataflow::Location(0);
+        assert_eq!(fact_out.get(&loc0), Some(&ConstValue::Const(42)));
+    }
+
+    #[test]
+    fn constant_propagation_non_const_def_is_bottom() {
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        // Entry: def loc0 (non-constant)
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(df_def("generic_def", 0));
+
+        let result = constant_propagation(&cfg);
+        let fact_out = result.fact_out(cfg.entry());
+        let loc0 = crate::dataflow::Location(0);
+        assert_eq!(fact_out.get(&loc0), Some(&ConstValue::Bottom));
+    }
+}

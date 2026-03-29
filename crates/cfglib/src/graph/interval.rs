@@ -29,7 +29,7 @@ pub struct Interval {
 /// `levels[1]` contains the intervals of the first derived graph,
 /// and so on. If the sequence reduces to a single interval at
 /// the top level, the CFG is reducible.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntervalAnalysis {
     /// Successive derived graphs, each containing intervals.
     pub levels: Vec<Vec<Interval>>,

@@ -9,7 +9,7 @@ use crate::block::BlockId;
 use crate::cfg::Cfg;
 
 /// A dominator tree computed from a [`Cfg`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DominatorTree {
     /// Immediate dominator for each block. `idom[entry] == None`.
     idom: Vec<Option<BlockId>>,

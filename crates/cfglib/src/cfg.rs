@@ -11,7 +11,8 @@ use crate::edge::{Edge, EdgeId, EdgeKind};
 use crate::region::{Region, RegionId};
 
 /// A control-flow graph over instruction type `I`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Cfg<I> {
     pub(crate) blocks: Vec<BasicBlock<I>>,
     pub(crate) edges: Vec<Edge>,

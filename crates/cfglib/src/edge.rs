@@ -6,6 +6,7 @@ use crate::block::BlockId;
 
 /// Opaque identifier for an edge within a [`Cfg`](crate::Cfg).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EdgeId(pub(crate) u32);
 
 impl EdgeId {
@@ -24,6 +25,7 @@ impl core::fmt::Display for EdgeId {
 
 /// The kind of a control-flow edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EdgeKind {
     /// Sequential fallthrough to the next block.
     Fallthrough,
@@ -81,6 +83,7 @@ impl core::fmt::Display for EdgeKind {
 
 /// A directed edge between two basic blocks.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Edge {
     /// Edge identity.
     pub(crate) id: EdgeId,
@@ -101,8 +104,22 @@ pub struct Edge {
     pub(crate) call_site: Option<CallSite>,
 }
 
+impl PartialEq for Edge {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.source == other.source
+            && self.target == other.target
+            && self.kind == other.kind
+            && self.weight.map(f64::to_bits) == other.weight.map(f64::to_bits)
+            && self.call_site == other.call_site
+    }
+}
+
+impl Eq for Edge {}
+
 /// Metadata attached to a call edge describing the call target.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct CallSite {
     /// Symbolic name or address of the call target (e.g. function name).
     pub target_name: Option<alloc::string::String>,

@@ -105,3 +105,78 @@ impl<I: FlowControl> Cfg<I> {
         s
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::cfg::Cfg;
+    use crate::edge::EdgeKind;
+    use crate::test_util::{MockInst, ff};
+
+    #[test]
+    fn to_dot_contains_digraph_wrapper() {
+        let mut cfg = Cfg::new();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("nop"));
+        let dot = cfg.to_dot();
+        assert!(dot.starts_with("digraph cfg {"));
+        assert!(dot.trim_end().ends_with('}'));
+    }
+
+    #[test]
+    fn to_dot_contains_block_labels() {
+        let mut cfg = Cfg::new();
+        let b = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("entry_inst"));
+        cfg.block_mut(b)
+            .instructions_vec_mut()
+            .push(ff("second_inst"));
+        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        let dot = cfg.to_dot();
+        assert!(dot.contains("entry_inst"), "should contain mnemonic");
+        assert!(dot.contains("second_inst"), "should contain mnemonic");
+    }
+
+    #[test]
+    fn to_dot_conditional_edge_colors() {
+        let mut cfg = Cfg::new();
+        let a = cfg.new_block();
+        let b = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("br"));
+        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
+        let dot = cfg.to_dot();
+        assert!(dot.contains("green4"), "true edge should be green");
+        assert!(dot.contains("red"), "false edge should be red");
+        assert!(dot.contains("\"T\""), "true edge label");
+        assert!(dot.contains("\"F\""), "false edge label");
+    }
+
+    #[test]
+    fn to_dot_empty_block_shows_empty_label() {
+        let cfg: Cfg<MockInst> = Cfg::new();
+        let dot = cfg.to_dot();
+        assert!(dot.contains("(empty)"), "empty block should say (empty)");
+    }
+
+    #[test]
+    fn to_dot_edge_weight_shows_penwidth() {
+        let mut cfg = Cfg::new();
+        let b = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("a"));
+        let eid = cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        cfg.edge_mut(eid).set_weight(Some(0.75));
+        let dot = cfg.to_dot();
+        assert!(
+            dot.contains("penwidth="),
+            "weighted edge should have penwidth"
+        );
+        assert!(dot.contains("0.75"), "weight value should appear in label");
+    }
+}

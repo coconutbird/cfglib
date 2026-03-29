@@ -16,6 +16,7 @@ use crate::block::BlockId;
 
 /// Opaque identifier for a region within a [`Cfg`](crate::Cfg).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RegionId(pub(crate) u32);
 
 impl RegionId {
@@ -39,7 +40,8 @@ impl core::fmt::Display for RegionId {
 }
 
 /// A protected region (try block) and its handlers.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Region {
     /// Region identity.
     pub id: RegionId,
@@ -52,7 +54,8 @@ pub struct Region {
 }
 
 /// An exception handler attached to a [`Region`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Handler {
     /// Entry block of the handler.
     pub entry: BlockId,
@@ -64,6 +67,7 @@ pub struct Handler {
 
 /// Classification of an exception handler.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HandlerKind {
     /// Catch handler — catches a specific exception type.
     Catch,

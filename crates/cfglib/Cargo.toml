@@ -6,5 +6,7 @@ description = "Generic control-flow graph library for binary analysis"
 
 [features]
 default = []
+serde = ["dep:serde"]
 
 [dependencies]
+serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"], optional = true }

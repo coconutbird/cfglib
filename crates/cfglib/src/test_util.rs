@@ -7,7 +7,7 @@
 //!   copy semantics, expression decomposition, and constant values.
 //!
 //! `DfInst` implements **all** instruction traits (`FlowControl`,
-//! `InstrInfo`, `CopySource`, `ExprInstr`) so test modules don't need
+//! `InstrInfo`, `CopySource`, `ExprInstr`, `ConstantFolder`) so test modules don't need
 //! to define their own instruction types.
 
 extern crate alloc;
@@ -111,6 +111,21 @@ impl ExprInstr for DfInst {
     }
     fn as_const(&self) -> Option<i64> {
         self.constant
+    }
+}
+
+impl crate::dataflow::constprop::ConstantFolder for DfInst {
+    fn fold_constant(
+        &self,
+        _known: &alloc::collections::BTreeMap<Location, i64>,
+    ) -> Option<(Location, i64)> {
+        // If this instruction is a constant load, report it.
+        if let Some(val) = self.constant
+            && let Some(&dst) = self.defs.first()
+        {
+            return Some((dst, val));
+        }
+        None
     }
 }
 
