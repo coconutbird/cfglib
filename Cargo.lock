@@ -21,7 +21,8 @@ dependencies = [
 [[package]]
 name = "dxbc"
 version = "0.1.0"
-source = "git+https://github.com/coconutbird/d3dasm#851872b9eb54e150b71a8c0e684e3f224f0696f6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eba0f1e2b76b5c40dd1e2c55bd49f58d84dbca55cee202f00ddabda80454f4c2"
 dependencies = [
  "memchr",
  "nostdio",

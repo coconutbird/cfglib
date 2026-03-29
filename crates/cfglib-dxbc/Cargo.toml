@@ -7,8 +7,9 @@ repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
 description = "SM4/SM5 shader bytecode CFG adapter for cfglib"
-publish = false  # depends on git-only `dxbc` crate
+keywords = ["dxbc", "shader", "cfg", "control-flow", "directx"]
+categories = ["compilers", "no-std"]
 
 [dependencies]
-cfglib = { path = "../cfglib" }
-dxbc = { git = "https://github.com/coconutbird/d3dasm", package = "dxbc" }
+cfglib = { version = "0.1.0", path = "../cfglib" }
+dxbc = "0.1.0"
