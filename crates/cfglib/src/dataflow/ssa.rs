@@ -100,6 +100,38 @@ impl PhiMap {
 /// for each location `v`, find all blocks that define `v`, then
 /// iteratively add φ-functions at dominance frontier blocks until
 /// convergence.
+///
+/// # Examples
+///
+/// ```
+/// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo, DominatorTree};
+/// # #[derive(Debug, Clone)]
+/// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+/// # impl InstrInfo for Inst {
+/// #     fn uses(&self) -> &[Location] { &self.uses }
+/// #     fn defs(&self) -> &[Location] { &self.defs }
+/// # }
+/// use cfglib::insert_phis;
+///
+/// let mut cfg = Cfg::<Inst>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// let b2 = cfg.new_block();
+/// let b3 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
+/// cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
+/// cfg.add_edge(b1, b3, EdgeKind::Fallthrough);
+/// cfg.add_edge(b2, b3, EdgeKind::Fallthrough);
+///
+/// let r0 = Location(0);
+/// cfg.block_mut(b1).push(Inst { uses: vec![], defs: vec![r0] });
+/// cfg.block_mut(b2).push(Inst { uses: vec![], defs: vec![r0] });
+///
+/// let dom = DominatorTree::compute(&cfg);
+/// let phis = insert_phis(&cfg, &dom);
+/// // b3 needs a phi for r0 (defined in both b1 and b2).
+/// assert!(phis.phis_at(b3).iter().any(|p| p.location == r0));
+/// ```
 pub fn insert_phis<I: InstrInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PhiMap {
     let n = cfg.num_blocks();
     let df = DominanceFrontiers::compute(cfg, dom);

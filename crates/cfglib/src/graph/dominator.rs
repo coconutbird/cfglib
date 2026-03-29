@@ -9,6 +9,25 @@ use crate::block::BlockId;
 use crate::cfg::Cfg;
 
 /// A dominator tree computed from a [`Cfg`].
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, DominatorTree};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// let b2 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
+/// cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
+///
+/// let dom = DominatorTree::compute(&cfg);
+/// assert_eq!(dom.idom(b1), Some(b0));
+/// assert_eq!(dom.idom(b2), Some(b0));
+/// assert!(dom.dominates(b0, b1));
+/// assert!(dom.dominates(b0, b2));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DominatorTree {
     /// Immediate dominator for each block. `idom[entry] == None`.

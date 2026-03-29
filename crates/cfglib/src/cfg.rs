@@ -34,6 +34,19 @@ impl<I> Cfg<I> {
     /// This is the primary constructor for ISA frontends that build
     /// the graph manually (as opposed to [`crate::CfgBuilder::build`] which
     /// processes a structured instruction stream).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let entry = cfg.entry();
+    /// let b1 = cfg.new_block();
+    /// cfg.add_edge(entry, b1, EdgeKind::Fallthrough);
+    /// assert_eq!(cfg.num_blocks(), 2);
+    /// assert_eq!(cfg.num_edges(), 1);
+    /// ```
     pub fn new() -> Self {
         let entry = BlockId(0);
         Self {
@@ -170,6 +183,22 @@ impl<I> Cfg<I> {
     }
 
     /// Successor block ids (allocation-free).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b0 = cfg.entry();
+    /// let b1 = cfg.new_block();
+    /// let b2 = cfg.new_block();
+    /// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
+    /// cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
+    ///
+    /// let succs: Vec<_> = cfg.successors(b0).collect();
+    /// assert_eq!(succs.len(), 2);
+    /// ```
     pub fn successors(&self, id: BlockId) -> Successors<'_, I> {
         Successors {
             cfg: self,
@@ -201,6 +230,19 @@ impl<I> Cfg<I> {
     ///
     /// These are the natural exit points of the control-flow graph
     /// (return blocks, terminators, etc.).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b1 = cfg.new_block();
+    /// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+    /// // b1 has no outgoing edges — it's the only exit block.
+    /// let exits: Vec<_> = cfg.exit_blocks().collect();
+    /// assert_eq!(exits, vec![b1]);
+    /// ```
     pub fn exit_blocks(&self) -> impl Iterator<Item = BlockId> + '_ {
         self.blocks
             .iter()
@@ -309,6 +351,24 @@ impl<I> Cfg<I> {
     ///
     /// The successor and predecessor lists of the affected blocks are
     /// updated.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b0 = cfg.entry();
+    /// let b1 = cfg.new_block();
+    /// let eid = cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+    ///
+    /// assert_eq!(cfg.num_edges(), 1);
+    /// let removed = cfg.remove_edge(eid).unwrap();
+    /// assert_eq!(removed.kind(), EdgeKind::Fallthrough);
+    /// assert_eq!(cfg.num_edges(), 0);
+    /// // Double-remove returns None.
+    /// assert!(cfg.remove_edge(eid).is_none());
+    /// ```
     pub fn remove_edge(&mut self, id: EdgeId) -> Option<Edge> {
         let slot = self.edges.get_mut(id.index())?;
         let edge = slot.take()?;
@@ -478,6 +538,23 @@ impl<I: Clone> Cfg<I> {
     ///
     /// Edges that cross the boundary (one endpoint outside the set)
     /// are dropped.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b0 = cfg.entry();
+    /// let b1 = cfg.new_block();
+    /// let b2 = cfg.new_block();
+    /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+    /// cfg.add_edge(b1, b2, EdgeKind::Fallthrough);
+    ///
+    /// let sub = cfg.subgraph(&[b0, b1]);
+    /// assert_eq!(sub.num_blocks(), 2);
+    /// assert_eq!(sub.num_edges(), 1); // b1→b2 dropped
+    /// ```
     pub fn subgraph(&self, blocks: &[BlockId]) -> Self {
         if blocks.is_empty() {
             return Self::new();

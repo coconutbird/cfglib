@@ -93,6 +93,26 @@ impl<I: FlowControl> Cfg<I> {
     }
 
     /// Produce the DOT representation as a [`String`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::borrow::Cow;
+    /// use cfglib::{Cfg, EdgeKind, FlowControl, FlowEffect};
+    ///
+    /// #[derive(Debug, Clone)]
+    /// struct Inst(&'static str);
+    /// impl FlowControl for Inst {
+    ///     fn flow_effect(&self) -> FlowEffect { FlowEffect::Fallthrough }
+    ///     fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.0) }
+    /// }
+    ///
+    /// let mut cfg = Cfg::<Inst>::new();
+    /// cfg.block_mut(cfg.entry()).push(Inst("nop"));
+    /// let dot = cfg.to_dot();
+    /// assert!(dot.contains("digraph cfg"));
+    /// assert!(dot.contains("nop"));
+    /// ```
     pub fn to_dot(&self) -> String {
         let mut s = String::new();
         self.write_dot(&mut s)

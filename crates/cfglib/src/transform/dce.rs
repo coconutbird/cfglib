@@ -16,6 +16,27 @@ use crate::cfg::Cfg;
 /// are never used.
 ///
 /// Returns the number of instructions removed.
+///
+/// # Examples
+///
+/// ```
+/// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+/// # #[derive(Debug, Clone)]
+/// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+/// # impl InstrInfo for Inst {
+/// #     fn uses(&self) -> &[Location] { &self.uses }
+/// #     fn defs(&self) -> &[Location] { &self.defs }
+/// # }
+/// use cfglib::dead_code_elimination;
+///
+/// let mut cfg = Cfg::<Inst>::new();
+/// let b0 = cfg.entry();
+/// // Dead definition: defines r0 but nothing uses it.
+/// cfg.block_mut(b0).push(Inst { uses: vec![], defs: vec![Location(0)] });
+///
+/// let removed = dead_code_elimination(&mut cfg);
+/// assert_eq!(removed, 1);
+/// ```
 pub fn dead_code_elimination<I: crate::dataflow::InstrInfo + Clone>(cfg: &mut Cfg<I>) -> usize {
     use crate::dataflow::fixpoint;
     use crate::dataflow::liveness::LivenessProblem;

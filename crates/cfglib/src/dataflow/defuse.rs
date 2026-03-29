@@ -26,6 +26,32 @@ pub struct DefUseChains {
 
 impl DefUseChains {
     /// Compute def-use and use-def chains for the given CFG.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+    /// # #[derive(Debug, Clone)]
+    /// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+    /// # impl InstrInfo for Inst {
+    /// #     fn uses(&self) -> &[Location] { &self.uses }
+    /// #     fn defs(&self) -> &[Location] { &self.defs }
+    /// # }
+    /// use cfglib::dataflow::defuse::DefUseChains;
+    ///
+    /// let mut cfg = Cfg::<Inst>::new();
+    /// let b0 = cfg.entry();
+    /// let b1 = cfg.new_block();
+    /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+    ///
+    /// let r0 = Location(0);
+    /// cfg.block_mut(b0).push(Inst { uses: vec![], defs: vec![r0] });
+    /// cfg.block_mut(b1).push(Inst { uses: vec![r0], defs: vec![] });
+    ///
+    /// let chains = DefUseChains::compute(&cfg);
+    /// // Defs with no uses would show up in dead_defs().
+    /// assert!(chains.dead_defs().is_empty());
+    /// ```
     pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
         let reaching = ReachingDefs::compute(cfg);
 

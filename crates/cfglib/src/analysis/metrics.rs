@@ -36,6 +36,24 @@ pub struct CfgMetrics {
 }
 
 /// Compute comprehensive metrics for a CFG.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, cfg_metrics};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// let b2 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
+/// cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
+///
+/// let m = cfg_metrics(&cfg);
+/// assert_eq!(m.block_count, 3);
+/// assert_eq!(m.edge_count, 2);
+/// assert_eq!(m.exit_count, 2);
+/// ```
 pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
     let n = cfg.num_blocks();
     let reachable = cfg.dfs_preorder();

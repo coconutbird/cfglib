@@ -148,6 +148,21 @@ pub fn remove_empty_blocks<I>(cfg: &mut Cfg<I>) -> usize {
 /// Run all simplification passes until no more changes occur.
 ///
 /// Returns the total number of transformations applied.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, simplify};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// let b2 = cfg.new_block(); // unreachable
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+///
+/// let changes = simplify(&mut cfg);
+/// assert!(changes > 0); // removed unreachable b2
+/// ```
 pub fn simplify<I>(cfg: &mut Cfg<I>) -> usize {
     let mut total = 0;
     loop {

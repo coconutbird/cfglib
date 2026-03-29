@@ -18,6 +18,28 @@ use crate::cfg::Cfg;
 use crate::graph::dominator::DominatorTree;
 
 /// The control dependence graph.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, DominatorTree, ControlDependenceGraph};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// let b2 = cfg.new_block();
+/// let b3 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
+/// cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
+/// cfg.add_edge(b1, b3, EdgeKind::Fallthrough);
+/// cfg.add_edge(b2, b3, EdgeKind::Fallthrough);
+///
+/// let pdom = DominatorTree::compute_post(&cfg);
+/// let cdg = ControlDependenceGraph::compute(&cfg, &pdom);
+/// // b1 and b2 are control-dependent on b0's branch.
+/// assert!(cdg.is_dependent(b1, b0));
+/// assert!(cdg.is_dependent(b2, b0));
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlDependenceGraph {
     /// `dependences[b]` = set of blocks that `b` is control-dependent on.

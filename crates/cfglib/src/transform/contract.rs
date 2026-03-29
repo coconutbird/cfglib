@@ -20,6 +20,20 @@ use crate::cfg::Cfg;
 /// source has other successors).
 ///
 /// Requires `I: Clone` because instruction vectors are manipulated.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, contract_edge};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+///
+/// // b0 has 1 succ, b1 has 1 pred — contractible.
+/// assert!(contract_edge(&mut cfg, b0, b1));
+/// ```
 pub fn contract_edge<I: Clone>(cfg: &mut Cfg<I>, source: BlockId, target: BlockId) -> bool {
     // Target must have exactly one predecessor (source).
     if cfg.predecessor_edges(target).len() != 1 {

@@ -74,6 +74,32 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
 }
 
 /// Result of a reaching definitions analysis with convenient query methods.
+///
+/// # Examples
+///
+/// ```
+/// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+/// # #[derive(Debug, Clone)]
+/// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+/// # impl InstrInfo for Inst {
+/// #     fn uses(&self) -> &[Location] { &self.uses }
+/// #     fn defs(&self) -> &[Location] { &self.defs }
+/// # }
+/// use cfglib::dataflow::reaching::ReachingDefs;
+///
+/// let mut cfg = Cfg::<Inst>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+///
+/// let r0 = Location(0);
+/// cfg.block_mut(b0).push(Inst { uses: vec![], defs: vec![r0] });
+/// cfg.block_mut(b1).push(Inst { uses: vec![r0], defs: vec![] });
+///
+/// let rd = ReachingDefs::compute(&cfg);
+/// // The def of r0 in b0 reaches b1.
+/// assert!(!rd.reaching_in(b1).is_empty());
+/// ```
 pub struct ReachingDefs {
     inner: FixpointResult<BTreeSet<ReachingDef>>,
 }

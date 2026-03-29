@@ -55,6 +55,21 @@ pub struct EhModel {
 /// Blocks reachable only via `Exception` edges are classified as
 /// landing pads. Blocks that are targets of the existing `Region`
 /// handlers are also incorporated.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, build_eh_model};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+///
+/// let model = build_eh_model(&cfg);
+/// // No exception edges, so no landing pads.
+/// assert!(model.eh_edges.is_empty());
+/// ```
 pub fn build_eh_model<I>(cfg: &Cfg<I>) -> EhModel {
     let mut block_kinds = BTreeMap::new();
     let mut eh_edges = Vec::new();

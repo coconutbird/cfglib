@@ -71,6 +71,23 @@ impl SccResult {
 }
 
 /// Compute strongly connected components using Tarjan's algorithm.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, tarjan_scc};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+/// cfg.add_edge(b1, b0, EdgeKind::Back);
+///
+/// let sccs = tarjan_scc(&cfg);
+/// // b0 and b1 form a non-trivial SCC (cycle).
+/// assert!(!sccs.scc_for(b0).is_trivial());
+/// assert!(sccs.scc_for(b0).contains(b1));
+/// ```
 pub fn tarjan_scc<I>(cfg: &Cfg<I>) -> SccResult {
     let n = cfg.num_blocks();
 

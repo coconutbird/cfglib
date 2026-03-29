@@ -26,6 +26,27 @@ pub trait CfgVisitor<I> {
 }
 
 /// Drive a depth-first traversal over the CFG, invoking visitor callbacks.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, BlockId, CfgVisitor, walk_dfs};
+///
+/// struct Counter(usize);
+/// impl CfgVisitor<u32> for Counter {
+///     fn visit_block(&mut self, _cfg: &Cfg<u32>, _block: BlockId) {
+///         self.0 += 1;
+///     }
+/// }
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+///
+/// let mut counter = Counter(0);
+/// walk_dfs(&cfg, &mut counter);
+/// assert_eq!(counter.0, 2);
+/// ```
 pub fn walk_dfs<I, V: CfgVisitor<I>>(cfg: &Cfg<I>, visitor: &mut V) {
     let mut visited = BTreeSet::new();
     let mut stack = alloc::vec![cfg.entry()];

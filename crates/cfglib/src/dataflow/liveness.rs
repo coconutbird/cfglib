@@ -63,6 +63,32 @@ impl<I: InstrInfo> Problem<I> for LivenessProblem {
 }
 
 /// Result of a liveness analysis with convenient query methods.
+///
+/// # Examples
+///
+/// ```
+/// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+/// # #[derive(Debug, Clone)]
+/// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+/// # impl InstrInfo for Inst {
+/// #     fn uses(&self) -> &[Location] { &self.uses }
+/// #     fn defs(&self) -> &[Location] { &self.defs }
+/// # }
+/// use cfglib::dataflow::liveness::Liveness;
+///
+/// let mut cfg = Cfg::<Inst>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+///
+/// let r0 = Location(0);
+/// cfg.block_mut(b0).push(Inst { uses: vec![], defs: vec![r0] });
+/// cfg.block_mut(b1).push(Inst { uses: vec![r0], defs: vec![] });
+///
+/// let live = Liveness::compute(&cfg);
+/// // r0 is live-out of b0 (used in b1).
+/// assert!(live.is_live_out(r0, b0));
+/// ```
 pub struct Liveness {
     inner: FixpointResult<BTreeSet<Location>>,
 }

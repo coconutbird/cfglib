@@ -20,6 +20,22 @@ use crate::edge::EdgeKind;
 /// # Panics
 ///
 /// Panics if the CFG has no blocks.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, reverse_cfg};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+///
+/// let rev = reverse_cfg(&cfg);
+/// // In the reverse CFG, b1 is the entry and has an edge to b0.
+/// let succs: Vec<_> = rev.successors(rev.entry()).collect();
+/// assert_eq!(succs.len(), 1);
+/// ```
 pub fn reverse_cfg<I: Clone>(cfg: &Cfg<I>) -> Cfg<I> {
     assert!(cfg.num_blocks() > 0, "cannot reverse an empty CFG");
 

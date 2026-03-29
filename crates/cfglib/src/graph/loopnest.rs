@@ -26,6 +26,26 @@ pub struct LoopNestNode {
 }
 
 /// A loop nesting tree built from detected natural loops.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, DominatorTree, detect_loops, LoopNestingTree};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// let b2 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+/// cfg.add_edge(b1, b0, EdgeKind::Back);
+/// cfg.add_edge(b0, b2, EdgeKind::ConditionalTrue);
+///
+/// let dom = DominatorTree::compute(&cfg);
+/// let loops = detect_loops(&cfg, &dom);
+/// let tree = LoopNestingTree::build(&loops);
+/// assert_eq!(tree.len(), 1);
+/// assert_eq!(tree.innermost_loop(b1), Some(0));
+/// ```
 #[derive(Debug, Clone)]
 pub struct LoopNestingTree {
     /// One node per natural loop, indexed by loop index.

@@ -53,6 +53,19 @@ impl VerifyResult {
 /// 5. No duplicate edges in adjacency lists.
 ///
 /// Returns a [`VerifyResult`] containing all violations found.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, verify};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+///
+/// let result = verify(&cfg);
+/// assert!(result.is_ok());
+/// ```
 pub fn verify<I>(cfg: &Cfg<I>) -> VerifyResult {
     let mut errors = Vec::new();
     let n = cfg.num_blocks();

@@ -37,6 +37,21 @@ pub struct CallEdge {
 }
 
 /// A call graph linking multiple functions.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::CallGraph;
+///
+/// let mut cg = CallGraph::new();
+/// let main = cg.add_function("main");
+/// let helper = cg.add_function("helper");
+/// cg.add_call(main, helper, false);
+///
+/// assert_eq!(cg.num_functions(), 2);
+/// assert!(cg.callees(main).contains(&helper));
+/// assert!(cg.callers(helper).contains(&main));
+/// ```
 #[derive(Debug, Clone)]
 pub struct CallGraph {
     nodes: Vec<FunctionNode>,

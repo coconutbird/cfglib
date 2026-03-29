@@ -30,6 +30,20 @@ pub struct CfgProfile {
 
 impl CfgProfile {
     /// Build a profile from edge weights already set on the CFG.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind, CfgProfile};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b1 = cfg.new_block();
+    /// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+    ///
+    /// CfgProfile::set_uniform_weights(&mut cfg);
+    /// let profile = CfgProfile::from_edge_weights(&cfg);
+    /// assert!(profile.hottest_block().is_some());
+    /// ```
     pub fn from_edge_weights<I>(cfg: &Cfg<I>) -> Self {
         let mut edge_weights = BTreeMap::new();
         let mut block_weights = BTreeMap::new();

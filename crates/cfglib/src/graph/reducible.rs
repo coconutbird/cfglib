@@ -25,6 +25,19 @@ use crate::graph::structure::is_reducible;
 /// **Caution**: node splitting can cause exponential code growth in
 /// pathological cases. For most real-world binaries the duplication
 /// is modest.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind};
+/// use cfglib::graph::reducible::make_reducible;
+///
+/// // A simple reducible CFG returns 0 (no changes).
+/// let mut cfg = Cfg::<u32>::new();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+/// assert_eq!(make_reducible(&mut cfg), 0);
+/// ```
 pub fn make_reducible<I: Clone>(cfg: &mut Cfg<I>) -> usize {
     let mut total_split = 0;
 

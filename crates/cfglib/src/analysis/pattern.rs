@@ -42,6 +42,21 @@ pub enum CfgPattern {
 }
 
 /// Scan a CFG for recognised patterns.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, detect_patterns};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
+/// cfg.add_edge(b0, b1, EdgeKind::ConditionalFalse);
+///
+/// let patterns = detect_patterns(&cfg);
+/// // Detects structural patterns like diamond, self-loop, etc.
+/// ```
 pub fn detect_patterns<I>(cfg: &Cfg<I>) -> Vec<CfgPattern> {
     let mut patterns = Vec::new();
 

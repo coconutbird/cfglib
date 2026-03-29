@@ -10,6 +10,20 @@ use crate::cfg::Cfg;
 
 impl<I> Cfg<I> {
     /// Depth-first preorder traversal starting from the entry block.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b0 = cfg.entry();
+    /// let b1 = cfg.new_block();
+    /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+    ///
+    /// let order = cfg.dfs_preorder();
+    /// assert_eq!(order, vec![b0, b1]);
+    /// ```
     pub fn dfs_preorder(&self) -> Vec<BlockId> {
         let mut visited = vec![false; self.num_blocks()];
         let mut order = Vec::with_capacity(self.num_blocks());
@@ -66,6 +80,21 @@ impl<I> Cfg<I> {
     }
 
     /// Reverse postorder — a topological ordering useful for data-flow analysis.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b0 = cfg.entry();
+    /// let b1 = cfg.new_block();
+    /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+    ///
+    /// let rpo = cfg.reverse_postorder();
+    /// // Entry always first in RPO.
+    /// assert_eq!(rpo[0], b0);
+    /// ```
     pub fn reverse_postorder(&self) -> Vec<BlockId> {
         let mut rpo = self.dfs_postorder();
         rpo.reverse();

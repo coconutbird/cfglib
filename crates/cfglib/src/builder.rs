@@ -96,6 +96,33 @@ impl CfgBuilder {
     ///
     /// Declarations ([`FlowEffect::Declaration`]) are stored in the
     /// current block but do not affect control flow.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::borrow::Cow;
+    /// use cfglib::{CfgBuilder, FlowControl, FlowEffect};
+    ///
+    /// #[derive(Debug, Clone)]
+    /// struct Inst(FlowEffect);
+    ///
+    /// impl FlowControl for Inst {
+    ///     fn flow_effect(&self) -> FlowEffect { self.0 }
+    ///     fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed("inst") }
+    /// }
+    ///
+    /// let cfg = CfgBuilder::build(vec![
+    ///     Inst(FlowEffect::Fallthrough),
+    ///     Inst(FlowEffect::ConditionalOpen),
+    ///     Inst(FlowEffect::Fallthrough),
+    ///     Inst(FlowEffect::ConditionalAlternate),
+    ///     Inst(FlowEffect::Fallthrough),
+    ///     Inst(FlowEffect::ConditionalClose),
+    ///     Inst(FlowEffect::Return),
+    /// ]).unwrap();
+    ///
+    /// assert!(cfg.num_blocks() >= 4); // entry, then, else, merge
+    /// ```
     pub fn build<I: FlowControl>(
         instructions: impl IntoIterator<Item = I>,
     ) -> Result<Cfg<I>, BuildError> {

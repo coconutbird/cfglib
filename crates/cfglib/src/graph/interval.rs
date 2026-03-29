@@ -123,6 +123,19 @@ fn build_adjacency<I>(
 ///
 /// Iteratively computes derived graphs until either a single interval
 /// remains (reducible) or no further reduction is possible (irreducible).
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, interval_analysis};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+///
+/// let result = interval_analysis(&cfg);
+/// assert!(result.is_reducible);
+/// ```
 pub fn interval_analysis<I>(cfg: &Cfg<I>) -> IntervalAnalysis {
     let all_blocks: BTreeSet<BlockId> = cfg.blocks().iter().map(|b| b.id()).collect();
     let (succs, preds) = build_adjacency(cfg, &all_blocks);

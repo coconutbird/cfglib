@@ -46,6 +46,24 @@ pub struct BackEdge {
 ///
 /// The result is deduplicated, so an edge satisfying both conditions
 /// appears only once.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, DominatorTree, find_back_edges};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+/// cfg.add_edge(b1, b0, EdgeKind::Back);
+///
+/// let dom = DominatorTree::compute(&cfg);
+/// let backs = find_back_edges(&cfg, &dom);
+/// assert_eq!(backs.len(), 1);
+/// assert_eq!(backs[0].header, b0);
+/// assert_eq!(backs[0].tail, b1);
+/// ```
 pub fn find_back_edges<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackEdge> {
     let mut backs = Vec::new();
     for edge in cfg.edges() {
@@ -88,6 +106,26 @@ fn loop_body_for<I>(cfg: &Cfg<I>, header: BlockId, tail: BlockId) -> BTreeSet<Bl
 ///
 /// Loops sharing the same header are merged into a single
 /// `NaturalLoop` with multiple latches.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, DominatorTree, detect_loops};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// let b2 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+/// cfg.add_edge(b1, b0, EdgeKind::Back);
+/// cfg.add_edge(b0, b2, EdgeKind::ConditionalTrue);
+///
+/// let dom = DominatorTree::compute(&cfg);
+/// let loops = detect_loops(&cfg, &dom);
+/// assert_eq!(loops.len(), 1);
+/// assert_eq!(loops[0].header, b0);
+/// assert!(loops[0].body.contains(&b1));
+/// ```
 pub fn detect_loops<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
     let backs = find_back_edges(cfg, dom);
     if backs.is_empty() {

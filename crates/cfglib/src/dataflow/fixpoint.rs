@@ -69,6 +69,29 @@ impl<F> FixpointResult<F> {
 }
 
 /// Run the fixpoint iteration for the given problem on the CFG.
+///
+/// # Examples
+///
+/// See [`Liveness::compute`](crate::dataflow::liveness::Liveness::compute)
+/// and [`ReachingDefs::compute`](crate::dataflow::reaching::ReachingDefs::compute)
+/// for concrete usage.
+///
+/// ```
+/// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+/// # #[derive(Debug, Clone)]
+/// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+/// # impl InstrInfo for Inst {
+/// #     fn uses(&self) -> &[Location] { &self.uses }
+/// #     fn defs(&self) -> &[Location] { &self.defs }
+/// # }
+/// use cfglib::dataflow::liveness::Liveness;
+///
+/// let mut cfg = Cfg::<Inst>::new();
+/// cfg.block_mut(cfg.entry()).push(Inst { uses: vec![], defs: vec![Location(0)] });
+///
+/// let live = Liveness::compute(&cfg);
+/// assert!(live.live_in(cfg.entry()).is_empty()); // r0 defined, not used
+/// ```
 pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::Fact> {
     let n = cfg.num_blocks();
     let bottom = problem.bottom();

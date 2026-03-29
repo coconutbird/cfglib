@@ -25,6 +25,26 @@ pub struct IncrementalUpdate {
 /// changes this is cheaper than a full recompute.
 ///
 /// Returns the new dominator tree and a list of blocks that changed.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, DominatorTree, update_after_edge_insert};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// let b2 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+/// cfg.add_edge(b1, b2, EdgeKind::Fallthrough);
+/// let dom = DominatorTree::compute(&cfg);
+///
+/// // Add a shortcut edge; update incrementally.
+/// cfg.add_edge(b0, b2, EdgeKind::ConditionalTrue);
+/// let (new_dom, _update) = update_after_edge_insert(&cfg, &dom, b0, b2);
+/// // b2 is now dominated by b0 (reachable directly).
+/// assert_eq!(new_dom.idom(b2), Some(b0));
+/// ```
 pub fn update_after_edge_insert<I>(
     cfg: &Cfg<I>,
     _old_dom: &DominatorTree,

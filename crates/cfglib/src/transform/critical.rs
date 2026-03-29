@@ -14,6 +14,26 @@ use crate::edge::EdgeKind;
 /// Split **critical edges** in the CFG.
 ///
 /// Returns the number of edges split.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{Cfg, EdgeKind, split_critical_edges};
+///
+/// let mut cfg = Cfg::<u32>::new();
+/// let b0 = cfg.entry();
+/// let b1 = cfg.new_block();
+/// let b2 = cfg.new_block();
+/// let b3 = cfg.new_block();
+/// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
+/// cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
+/// cfg.add_edge(b1, b3, EdgeKind::Fallthrough);
+/// cfg.add_edge(b2, b3, EdgeKind::Fallthrough);
+/// // b0→b1 is critical: b0 has 2 succs, b3 has 2 preds.
+///
+/// let split = split_critical_edges(&mut cfg);
+/// // Critical edges were split by inserting new blocks.
+/// ```
 pub fn split_critical_edges<I: Clone>(cfg: &mut Cfg<I>) -> usize {
     // Collect critical edges first (can't mutate while iterating).
     let mut critical = Vec::new();
