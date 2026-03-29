@@ -208,3 +208,130 @@ fn emit_tail_jump<I: Clone>(
         });
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cfg::Cfg;
+    use crate::edge::EdgeKind;
+    use crate::test_util::{MockInst, ff};
+    use alloc::vec;
+
+    /// A trivial emitter that produces string-based mock instructions.
+    struct TestEmitter;
+
+    impl Emitter<MockInst> for TestEmitter {
+        fn emit_jump(&self, _target: &str) -> MockInst {
+            MockInst(crate::flow::FlowEffect::Fallthrough, "jump")
+        }
+        fn emit_conditional_branch(&self, _cond: &MockInst, _target: &str) -> MockInst {
+            MockInst(crate::flow::FlowEffect::Fallthrough, "branch")
+        }
+        fn emit_label(&self, _label: &str) -> MockInst {
+            MockInst(crate::flow::FlowEffect::Fallthrough, "label")
+        }
+    }
+
+    /// Collect all mnemonic names from the linearized output.
+    fn mnemonics(out: &[LinearInst<MockInst>]) -> Vec<&'static str> {
+        out.iter().map(|li| li.inst.1).collect()
+    }
+
+    #[test]
+    fn linearize_single_block() {
+        let mut cfg = Cfg::new();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("a"));
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("b"));
+        let out = linearize(&cfg, BlockOrder::AllocationOrder, &TestEmitter);
+        let names = mnemonics(&out);
+        // Should be: label, a, b
+        assert_eq!(names, vec!["label", "a", "b"]);
+    }
+
+    #[test]
+    fn linearize_two_blocks_with_fallthrough() {
+        let mut cfg = Cfg::new();
+        let b = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("a"));
+        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        let out = linearize(&cfg, BlockOrder::AllocationOrder, &TestEmitter);
+        let names = mnemonics(&out);
+        // Should be: label, a, label, b — no jump needed (fallthrough).
+        assert_eq!(names, vec!["label", "a", "label", "b"]);
+    }
+
+    #[test]
+    fn linearize_non_fallthrough_emits_jump() {
+        let mut cfg = Cfg::new();
+        let b = cfg.new_block();
+        let c = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("a"));
+        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(c).instructions_vec_mut().push(ff("c"));
+        // entry → c (Jump), layout order is entry, b, c.
+        cfg.add_edge(cfg.entry(), c, EdgeKind::Jump);
+        let out = linearize(&cfg, BlockOrder::AllocationOrder, &TestEmitter);
+        let names = mnemonics(&out);
+        // entry's successor is c but layout next is b → needs jump.
+        assert!(names.contains(&"jump"), "should emit jump: {names:?}");
+    }
+
+    #[test]
+    fn linearize_conditional_branch() {
+        let mut cfg = Cfg::new();
+        let t = cfg.new_block();
+        let f = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("cmp"));
+        cfg.block_mut(t).instructions_vec_mut().push(ff("then"));
+        cfg.block_mut(f).instructions_vec_mut().push(ff("else"));
+        cfg.add_edge(cfg.entry(), t, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), f, EdgeKind::ConditionalFalse);
+        let out = linearize(&cfg, BlockOrder::AllocationOrder, &TestEmitter);
+        let names = mnemonics(&out);
+        // Should have a conditional branch for the true edge.
+        assert!(names.contains(&"branch"), "should emit branch: {names:?}");
+    }
+
+    #[test]
+    fn linearize_rpo_order() {
+        let mut cfg = Cfg::new();
+        let b = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("entry"));
+        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        let out = linearize(&cfg, BlockOrder::ReversePostorder, &TestEmitter);
+        // In RPO for a linear chain, entry comes first.
+        assert_eq!(out[0].block, cfg.entry());
+    }
+
+    #[test]
+    fn linearize_custom_order() {
+        let mut cfg = Cfg::new();
+        let b = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("entry"));
+        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        // Reverse order: b first, then entry.
+        let out = linearize(
+            &cfg,
+            BlockOrder::Custom(alloc::vec![b, cfg.entry()]),
+            &TestEmitter,
+        );
+        assert_eq!(out[0].block, b);
+    }
+}

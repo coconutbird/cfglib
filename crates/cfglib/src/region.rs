@@ -80,3 +80,89 @@ pub enum HandlerKind {
         filter_block: BlockId,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::block::BlockId;
+    use crate::cfg::Cfg;
+    use crate::test_util::MockInst;
+    use alloc::collections::BTreeSet;
+
+    fn block_set(ids: &[u32]) -> BTreeSet<BlockId> {
+        ids.iter().map(|&i| BlockId::from_raw(i)).collect()
+    }
+
+    #[test]
+    fn add_region_assigns_sequential_ids() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let r0 = cfg.add_region(Region {
+            id: RegionId(999), // should be overwritten
+            protected_blocks: block_set(&[0]),
+            handlers: alloc::vec![],
+            parent: None,
+        });
+        let r1 = cfg.add_region(Region {
+            id: RegionId(999),
+            protected_blocks: block_set(&[0]),
+            handlers: alloc::vec![],
+            parent: Some(r0),
+        });
+        assert_eq!(r0.index(), 0);
+        assert_eq!(r1.index(), 1);
+        assert_eq!(cfg.regions().len(), 2);
+        assert_eq!(cfg.regions()[1].parent, Some(r0));
+    }
+
+    #[test]
+    fn protecting_region_finds_innermost() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let _b1 = cfg.new_block();
+        let _b2 = cfg.new_block();
+        // Outer region protects blocks 0,1,2.
+        let outer = cfg.add_region(Region {
+            id: RegionId(0),
+            protected_blocks: block_set(&[0, 1, 2]),
+            handlers: alloc::vec![],
+            parent: None,
+        });
+        // Inner region protects block 1 only.
+        let inner = cfg.add_region(Region {
+            id: RegionId(0),
+            protected_blocks: block_set(&[1]),
+            handlers: alloc::vec![],
+            parent: Some(outer),
+        });
+
+        // Block 1 should find the inner (last-added) region.
+        let r = cfg.protecting_region(BlockId::from_raw(1)).unwrap();
+        assert_eq!(r.id, inner);
+
+        // Block 0 should find the outer region.
+        let r = cfg.protecting_region(BlockId::from_raw(0)).unwrap();
+        assert_eq!(r.id, outer);
+
+        // Block that's not in any region.
+        let b3 = cfg.new_block();
+        assert!(cfg.protecting_region(b3).is_none());
+    }
+
+    #[test]
+    fn handler_kind_variants() {
+        let h = Handler {
+            entry: BlockId::from_raw(1),
+            body: block_set(&[1, 2]),
+            kind: HandlerKind::Finally,
+        };
+        assert_eq!(h.kind, HandlerKind::Finally);
+
+        let h2 = Handler {
+            entry: BlockId::from_raw(3),
+            body: block_set(&[3]),
+            kind: HandlerKind::Filter {
+                filter_block: BlockId::from_raw(4),
+            },
+        };
+        assert!(matches!(h2.kind, HandlerKind::Filter { .. }));
+    }
+}
