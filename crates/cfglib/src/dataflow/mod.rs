@@ -21,6 +21,7 @@ pub mod defuse;
 pub mod fixpoint;
 pub mod liveness;
 pub mod memssa;
+pub mod node_fixpoint;
 pub mod phi_web;
 pub mod reaching;
 pub mod sccp;

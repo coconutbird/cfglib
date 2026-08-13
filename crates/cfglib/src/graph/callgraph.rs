@@ -9,6 +9,7 @@
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use crate::cfg::Cfg;
 use crate::flow::CallInfo;
@@ -93,6 +94,51 @@ pub fn is_recursive_function<C>(
         || tarjan_scc(graph).component(function).nodes.len() > 1
 }
 
+/// Compute a per-node summary over a dependency graph in callee-first
+/// order, iterating cyclic components to a fixpoint.
+///
+/// The interprocedural scaffold: nodes are functions, edges point from
+/// caller to callee, and `compute` derives one function's summary while
+/// reading its callees' current summaries out of the slice (indexed by
+/// [`NodeId::index`]). Acyclic call graphs get exactly one `compute` per
+/// function with every callee already final; recursive components iterate
+/// until their summaries stabilise, so `compute` must be monotone over a
+/// finite-height summary domain for termination.
+///
+/// Generic over any [`DirectedGraph`] — the same shape serves module
+/// graphs, type-relation closures, or any callee-first aggregation.
+#[must_use]
+pub fn propagate_summaries<N, E, S: Clone + PartialEq>(
+    graph: &DirectedGraph<N, E>,
+    bottom: &S,
+    mut compute: impl FnMut(&DirectedGraph<N, E>, NodeId, &[S]) -> S,
+) -> Vec<S> {
+    let mut summaries = alloc::vec![bottom.clone(); graph.node_count()];
+    let components = tarjan_scc(graph);
+    // Components arrive in reverse topological order: callees first.
+    for component in &components.components {
+        let cyclic = component.nodes.len() > 1
+            || component
+                .nodes
+                .iter()
+                .any(|&node| graph.successors(node).any(|callee| callee == node));
+        loop {
+            let mut changed = false;
+            for &node in &component.nodes {
+                let updated = compute(graph, node, &summaries);
+                if updated != summaries[node.index()] {
+                    summaries[node.index()] = updated;
+                    changed = true;
+                }
+            }
+            if !cyclic || !changed {
+                break;
+            }
+        }
+    }
+    summaries
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,5 +187,41 @@ mod tests {
         );
         assert!(topological_sort(&graph).is_none());
         assert!(is_recursive_function(&graph, main));
+    }
+
+    #[test]
+    fn summaries_propagate_callee_first_and_stabilise_cycles() {
+        // main calls a; a and b are mutually recursive; a calls leaf.
+        let mut graph = DirectedGraph::new();
+        let main = graph.add_node(FunctionNode { id: "main" });
+        let a = graph.add_node(FunctionNode { id: "a" });
+        let b = graph.add_node(FunctionNode { id: "b" });
+        let leaf = graph.add_node(FunctionNode { id: "leaf" });
+        let call = CallMetadata {
+            is_tail_call: false,
+        };
+        graph.add_edge(main, a, call.clone());
+        graph.add_edge(a, b, call.clone());
+        graph.add_edge(b, a, call.clone());
+        graph.add_edge(a, leaf, call);
+
+        // Summary: the set of transitively reachable callees, by id.
+        let summaries = propagate_summaries(
+            &graph,
+            &alloc::collections::BTreeSet::new(),
+            |graph, node, summaries| {
+                let mut reach = alloc::collections::BTreeSet::new();
+                for callee in graph.successors(node) {
+                    reach.insert(graph[callee].id);
+                    reach.extend(summaries[callee.index()].iter().copied());
+                }
+                reach
+            },
+        );
+        let names = |node: NodeId| summaries[node.index()].clone();
+        assert!(names(leaf).is_empty());
+        assert_eq!(names(main), ["a", "b", "leaf"].into_iter().collect());
+        assert_eq!(names(a), ["a", "b", "leaf"].into_iter().collect());
+        assert_eq!(names(b), ["a", "b", "leaf"].into_iter().collect());
     }
 }

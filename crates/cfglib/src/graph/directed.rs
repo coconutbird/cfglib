@@ -291,6 +291,17 @@ impl<N, E> DirectedGraph<N, E> {
         self.edges.iter().filter(|edge| edge.is_some()).count()
     }
 
+    /// Return the number of edge slots, including tombstones left by
+    /// [`remove_edge`](Self::remove_edge).
+    ///
+    /// Every live [`EdgeId`]'s index is strictly below this, so it is the
+    /// correct size for dense edge-indexed side tables (`seen` bitmaps,
+    /// per-edge facts).
+    #[must_use]
+    pub fn edge_slot_count(&self) -> usize {
+        self.edges.len()
+    }
+
     /// Return outgoing edge identities for `node`.
     #[must_use]
     pub fn outgoing_edges(&self, node: NodeId) -> &[EdgeId] {

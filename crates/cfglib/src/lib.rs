@@ -146,6 +146,7 @@ pub use region::{Handler, HandlerKind, Region, RegionId};
 pub use dataflow::defuse::DefUseChains;
 pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
 pub use dataflow::liveness::Liveness;
+pub use dataflow::node_fixpoint::{NodeFacts, NodeProblem, solve_node_problem};
 pub use dataflow::reaching::{ReachingDef, ReachingDefs};
 pub use dataflow::ssa::{
     DominanceFrontiers, PhiPlacement, PhiPlacements, SsaBlock, SsaForm, SsaInstruction, SsaPhi,
@@ -157,19 +158,22 @@ pub use dataflow::{DefSite, EffectInfo, InstrInfo, Predicated, ProgramPoint, Use
 
 pub use graph::callgraph::{
     CallMetadata, FunctionNode, build_call_graph, find_function, is_recursive_function,
+    propagate_summaries,
 };
 pub use graph::cdg::control_dependence_graph;
 pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff, cfg_diff};
 pub use graph::directed::{DirectedEdge, DirectedGraph, NodeId};
 pub use graph::dominator::DominatorTree;
 pub use graph::dot::write_view_dot;
+pub use graph::edge_traverse::{EdgeStep, breadth_first_edges, shortest_path_edges, walk_edges};
 pub use graph::eh::{EhBlockKind, EhEdge, EhModel, build_eh_model, cleanup_blocks, landing_pads};
 pub use graph::inc_dom::{IncrementalUpdate, update_after_edge_insert, update_after_edge_remove};
 pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
+pub use graph::keyed::KeyedGraph;
 pub use graph::loopnest::{LoopNestNode, LoopNestingTree};
 pub use graph::pdg::{DependenceKind, DependenceNode, program_dependence_graph};
 pub use graph::reverse::reverse_cfg;
-pub use graph::scc::{Scc, SccResult, tarjan_scc};
+pub use graph::scc::{Scc, SccResult, condensation, tarjan_scc};
 pub use graph::structure::{
     BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, detect_loops_tagged,
     find_back_edges, find_back_edges_tagged, insert_preheader, loop_exit_blocks,
@@ -179,7 +183,8 @@ pub use graph::traverse::{
     reverse_postorder, shortest_path, topological_sort,
 };
 pub use graph::verify::{VerifyError, VerifyResult, verify, verify_view};
-pub use graph::view::{DenseNodeId, DirectedGraphView, Rooted, RootedGraphView};
+pub use graph::view::{DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView};
+pub use region::RegionIndex;
 
 // ── Re-exports: Analyses ────────────────────────────────────────────
 

@@ -5,16 +5,35 @@
 //! is inspired by the CLR / JVM exception metadata and Echo's
 //! `ExceptionHandlerRegion`.
 //!
-//! Regions are **optional metadata** on a [`Cfg`](crate::Cfg) — GPU
+//! Regions are **optional metadata** on a [`Cfg`] — GPU
 //! shaders and simple ISAs simply leave the region list empty.
+//!
+//! # Granularity contract
+//!
+//! Protection is **block-granular**: every instruction of a protected
+//! block may unwind. A frontend needing statement-granular protection
+//! (source `try` bodies) splits blocks at the protected boundaries
+//! ([`Cfg::split_block`](crate::Cfg::split_block)) so block granularity is
+//! exact — the same convention the source-CFG lowering uses for every
+//! other boundary.
+//!
+//! # v2 requirements (consumer-gated, deliberately not designed blind)
+//!
+//! Two known needs wait for the first source language with `try` to land,
+//! so their shapes are driven by a real consumer rather than guessed:
+//! `Finally` continuations that depend on the entry reason
+//! (normal / exceptional / break-out), and handler filters keyed by
+//! consumer types instead of [`HandlerKind::Filter`]'s block reference.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
+use crate::cfg::Cfg;
 
-/// Opaque identifier for a region within a [`Cfg`](crate::Cfg).
+/// Opaque identifier for a region within a [`Cfg`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RegionId(pub(crate) u32);
@@ -91,6 +110,43 @@ pub enum HandlerKind {
     },
 }
 
+/// Precomputed innermost-protecting-region lookup.
+///
+/// [`Cfg::protecting_region`](crate::Cfg::protecting_region) scans the
+/// region list backwards per query; over many blocks (AST lifting,
+/// statement-level unwind edges) that is quadratic. This index answers the
+/// same question in O(1) per block after one O(regions × blocks) build,
+/// with identical innermost semantics (the latest-added covering region
+/// wins).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegionIndex {
+    innermost: Vec<Option<RegionId>>,
+}
+
+impl RegionIndex {
+    /// Build the index from a CFG's current regions.
+    ///
+    /// The index is a snapshot: rebuild after adding regions or blocks.
+    #[must_use]
+    pub fn build<I>(cfg: &Cfg<I>) -> Self {
+        let mut innermost = vec![None; cfg.num_blocks()];
+        for region in cfg.regions() {
+            for &block in &region.protected_blocks {
+                if let Some(slot) = innermost.get_mut(block.index()) {
+                    *slot = Some(region.id);
+                }
+            }
+        }
+        Self { innermost }
+    }
+
+    /// The innermost region protecting `block`, if any.
+    #[must_use]
+    pub fn protecting(&self, block: BlockId) -> Option<RegionId> {
+        self.innermost.get(block.index()).copied().flatten()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -155,6 +211,19 @@ mod tests {
         // Block that's not in any region.
         let b3 = cfg.new_block();
         assert!(cfg.protecting_region(b3).is_none());
+
+        // The precomputed index agrees with the linear scan everywhere.
+        let index = RegionIndex::build(&cfg);
+        for block in [0, 1, 2] {
+            let block = BlockId::from_raw(block);
+            assert_eq!(
+                index.protecting(block),
+                cfg.protecting_region(block).map(|r| r.id)
+            );
+        }
+        assert_eq!(index.protecting(BlockId::from_raw(1)), Some(inner));
+        // b3 belongs to no region.
+        assert!(index.protecting(b3).is_none());
     }
 
     #[test]

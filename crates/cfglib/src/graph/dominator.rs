@@ -192,18 +192,21 @@ impl<N: DenseNodeId> DominatorTree<N> {
     }
 }
 
-impl DominatorTree<BlockId> {
-    /// Compute the **post-dominator** tree for the given CFG.
+impl<N: DenseNodeId> DominatorTree<N> {
+    /// Compute the **post-dominator** tree of any graph view from its exit
+    /// nodes.
     ///
     /// Post-dominators are computed by introducing a virtual exit node
-    /// connected from all exit blocks (blocks with no successors), then
-    /// running the dominator algorithm on the reverse graph starting
-    /// from that virtual exit.
-    ///
-    /// This correctly handles CFGs with multiple exit points.
+    /// connected from every node in `exits`, then running the dominator
+    /// algorithm on the reverse graph from that virtual exit — the
+    /// multi-exit story consumers previously had to build by hand. An
+    /// empty `exits` yields a tree with nothing reachable.
     #[must_use]
-    pub fn compute_post<I>(cfg: &Cfg<I>) -> Self {
-        let node_count = cfg.num_blocks();
+    pub fn compute_post_from<G>(graph: &G, exits: &[N]) -> Self
+    where
+        G: DirectedGraphView<NodeId = N>,
+    {
+        let node_count = graph.node_count();
         if node_count == 0 {
             return DominatorTree {
                 idom: Vec::new(),
@@ -211,23 +214,13 @@ impl DominatorTree<BlockId> {
             };
         }
 
-        let mut exits: Vec<BlockId> = cfg.exit_blocks().collect();
-        if exits.is_empty() {
-            exits.push(BlockId::from_index(node_count - 1));
-        }
-
-        let mut reverse = DirectedGraph::with_capacity(
-            node_count + 1,
-            cfg.num_edges().saturating_add(exits.len()),
-        );
+        let mut reverse = DirectedGraph::with_capacity(node_count + 1, exits.len());
         let nodes: Vec<_> = (0..node_count).map(|_| reverse.add_node(())).collect();
         let virtual_exit = reverse.add_node(());
-        for edge in cfg.edges() {
-            reverse.add_edge(
-                nodes[edge.target().index()],
-                nodes[edge.source().index()],
-                (),
-            );
+        for node in graph.node_ids() {
+            for successor in graph.successors(node) {
+                reverse.add_edge(nodes[successor.index()], nodes[node.index()], ());
+            }
         }
         for exit in exits {
             reverse.add_edge(virtual_exit, nodes[exit.index()], ());
@@ -238,12 +231,37 @@ impl DominatorTree<BlockId> {
             .iter()
             .map(|&node| {
                 reverse_dominators.idom(node).and_then(|parent| {
-                    (parent != virtual_exit).then(|| BlockId::from_index(parent.index()))
+                    (parent != virtual_exit).then(|| N::from_index(parent.index()))
                 })
             })
             .collect();
         let reachable = reverse_dominators.reachable[..node_count].to_vec();
         DominatorTree { idom, reachable }
+    }
+}
+
+impl DominatorTree<BlockId> {
+    /// Compute the **post-dominator** tree for the given CFG.
+    ///
+    /// Exits are the CFG's blocks with no successors; a CFG with none
+    /// (e.g. ending in an infinite loop) falls back to treating the
+    /// last-allocated block as the exit, preserving long-standing
+    /// behavior. See [`compute_post_from`](Self::compute_post_from) for
+    /// the view-generic entry point with caller-chosen exits.
+    #[must_use]
+    pub fn compute_post<I>(cfg: &Cfg<I>) -> Self {
+        let node_count = cfg.num_blocks();
+        if node_count == 0 {
+            return DominatorTree {
+                idom: Vec::new(),
+                reachable: Vec::new(),
+            };
+        }
+        let mut exits: Vec<BlockId> = cfg.exit_blocks().collect();
+        if exits.is_empty() {
+            exits.push(BlockId::from_index(node_count - 1));
+        }
+        Self::compute_post_from(cfg, &exits)
     }
 }
 
@@ -329,6 +347,32 @@ mod tests {
         assert_eq!(dom.depth(cfg.entry()), Some(0));
         assert_eq!(dom.depth(b1), Some(1));
         assert_eq!(dom.depth(b2), Some(2));
+    }
+
+    #[test]
+    fn post_dominators_over_a_consumer_view() {
+        // Diamond in consumer storage: a -> {b, c} -> d. Everything is
+        // post-dominated by d; the branch is post-dominated by the merge.
+        let mut graph = DirectedGraph::<&str, ()>::new();
+        let a = graph.add_node("a");
+        let b = graph.add_node("b");
+        let c = graph.add_node("c");
+        let d = graph.add_node("d");
+        graph.add_edge(a, b, ());
+        graph.add_edge(a, c, ());
+        graph.add_edge(b, d, ());
+        graph.add_edge(c, d, ());
+
+        let post = DominatorTree::compute_post_from(&graph, &[d]);
+        assert_eq!(post.idom(a), Some(d));
+        assert_eq!(post.idom(b), Some(d));
+        assert_eq!(post.idom(c), Some(d));
+        assert!(post.dominates(d, a), "d post-dominates the entry");
+
+        // No exits: nothing is reachable on the reverse graph.
+        let empty = DominatorTree::compute_post_from(&graph, &[]);
+        assert_eq!(empty.idom(a), None);
+        assert_eq!(empty.depth(a), None);
     }
 
     #[test]

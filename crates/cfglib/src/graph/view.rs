@@ -143,3 +143,58 @@ impl<G: DirectedGraphView> RootedGraphView for Rooted<'_, G> {
         self.root
     }
 }
+
+/// Adapter presenting a view with every edge reversed.
+///
+/// Successors become predecessors and vice versa, so forward algorithms
+/// run backwards without copying the graph: reverse reachability,
+/// dominators on the reverse relation, backward walks.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{DirectedGraph, Reversed, Rooted, DominatorTree};
+///
+/// let mut graph = DirectedGraph::new();
+/// let a = graph.add_node("a");
+/// let b = graph.add_node("b");
+/// graph.add_edge(a, b, ());
+///
+/// let reversed = Reversed::new(&graph);
+/// let dominators = DominatorTree::compute(&Rooted::new(&reversed, b));
+/// assert_eq!(dominators.idom(a), Some(b));
+/// ```
+#[derive(Debug, Clone, Copy)]
+pub struct Reversed<'g, G: DirectedGraphView> {
+    graph: &'g G,
+}
+
+impl<'g, G: DirectedGraphView> Reversed<'g, G> {
+    /// Reverse `graph`.
+    #[must_use]
+    pub const fn new(graph: &'g G) -> Self {
+        Self { graph }
+    }
+
+    /// Borrow the underlying (unreversed) view.
+    #[must_use]
+    pub const fn graph(&self) -> &'g G {
+        self.graph
+    }
+}
+
+impl<G: DirectedGraphView> DirectedGraphView for Reversed<'_, G> {
+    type NodeId = G::NodeId;
+
+    fn node_count(&self) -> usize {
+        self.graph.node_count()
+    }
+
+    fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+        self.graph.predecessors(node)
+    }
+
+    fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+        self.graph.successors(node)
+    }
+}

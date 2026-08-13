@@ -100,13 +100,14 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Algorithm | Function / Type | Description |
 |---|---|---|
 | DFS / BFS | `depth_first_preorder`, `breadth_first`, CFG convenience methods | Direction-selectable traversals over `DirectedGraphView` |
-| Shortest path | `shortest_path` | Forward or reverse unweighted witness path |
+| Edge-aware traversal | `breadth_first_edges`, `walk_edges` (filtered + depth-bounded) | Every distinct edge once with identity + endpoints; parallel-edge provenance |
+| Shortest path | `shortest_path` (nodes), `shortest_path_edges` (edge witness) | Forward or reverse unweighted witness path |
 | Topological sort | `topological_sort` | Stable ordering or cycle detection |
 | Dominator tree | `DominatorTree::compute` (rooted views), `compute_from` (explicit root) | Cooper-Harvey-Kennedy over any graph view |
-| Post-dominator tree | `DominatorTree::compute_post` | On the reverse CFG |
+| Post-dominator tree | `DominatorTree::compute_post` (CFG), `compute_post_from` (any view + explicit exits) | Virtual-exit handling built in |
 | Dominance frontiers | `DominanceFrontiers::compute` | For SSA φ-placement |
 | Incremental dominators | `update_after_edge_insert`, `update_after_edge_remove` | Recompute + diff |
-| Strongly connected components | `tarjan_scc` → `SccResult<N>` | Generic iterative Tarjan algorithm, reverse-topological order |
+| Strongly connected components | `tarjan_scc` → `SccResult<N>`, `condensation` → component DAG | Generic iterative Tarjan algorithm, reverse-topological order |
 | Back-edge detection | `find_back_edges` (dominance, any view), `find_back_edges_tagged` (CFG, honours `Back` tags) | |
 | Natural loop detection | `detect_loops` / `detect_loops_tagged` → `Vec<NaturalLoop<N>>` | Header, body, latches, nesting depth |
 | Loop nesting tree | `LoopNestingTree::build` | Parent/child loop hierarchy |
@@ -115,7 +116,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Interval analysis | `interval_analysis` | T1-T2 reduction over rooted views; reducibility test |
 | Reducibility transform | `make_reducible` | Node splitting for irreducible CFGs |
 | Reverse CFG | `reverse_cfg` | Flip all edges, swap entry/exits |
-| Call graph | `build_call_graph` + `CallInfo` → `DirectedGraph<FunctionNode<C>, CallMetadata>` | Consumer-typed callee identities (symbol ids, addresses, names) |
+| Call graph | `build_call_graph` + `CallInfo`, `propagate_summaries` (callee-first SCC fixpoint) | Consumer-typed callees; interprocedural summary scaffold |
 | CFG diff | `cfg_diff` | Structural comparison (bindiff-style fingerprinting), no trait bounds |
 | Exception handling model | `build_eh_model` | Landing pads, cleanup blocks, protected-by mapping |
 | Integrity verification | `verify` (CFG storage), `verify_view` (consumer view contract) | |
@@ -126,6 +127,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Analysis | Function / Type | Description |
 |---|---|---|
 | Generic fixpoint solver | `solve`, `Problem` trait | Forward or backward, any lattice type |
+| Node-level fixpoint | `solve_node_problem`, `NodeProblem` trait | Per-node facts over any graph view (taint, reachability-with-facts) |
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
 | Liveness | `Liveness::compute` | Live-in / live-out at each block |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |

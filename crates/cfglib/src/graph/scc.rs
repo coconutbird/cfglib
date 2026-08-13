@@ -8,6 +8,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::graph::directed::{DirectedGraph, NodeId};
 use crate::graph::view::{DenseNodeId, DirectedGraphView};
 
 /// A maximal set of mutually reachable nodes.
@@ -80,6 +81,37 @@ impl<N: DenseNodeId> SccResult<N> {
             !graph.successors(node).any(|successor| successor == node)
         })
     }
+}
+
+/// Collapse a graph to its component DAG.
+///
+/// One node per strongly connected component, carrying that component's
+/// [`Scc`], in the decomposition's reverse topological order (leaves
+/// first); one edge per pair of distinct components connected in the
+/// source graph (deduplicated). The result is acyclic by construction, so
+/// topological processing, condensed traces, and cycle summaries follow
+/// directly.
+#[must_use]
+pub fn condensation<G: DirectedGraphView>(graph: &G) -> DirectedGraph<Scc<G::NodeId>, ()> {
+    let components = tarjan_scc(graph);
+    let mut condensed = DirectedGraph::with_capacity(components.len(), components.len());
+    let ids: Vec<NodeId> = components
+        .components
+        .iter()
+        .map(|component| condensed.add_node(component.clone()))
+        .collect();
+
+    let mut wired = BTreeSet::new();
+    for node in graph.node_ids() {
+        let from = components.component_index(node);
+        for successor in graph.successors(node) {
+            let to = components.component_index(successor);
+            if from != to && wired.insert((from, to)) {
+                condensed.add_edge(ids[from], ids[to], ());
+            }
+        }
+    }
+    condensed
 }
 
 /// Compute strongly connected components with Tarjan's algorithm.
@@ -176,6 +208,31 @@ mod tests {
         let result = tarjan_scc(&cfg);
         assert_eq!(result.len(), 2);
         assert!(result.is_dag(&cfg));
+    }
+
+    #[test]
+    fn condensation_collapses_cycles_to_a_dag() {
+        // entry -> (a <-> b) -> exit
+        let mut graph = DirectedGraph::<&str, ()>::new();
+        let entry = graph.add_node("entry");
+        let a = graph.add_node("a");
+        let b = graph.add_node("b");
+        let exit = graph.add_node("exit");
+        graph.add_edge(entry, a, ());
+        graph.add_edge(a, b, ());
+        graph.add_edge(b, a, ());
+        graph.add_edge(b, exit, ());
+
+        let condensed = condensation(&graph);
+        assert_eq!(condensed.node_count(), 3);
+        assert_eq!(condensed.edge_count(), 2, "cycle-internal edges collapse");
+        assert!(tarjan_scc(&condensed).is_dag(&condensed));
+        let cycle_component = condensed
+            .node_ids()
+            .find(|&node| condensed[node].nodes.len() == 2)
+            .expect("the a/b component");
+        assert!(condensed[cycle_component].contains(a));
+        assert!(condensed[cycle_component].contains(b));
     }
 
     #[test]
