@@ -42,6 +42,7 @@ pub struct PhiCopy {
 /// let copies = eliminate_phis(&phis);
 /// // Insert copy instructions for each PhiCopy into the CFG.
 /// ```
+#[must_use]
 pub fn eliminate_phis(phi_map: &PhiMap) -> Vec<PhiCopy> {
     let mut copies = Vec::new();
 
@@ -64,6 +65,7 @@ pub fn eliminate_phis(phi_map: &PhiMap) -> Vec<PhiCopy> {
 /// Returns `(predecessor_block, copies)` pairs. Copies within each group
 /// form a parallel assignment and may need sequencing if there are
 /// circular dependencies.
+#[must_use]
 pub fn copies_by_predecessor(copies: &[PhiCopy]) -> Vec<(BlockId, Vec<&PhiCopy>)> {
     use alloc::collections::BTreeMap;
     let mut map: BTreeMap<BlockId, Vec<&PhiCopy>> = BTreeMap::new();

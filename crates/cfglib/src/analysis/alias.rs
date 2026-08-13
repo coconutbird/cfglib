@@ -6,6 +6,7 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::cmp::Ordering;
 
 use crate::cfg::Cfg;
 use crate::dataflow::{InstrInfo, Location};
@@ -37,6 +38,7 @@ pub struct AliasSets {
 
 impl AliasSets {
     /// Create empty alias sets.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             parent: Vec::new(),
@@ -72,13 +74,13 @@ impl AliasSets {
         if ra == rb {
             return;
         }
-        if self.rank[ra] < self.rank[rb] {
-            self.parent[ra] = rb;
-        } else if self.rank[ra] > self.rank[rb] {
-            self.parent[rb] = ra;
-        } else {
-            self.parent[rb] = ra;
-            self.rank[ra] += 1;
+        match self.rank[ra].cmp(&self.rank[rb]) {
+            Ordering::Less => self.parent[ra] = rb,
+            Ordering::Greater => self.parent[rb] = ra,
+            Ordering::Equal => {
+                self.parent[rb] = ra;
+                self.rank[ra] += 1;
+            }
         }
     }
 
@@ -128,6 +130,7 @@ impl Default for AliasSets {
 ///
 /// Unifies locations that are stored to/loaded from the same base.
 /// This is a flow-insensitive, context-insensitive analysis.
+#[must_use]
 pub fn alias_analysis<I: MemoryInfo>(cfg: &Cfg<I>) -> AliasSets {
     let mut sets = AliasSets::new();
 

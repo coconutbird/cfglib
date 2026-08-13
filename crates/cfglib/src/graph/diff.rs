@@ -63,6 +63,7 @@ pub struct CfgDiff {
 
 impl CfgDiff {
     /// True when the two CFGs are structurally identical.
+    #[must_use]
     pub fn is_identical(&self) -> bool {
         self.left_only.is_empty()
             && self.right_only.is_empty()
@@ -72,12 +73,13 @@ impl CfgDiff {
     }
 
     /// Fraction of blocks successfully matched (0.0–1.0).
+    #[must_use]
     pub fn match_ratio(&self) -> f64 {
         let total = self.left_block_count.max(self.right_block_count);
         if total == 0 {
             return 1.0;
         }
-        self.matched.len() as f64 / total as f64
+        crate::usize_to_f64(self.matched.len()) / crate::usize_to_f64(total)
     }
 }
 
@@ -108,7 +110,7 @@ fn fingerprint<I>(cfg: &Cfg<I>, block: BlockId) -> BlockFingerprint {
         .iter()
         .map(|&eid| edge_kind_discriminant(cfg.edge(eid).kind()))
         .collect();
-    discs.sort();
+    discs.sort_unstable();
 
     BlockFingerprint {
         instruction_count: cfg.block(block).instructions().len(),
@@ -136,6 +138,7 @@ fn fingerprint<I>(cfg: &Cfg<I>, block: BlockId) -> BlockFingerprint {
 ///     println!("Match ratio: {:.0}%", diff.match_ratio() * 100.0);
 /// }
 /// ```
+#[must_use]
 pub fn cfg_diff<I: FlowControl, J: FlowControl>(left: &Cfg<I>, right: &Cfg<J>) -> CfgDiff {
     let left_blocks = left.dfs_preorder();
     let right_blocks = right.dfs_preorder();

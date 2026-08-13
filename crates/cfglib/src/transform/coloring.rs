@@ -22,6 +22,7 @@ pub struct InterferenceGraph {
 
 impl InterferenceGraph {
     /// Build an interference graph from liveness data.
+    #[must_use]
     pub fn build<I: InstrInfo>(cfg: &Cfg<I>, live: &Liveness) -> Self {
         let mut adj: BTreeMap<Location, BTreeSet<Location>> = BTreeMap::new();
 
@@ -41,13 +42,17 @@ impl InterferenceGraph {
     }
 
     /// Number of nodes (locations) in the interference graph.
+    #[must_use]
     pub fn num_nodes(&self) -> usize {
         self.adj.len()
     }
 
     /// Degree of a node.
+    #[must_use]
     pub fn degree(&self, loc: Location) -> usize {
-        self.adj.get(&loc).map_or(0, |s| s.len())
+        self.adj
+            .get(&loc)
+            .map_or(0, alloc::collections::BTreeSet::len)
     }
 }
 
@@ -64,6 +69,7 @@ pub struct ColorAssignment {
 ///
 /// Uses simplicial elimination ordering (sort by degree, ascending).
 /// Returns a color assignment.
+#[must_use]
 pub fn color_graph(ig: &InterferenceGraph) -> ColorAssignment {
     // Order nodes by degree (ascending) for greedy coloring.
     let mut nodes: Vec<Location> = ig.adj.keys().copied().collect();

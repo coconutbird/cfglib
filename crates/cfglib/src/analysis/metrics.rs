@@ -21,7 +21,7 @@ pub struct CfgMetrics {
     pub edge_count: usize,
     /// Total instruction count across all blocks.
     pub instruction_count: usize,
-    /// McCabe cyclomatic complexity: `E - N + 2P` (P=1 for single function).
+    /// `McCabe` cyclomatic complexity: `E - N + 2P` (P=1 for single function).
     pub cyclomatic_complexity: usize,
     /// Maximum loop nesting depth (0 = no loops).
     pub max_nesting_depth: usize,
@@ -54,6 +54,7 @@ pub struct CfgMetrics {
 /// assert_eq!(m.edge_count, 2);
 /// assert_eq!(m.exit_count, 2);
 /// ```
+#[must_use]
 pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
     let n = cfg.num_blocks();
     let reachable = cfg.dfs_preorder();
@@ -82,7 +83,7 @@ pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
     };
 
     let avg_instr = if n > 0 {
-        instruction_count as f64 / n as f64
+        crate::usize_to_f64(instruction_count) / crate::usize_to_f64(n)
     } else {
         0.0
     };
@@ -106,6 +107,7 @@ pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
 ///
 /// Returns a vector indexed by block index, where each value is the
 /// number of loops containing that block.
+#[must_use]
 pub fn block_nesting_depths<I>(cfg: &Cfg<I>) -> Vec<usize> {
     let n = cfg.num_blocks();
     let dom = DominatorTree::compute(cfg);

@@ -49,31 +49,35 @@ pub enum ExprNode {
 
 impl ExprNode {
     /// Whether this is a leaf node.
+    #[must_use]
     pub fn is_leaf(&self) -> bool {
         matches!(self, ExprNode::Leaf(_))
     }
 
     /// Whether this is a compound operation.
+    #[must_use]
     pub fn is_op(&self) -> bool {
         matches!(self, ExprNode::Op { .. })
     }
 
     /// Depth of the expression tree.
+    #[must_use]
     pub fn depth(&self) -> usize {
         match self {
             ExprNode::Leaf(_) | ExprNode::Const(_) | ExprNode::Opaque { .. } => 1,
             ExprNode::Op { operands, .. } => {
-                1 + operands.iter().map(|o| o.depth()).max().unwrap_or(0)
+                1 + operands.iter().map(ExprNode::depth).max().unwrap_or(0)
             }
         }
     }
 
     /// Count total nodes in the expression tree.
+    #[must_use]
     pub fn node_count(&self) -> usize {
         match self {
             ExprNode::Leaf(_) | ExprNode::Const(_) | ExprNode::Opaque { .. } => 1,
             ExprNode::Op { operands, .. } => {
-                1 + operands.iter().map(|o| o.node_count()).sum::<usize>()
+                1 + operands.iter().map(ExprNode::node_count).sum::<usize>()
             }
         }
     }
@@ -112,6 +116,7 @@ pub struct BlockExprTrees {
 ///
 /// Walks the block's instructions and builds expression trees by
 /// inlining single-use temporaries into their use sites.
+#[must_use]
 pub fn recover_block_expressions<I: ExprInstr>(cfg: &Cfg<I>, block: BlockId) -> BlockExprTrees {
     let insts = cfg.block(block).instructions();
 
@@ -179,6 +184,7 @@ pub fn recover_block_expressions<I: ExprInstr>(cfg: &Cfg<I>, block: BlockId) -> 
 }
 
 /// Recover expression trees for all blocks in the CFG.
+#[must_use]
 pub fn recover_expressions<I: ExprInstr>(cfg: &Cfg<I>) -> Vec<BlockExprTrees> {
     cfg.blocks()
         .iter()

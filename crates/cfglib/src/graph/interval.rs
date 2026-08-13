@@ -136,8 +136,13 @@ fn build_adjacency<I>(
 /// let result = interval_analysis(&cfg);
 /// assert!(result.is_reducible);
 /// ```
+#[must_use]
 pub fn interval_analysis<I>(cfg: &Cfg<I>) -> IntervalAnalysis {
-    let all_blocks: BTreeSet<BlockId> = cfg.blocks().iter().map(|b| b.id()).collect();
+    let all_blocks: BTreeSet<BlockId> = cfg
+        .blocks()
+        .iter()
+        .map(super::super::block::BasicBlock::id)
+        .collect();
     let (succs, preds) = build_adjacency(cfg, &all_blocks);
     let mut levels = Vec::new();
 

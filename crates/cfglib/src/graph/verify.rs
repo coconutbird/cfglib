@@ -8,7 +8,6 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::block::BlockId;
 use crate::cfg::Cfg;
 
 /// A single verification failure.
@@ -33,13 +32,108 @@ pub struct VerifyResult {
 
 impl VerifyResult {
     /// True when the CFG passes all invariant checks.
+    #[must_use]
     pub fn is_ok(&self) -> bool {
         self.errors.is_empty()
     }
 
     /// Number of violations found.
+    #[must_use]
     pub fn error_count(&self) -> usize {
         self.errors.len()
+    }
+}
+
+fn verify_edge_endpoints<I>(cfg: &Cfg<I>, block_count: usize, errors: &mut Vec<VerifyError>) {
+    for edge in cfg.edges() {
+        if edge.source().index() >= block_count {
+            errors.push(VerifyError {
+                message: alloc::format!(
+                    "edge {} source {} out of bounds (num_blocks={})",
+                    edge.id(),
+                    edge.source(),
+                    block_count
+                ),
+            });
+        }
+        if edge.target().index() >= block_count {
+            errors.push(VerifyError {
+                message: alloc::format!(
+                    "edge {} target {} out of bounds (num_blocks={})",
+                    edge.id(),
+                    edge.target(),
+                    block_count
+                ),
+            });
+        }
+    }
+}
+
+fn verify_adjacency<I>(cfg: &Cfg<I>, errors: &mut Vec<VerifyError>) {
+    for block in cfg.blocks() {
+        let block_id = block.id();
+        for &edge_id in cfg.successor_edges(block_id) {
+            if edge_id.index() >= cfg.edge_slots() {
+                errors.push(VerifyError {
+                    message: alloc::format!(
+                        "block {block_id} successor edge {edge_id} out of bounds"
+                    ),
+                });
+            } else if cfg.edge(edge_id).source() != block_id {
+                errors.push(VerifyError {
+                    message: alloc::format!(
+                        "block {} lists edge {} as successor but edge source is {}",
+                        block_id,
+                        edge_id,
+                        cfg.edge(edge_id).source()
+                    ),
+                });
+            }
+        }
+        for &edge_id in cfg.predecessor_edges(block_id) {
+            if edge_id.index() >= cfg.edge_slots() {
+                errors.push(VerifyError {
+                    message: alloc::format!(
+                        "block {block_id} predecessor edge {edge_id} out of bounds"
+                    ),
+                });
+            } else if cfg.edge(edge_id).target() != block_id {
+                errors.push(VerifyError {
+                    message: alloc::format!(
+                        "block {} lists edge {} as predecessor but edge target is {}",
+                        block_id,
+                        edge_id,
+                        cfg.edge(edge_id).target()
+                    ),
+                });
+            }
+        }
+    }
+}
+
+fn verify_unique_adjacency<I>(cfg: &Cfg<I>, errors: &mut Vec<VerifyError>) {
+    for block in cfg.blocks() {
+        let block_id = block.id();
+        let mut seen = alloc::collections::BTreeSet::new();
+        for &edge_id in cfg.successor_edges(block_id) {
+            if !seen.insert(edge_id) {
+                errors.push(VerifyError {
+                    message: alloc::format!(
+                        "block {block_id} has duplicate successor edge {edge_id}"
+                    ),
+                });
+            }
+        }
+        seen.clear();
+        for &edge_id in cfg.predecessor_edges(block_id) {
+            if !seen.insert(edge_id) {
+                errors.push(VerifyError {
+                    message: alloc::format!(
+                        "block {block_id} has duplicate predecessor edge {edge_id}"
+                    ),
+                });
+            }
+        }
     }
 }
 
@@ -66,6 +160,7 @@ impl VerifyResult {
 /// let result = verify(&cfg);
 /// assert!(result.is_ok());
 /// ```
+#[must_use]
 pub fn verify<I>(cfg: &Cfg<I>) -> VerifyResult {
     let mut errors = Vec::new();
     let n = cfg.num_blocks();
@@ -83,67 +178,8 @@ pub fn verify<I>(cfg: &Cfg<I>) -> VerifyResult {
         return VerifyResult { errors };
     }
 
-    // 2. Edge endpoints in bounds.
-    for edge in cfg.edges() {
-        if edge.source().index() >= n {
-            errors.push(VerifyError {
-                message: alloc::format!(
-                    "edge {} source {} out of bounds (num_blocks={})",
-                    edge.id(),
-                    edge.source(),
-                    n
-                ),
-            });
-        }
-        if edge.target().index() >= n {
-            errors.push(VerifyError {
-                message: alloc::format!(
-                    "edge {} target {} out of bounds (num_blocks={})",
-                    edge.id(),
-                    edge.target(),
-                    n
-                ),
-            });
-        }
-    }
-
-    // 3. Adjacency consistency: every edge in succs[source] should exist,
-    //    and every edge in preds[target] should exist.
-    for (block_idx, _block) in cfg.blocks().iter().enumerate() {
-        let bid = BlockId::from_raw(block_idx as u32);
-        for &eid in cfg.successor_edges(bid) {
-            if eid.index() >= cfg.edge_slots() {
-                errors.push(VerifyError {
-                    message: alloc::format!("block {} successor edge {} out of bounds", bid, eid),
-                });
-            } else if cfg.edge(eid).source() != bid {
-                errors.push(VerifyError {
-                    message: alloc::format!(
-                        "block {} lists edge {} as successor but edge source is {}",
-                        bid,
-                        eid,
-                        cfg.edge(eid).source()
-                    ),
-                });
-            }
-        }
-        for &eid in cfg.predecessor_edges(bid) {
-            if eid.index() >= cfg.edge_slots() {
-                errors.push(VerifyError {
-                    message: alloc::format!("block {} predecessor edge {} out of bounds", bid, eid),
-                });
-            } else if cfg.edge(eid).target() != bid {
-                errors.push(VerifyError {
-                    message: alloc::format!(
-                        "block {} lists edge {} as predecessor but edge target is {}",
-                        bid,
-                        eid,
-                        cfg.edge(eid).target()
-                    ),
-                });
-            }
-        }
-    }
+    verify_edge_endpoints(cfg, n, &mut errors);
+    verify_adjacency(cfg, &mut errors);
 
     // 4. Every reachable non-entry block has a predecessor.
     let reachable = cfg.dfs_preorder();
@@ -153,33 +189,12 @@ pub fn verify<I>(cfg: &Cfg<I>) -> VerifyResult {
         }
         if cfg.predecessor_edges(bid).is_empty() {
             errors.push(VerifyError {
-                message: alloc::format!("reachable block {} has no predecessors", bid),
+                message: alloc::format!("reachable block {bid} has no predecessors"),
             });
         }
     }
 
-    // 5. No duplicate edge IDs in adjacency lists.
-    for block_idx in 0..n {
-        let bid = BlockId::from_raw(block_idx as u32);
-        let succs = cfg.successor_edges(bid);
-        let mut seen = alloc::collections::BTreeSet::new();
-        for &eid in succs {
-            if !seen.insert(eid) {
-                errors.push(VerifyError {
-                    message: alloc::format!("block {} has duplicate successor edge {}", bid, eid),
-                });
-            }
-        }
-        let preds = cfg.predecessor_edges(bid);
-        seen.clear();
-        for &eid in preds {
-            if !seen.insert(eid) {
-                errors.push(VerifyError {
-                    message: alloc::format!("block {} has duplicate predecessor edge {}", bid, eid),
-                });
-            }
-        }
-    }
+    verify_unique_adjacency(cfg, &mut errors);
 
     VerifyResult { errors }
 }

@@ -22,11 +22,13 @@ pub struct Scc {
 
 impl Scc {
     /// Whether this SCC is trivial (single block, no self-loop).
+    #[must_use]
     pub fn is_trivial(&self) -> bool {
         self.blocks.len() == 1
     }
 
     /// Whether the given block is in this SCC.
+    #[must_use]
     pub fn contains(&self, block: BlockId) -> bool {
         self.blocks.contains(&block)
     }
@@ -43,28 +45,34 @@ pub struct SccResult {
 
 impl SccResult {
     /// The SCC index for a given block.
+    #[must_use]
     pub fn scc_index(&self, block: BlockId) -> usize {
         self.scc_of[block.index()]
     }
 
     /// The SCC containing a given block.
+    #[must_use]
     pub fn scc_for(&self, block: BlockId) -> &Scc {
         &self.sccs[self.scc_of[block.index()]]
     }
 
     /// Number of SCCs.
+    #[must_use]
     pub fn num_sccs(&self) -> usize {
         self.sccs.len()
     }
 
     /// Whether the graph is a DAG (every SCC is trivial).
+    #[must_use]
     pub fn is_dag<I>(&self, cfg: &Cfg<I>) -> bool {
         self.sccs.iter().all(|scc| {
             if scc.blocks.len() != 1 {
                 return false;
             }
             // Check for self-loop.
-            let b = *scc.blocks.iter().next().unwrap();
+            let Some(&b) = scc.blocks.iter().next() else {
+                return false;
+            };
             !cfg.successors(b).any(|s| s == b)
         })
     }
@@ -88,21 +96,22 @@ impl SccResult {
 /// assert!(!sccs.scc_for(b0).is_trivial());
 /// assert!(sccs.scc_for(b0).contains(b1));
 /// ```
+#[must_use]
 pub fn tarjan_scc<I>(cfg: &Cfg<I>) -> SccResult {
     let n = cfg.num_blocks();
 
-    let mut index_counter: u32 = 0;
+    let mut index_counter = 0usize;
     let mut stack: Vec<BlockId> = Vec::new();
     let mut on_stack = vec![false; n];
-    let mut indices = vec![u32::MAX; n]; // u32::MAX = undefined
-    let mut lowlinks = vec![0u32; n];
+    let mut indices = vec![usize::MAX; n];
+    let mut lowlinks = vec![0usize; n];
     let mut scc_of = vec![0usize; n];
     let mut sccs: Vec<Scc> = Vec::new();
 
     // Iterative Tarjan's using an explicit call stack.
-    for start_raw in 0..n as u32 {
-        let start = BlockId(start_raw);
-        if indices[start.index()] != u32::MAX {
+    for block in cfg.blocks() {
+        let start = block.id();
+        if indices[start.index()] != usize::MAX {
             continue;
         }
 
@@ -114,24 +123,27 @@ pub fn tarjan_scc<I>(cfg: &Cfg<I>) -> SccResult {
         index_counter += 1;
         stack.push(start);
         on_stack[start.index()] = true;
-        let succs: Vec<BlockId> = cfg.successors(start).collect();
-        call_stack.push((start, succs, 0));
+        let successors: Vec<BlockId> = cfg.successors(start).collect();
+        call_stack.push((start, successors, 0));
 
         while let Some((v, ref succs_list, si)) = call_stack.last().cloned() {
             if si < succs_list.len() {
                 let w = succs_list[si];
                 // Advance iterator.
-                call_stack.last_mut().unwrap().2 = si + 1;
+                let Some(frame) = call_stack.last_mut() else {
+                    break;
+                };
+                frame.2 = si + 1;
 
-                if indices[w.index()] == u32::MAX {
+                if indices[w.index()] == usize::MAX {
                     // Not yet visited — recurse.
                     indices[w.index()] = index_counter;
                     lowlinks[w.index()] = index_counter;
                     index_counter += 1;
                     stack.push(w);
                     on_stack[w.index()] = true;
-                    let w_succs: Vec<BlockId> = cfg.successors(w).collect();
-                    call_stack.push((w, w_succs, 0));
+                    let w_successors: Vec<BlockId> = cfg.successors(w).collect();
+                    call_stack.push((w, w_successors, 0));
                 } else if on_stack[w.index()] {
                     let vl = lowlinks[v.index()];
                     let wi = indices[w.index()];
@@ -142,8 +154,7 @@ pub fn tarjan_scc<I>(cfg: &Cfg<I>) -> SccResult {
                 if lowlinks[v.index()] == indices[v.index()] {
                     // v is the root of an SCC.
                     let mut scc_blocks = BTreeSet::new();
-                    loop {
-                        let w = stack.pop().unwrap();
+                    while let Some(w) = stack.pop() {
                         on_stack[w.index()] = false;
                         scc_blocks.insert(w);
                         if w == v {

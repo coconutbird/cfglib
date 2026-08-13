@@ -32,8 +32,7 @@ impl FlowControl for Sm4Instruction {
 
             // Switch/case — break inside a switch exits the switch.
             Opcode::Switch => FlowEffect::SwitchOpen,
-            Opcode::Case => FlowEffect::SwitchCase,
-            Opcode::Default => FlowEffect::SwitchCase,
+            Opcode::Case | Opcode::Default => FlowEffect::SwitchCase,
             Opcode::EndSwitch => FlowEffect::SwitchClose,
 
             // Structured loops.
@@ -130,8 +129,10 @@ fn is_declaration(op: Opcode) -> bool {
 
 /// Build a control-flow graph from a decoded shader program.
 ///
-/// Returns an error if the shader contains mismatched structured
-/// control-flow instructions (e.g. `else` without `if`).
+/// # Errors
+///
+/// Returns an error if the shader contains mismatched structured control-flow
+/// instructions (e.g. `else` without `if`).
 pub fn build_cfg(program: &Program) -> Result<Cfg<Sm4Instruction>, BuildError> {
     CfgBuilder::build(program.instructions.iter().cloned().map(Sm4Instruction))
 }

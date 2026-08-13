@@ -67,8 +67,7 @@ pub trait Emitter<I> {
 fn block_label<I>(cfg: &Cfg<I>, id: BlockId) -> String {
     cfg.block(id)
         .label()
-        .map(String::from)
-        .unwrap_or_else(|| alloc::format!(".bb{}", id.0))
+        .map_or_else(|| alloc::format!(".bb{}", id.0), String::from)
 }
 
 /// Linearize a CFG into a flat instruction stream.
@@ -89,8 +88,10 @@ pub fn linearize<I: Clone>(
 ) -> Vec<LinearInst<I>> {
     let sorted: Vec<BlockId> = match order {
         BlockOrder::ReversePostorder => cfg.reverse_postorder(),
-        BlockOrder::AllocationOrder => (0..cfg.num_blocks())
-            .map(|i| BlockId::from_raw(i as u32))
+        BlockOrder::AllocationOrder => cfg
+            .blocks()
+            .iter()
+            .map(super::super::block::BasicBlock::id)
             .collect(),
         BlockOrder::Custom(ids) => ids,
     };

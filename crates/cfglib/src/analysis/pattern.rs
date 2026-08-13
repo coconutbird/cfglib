@@ -57,6 +57,7 @@ pub enum CfgPattern {
 /// let patterns = detect_patterns(&cfg);
 /// // Detects structural patterns like diamond, self-loop, etc.
 /// ```
+#[must_use]
 pub fn detect_patterns<I>(cfg: &Cfg<I>) -> Vec<CfgPattern> {
     let mut patterns = Vec::new();
 

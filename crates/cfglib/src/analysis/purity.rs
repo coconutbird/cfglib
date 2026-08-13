@@ -41,17 +41,20 @@ pub enum Purity {
 
 impl Purity {
     /// Returns `true` if pure.
+    #[must_use]
     pub fn is_pure(&self) -> bool {
         matches!(self, Purity::Pure)
     }
 
     /// Returns `true` if impure.
+    #[must_use]
     pub fn is_impure(&self) -> bool {
         !self.is_pure()
     }
 }
 
 /// Analyse purity of a single block.
+#[must_use]
 pub fn block_purity<I: InstrInfo>(cfg: &Cfg<I>, block: BlockId) -> Purity {
     let mut all = Vec::new();
     for inst in cfg.block(block).instructions() {
@@ -67,6 +70,7 @@ pub fn block_purity<I: InstrInfo>(cfg: &Cfg<I>, block: BlockId) -> Purity {
 }
 
 /// Analyse purity of the entire CFG.
+#[must_use]
 pub fn cfg_purity<I: InstrInfo>(cfg: &Cfg<I>) -> Purity {
     let mut all = Vec::new();
     for b in cfg.blocks() {
@@ -84,6 +88,7 @@ pub fn cfg_purity<I: InstrInfo>(cfg: &Cfg<I>) -> Purity {
 }
 
 /// Collect per-block purity for every block in the CFG.
+#[must_use]
 pub fn all_block_purities<I: InstrInfo>(cfg: &Cfg<I>) -> Vec<(BlockId, Purity)> {
     cfg.blocks()
         .iter()

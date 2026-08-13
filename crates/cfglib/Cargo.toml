@@ -11,10 +11,13 @@ categories.workspace = true
 description = "Generic, no_std control-flow graph library for binary analysis, decompilation, and compiler infrastructure"
 readme = "../../README.md"
 
+[lints]
+workspace = true
+
 [features]
 default = []
-serde = ["dep:serde"]
+serde = ["dep:serde", "smallvec/serde"]
 
 [dependencies]
-serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"], optional = true }
-smallvec = { version = "1.15.1", default-features = false }
+serde = { workspace = true, optional = true }
+smallvec.workspace = true

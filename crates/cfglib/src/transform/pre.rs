@@ -29,6 +29,7 @@ pub struct PreResult {
 /// 2. Propagate available expressions along dominator tree edges.
 /// 3. Mark as redundant any expression whose VN is already available
 ///    from a dominating block.
+#[must_use]
 pub fn analyse_pre<I: ValueNumberInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PreResult {
     let rpo = cfg.reverse_postorder();
     let gvn = global_value_numbering(cfg, dom);

@@ -14,6 +14,60 @@ use crate::edge::EdgeKind;
 use crate::graph::dominator::DominatorTree;
 use crate::region::HandlerKind;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockFlowKind {
+    LoopHeader,
+    Conditional,
+    Switch,
+    BackEdge,
+    Jump,
+    Linear,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BlockFlow {
+    kind: BlockFlowKind,
+    needs_label: bool,
+}
+
+fn has_edge_kind<I>(cfg: &Cfg<I>, edges: &[crate::EdgeId], kind: EdgeKind) -> bool {
+    edges.iter().any(|&edge| cfg.edge(edge).kind() == kind)
+}
+
+fn classify_block<I>(cfg: &Cfg<I>, block: BlockId) -> BlockFlow {
+    let successors = cfg.successor_edges(block);
+    let predecessors = cfg.predecessor_edges(block);
+    let kind = if has_edge_kind(cfg, predecessors, EdgeKind::Back) {
+        BlockFlowKind::LoopHeader
+    } else if has_edge_kind(cfg, successors, EdgeKind::ConditionalTrue)
+        && has_edge_kind(cfg, successors, EdgeKind::ConditionalFalse)
+    {
+        BlockFlowKind::Conditional
+    } else if has_edge_kind(cfg, successors, EdgeKind::SwitchCase) {
+        BlockFlowKind::Switch
+    } else if has_edge_kind(cfg, successors, EdgeKind::Back) {
+        BlockFlowKind::BackEdge
+    } else if has_edge_kind(cfg, successors, EdgeKind::Jump) {
+        BlockFlowKind::Jump
+    } else {
+        BlockFlowKind::Linear
+    };
+    BlockFlow {
+        kind,
+        needs_label: has_edge_kind(cfg, predecessors, EdgeKind::Jump),
+    }
+}
+
+fn push_block<I: Clone>(result: &mut Vec<AstNode<I>>, cfg: &Cfg<I>, block: BlockId) {
+    let instructions = cfg.block(block).instructions().to_vec();
+    if !instructions.is_empty() {
+        result.push(AstNode::Block {
+            id: block,
+            instructions,
+        });
+    }
+}
+
 /// Lift a [`Cfg`] into a structured [`AstNode`] tree.
 ///
 /// The instruction type `I` must implement `Clone` so that instructions
@@ -23,6 +77,7 @@ use crate::region::HandlerKind;
 /// - Structured flow: `IfThenElse`, `Loop`, `Switch`
 /// - Exception regions: `TryCatch` (from [`Cfg::regions`])
 /// - Unstructured flow: `Label` / `Goto` (for `Jump` edges)
+#[must_use]
 pub fn lift<I: Clone>(cfg: &Cfg<I>) -> AstNode<I> {
     let dom = DominatorTree::compute(cfg);
     let pdom = DominatorTree::compute_post(cfg);
@@ -32,7 +87,7 @@ pub fn lift<I: Clone>(cfg: &Cfg<I>) -> AstNode<I> {
     let region_entries: BTreeSet<u32> = cfg
         .regions()
         .iter()
-        .flat_map(|r| r.protected_blocks.iter().next())
+        .filter_map(|r| r.protected_blocks.iter().next())
         .map(|b| b.0)
         .collect();
     let body = lift_region(cfg, &dom, &pdom, cfg.entry(), &mut visited, &region_entries);
@@ -69,36 +124,12 @@ fn lift_region<I: Clone>(
             continue;
         }
 
-        let succ_edges = cfg.successor_edges(block);
-        let has_ct = succ_edges
-            .iter()
-            .any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalTrue);
-        let has_cf = succ_edges
-            .iter()
-            .any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalFalse);
-        let has_sw = succ_edges
-            .iter()
-            .any(|&e| cfg.edge(e).kind() == EdgeKind::SwitchCase);
-        let has_back = succ_edges
-            .iter()
-            .any(|&e| cfg.edge(e).kind() == EdgeKind::Back);
-        let has_jump = succ_edges
-            .iter()
-            .any(|&e| cfg.edge(e).kind() == EdgeKind::Jump);
-        let is_header = cfg
-            .predecessor_edges(block)
-            .iter()
-            .any(|&e| cfg.edge(e).kind() == EdgeKind::Back);
-        let is_jump_target = cfg
-            .predecessor_edges(block)
-            .iter()
-            .any(|&e| cfg.edge(e).kind() == EdgeKind::Jump);
-
-        // --- Label wrapper (for blocks targeted by Jump edges) ---
-        let needs_label = is_jump_target;
+        let successor_edges = cfg.successor_edges(block);
+        let flow = classify_block(cfg, block);
+        let needs_label = flow.needs_label;
 
         // --- Loop header ---
-        if is_header {
+        if flow.kind == BlockFlowKind::LoopHeader {
             let node = lift_loop(cfg, dom, pdom, block, visited, region_entries);
             if needs_label {
                 result.push(wrap_label(block, node));
@@ -110,7 +141,7 @@ fn lift_region<I: Clone>(
         }
 
         // --- Conditional (if/else) ---
-        if has_ct && has_cf {
+        if flow.kind == BlockFlowKind::Conditional {
             let node = lift_conditional(cfg, dom, pdom, block, visited, region_entries);
             if needs_label {
                 result.push(wrap_label(block, node));
@@ -122,7 +153,7 @@ fn lift_region<I: Clone>(
         }
 
         // --- Switch ---
-        if has_sw {
+        if flow.kind == BlockFlowKind::Switch {
             let node = lift_switch(cfg, dom, pdom, block, visited, region_entries);
             if needs_label {
                 result.push(wrap_label(block, node));
@@ -134,28 +165,16 @@ fn lift_region<I: Clone>(
         }
 
         // --- Back edge (loop latch) ---
-        if has_back {
-            let insts = cfg.block(block).instructions().to_vec();
-            if !insts.is_empty() {
-                result.push(AstNode::Block {
-                    id: block,
-                    instructions: insts,
-                });
-            }
+        if flow.kind == BlockFlowKind::BackEdge {
+            push_block(&mut result, cfg, block);
             result.push(AstNode::Continue);
             continue;
         }
 
         // --- Jump edge (unstructured goto) ---
-        if has_jump {
-            let insts = cfg.block(block).instructions().to_vec();
-            if !insts.is_empty() {
-                result.push(AstNode::Block {
-                    id: block,
-                    instructions: insts,
-                });
-            }
-            for &eid in succ_edges {
+        if flow.kind == BlockFlowKind::Jump {
+            push_block(&mut result, cfg, block);
+            for &eid in successor_edges {
                 let edge = cfg.edge(eid);
                 if edge.kind() == EdgeKind::Jump {
                     result.push(AstNode::Goto {
@@ -167,7 +186,7 @@ fn lift_region<I: Clone>(
         }
 
         // --- Terminal ---
-        if succ_edges.is_empty() {
+        if successor_edges.is_empty() {
             let insts = cfg.block(block).instructions().to_vec();
             if !insts.is_empty() {
                 result.push(AstNode::Return {
@@ -181,8 +200,8 @@ fn lift_region<I: Clone>(
         // The builder creates empty blocks with a single Unconditional
         // edge for `break` statements. Recognise these and emit Break.
         if cfg.block(block).is_empty()
-            && succ_edges.len() == 1
-            && cfg.edge(succ_edges[0]).kind() == EdgeKind::Unconditional
+            && successor_edges.len() == 1
+            && cfg.edge(successor_edges[0]).kind() == EdgeKind::Unconditional
         {
             result.push(AstNode::Break);
             continue;
@@ -227,10 +246,10 @@ fn maybe_guard<I>(cfg: &Cfg<I>, block: BlockId, node: AstNode<I>) -> AstNode<I> 
 
 /// Produce a label name for a block (used in Goto/Label nodes).
 fn block_label_name<I>(cfg: &Cfg<I>, id: BlockId) -> alloc::string::String {
-    cfg.block(id)
-        .label()
-        .map(alloc::string::String::from)
-        .unwrap_or_else(|| alloc::format!(".bb{}", id.0))
+    cfg.block(id).label().map_or_else(
+        || alloc::format!(".bb{}", id.0),
+        alloc::string::String::from,
+    )
 }
 
 /// Wrap a node in a Label node.
@@ -389,18 +408,12 @@ fn lift_loop<I: Clone>(
 ) -> AstNode<I> {
     let mut body = Vec::new();
 
-    let succ_edges = cfg.successor_edges(header);
-    let has_ct = succ_edges
-        .iter()
-        .any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalTrue);
-    let has_cf = succ_edges
-        .iter()
-        .any(|&e| cfg.edge(e).kind() == EdgeKind::ConditionalFalse);
-    let has_sw = succ_edges
-        .iter()
-        .any(|&e| cfg.edge(e).kind() == EdgeKind::SwitchCase);
+    let successor_edges = cfg.successor_edges(header);
+    let is_conditional = has_edge_kind(cfg, successor_edges, EdgeKind::ConditionalTrue)
+        && has_edge_kind(cfg, successor_edges, EdgeKind::ConditionalFalse);
+    let has_switch = has_edge_kind(cfg, successor_edges, EdgeKind::SwitchCase);
 
-    if has_ct && has_cf {
+    if is_conditional {
         let node = lift_conditional(cfg, dom, pdom, header, visited, region_entries);
         body.push(node);
         if let Some(merge) = pdom.idom(header)
@@ -408,7 +421,7 @@ fn lift_loop<I: Clone>(
         {
             body.extend(lift_region(cfg, dom, pdom, merge, visited, region_entries));
         }
-    } else if has_sw {
+    } else if has_switch {
         let node = lift_switch(cfg, dom, pdom, header, visited, region_entries);
         body.push(node);
         if let Some(merge) = pdom.idom(header)
@@ -424,7 +437,7 @@ fn lift_loop<I: Clone>(
                 instructions: header_insts,
             });
         }
-        for &eid in succ_edges {
+        for &eid in successor_edges {
             let edge = cfg.edge(eid);
             if edge.kind() != EdgeKind::Back && !visited.contains(&edge.target().0) {
                 body.extend(lift_region(
@@ -490,7 +503,7 @@ fn lift_case_body<I: Clone>(
 fn find_loop_exit<I>(cfg: &Cfg<I>, header: BlockId, visited: &BTreeSet<u32>) -> Option<BlockId> {
     // First pass: look for exit edges from loop-body blocks (excluding
     // the header, which is checked separately below).
-    for &block_raw in visited.iter() {
+    for &block_raw in visited {
         let block = BlockId(block_raw);
         if block == header {
             continue;
@@ -542,7 +555,7 @@ mod tests {
             ff("c"),
             MockInst(FlowEffect::Return, "ret"),
         ]);
-        assert!(p.contains("a"), "should contain instruction a: {p}");
+        assert!(p.contains('a'), "should contain instruction a: {p}");
         assert!(p.contains("ret"), "should contain ret: {p}");
         // No control flow keywords.
         assert!(!p.contains("if"), "no if expected: {p}");
@@ -562,8 +575,8 @@ mod tests {
             MockInst(FlowEffect::Return, "ret"),
         ]);
         assert!(p.contains("if {"), "should have if: {p}");
-        assert!(p.contains("b"), "then body should contain b: {p}");
-        assert!(p.contains("c"), "post-merge should contain c: {p}");
+        assert!(p.contains('b'), "then body should contain b: {p}");
+        assert!(p.contains('c'), "post-merge should contain c: {p}");
     }
 
     #[test]
@@ -613,7 +626,7 @@ mod tests {
         ]);
         assert!(p.contains("loop {"), "should have loop: {p}");
         // The breakc creates a conditional inside the loop
-        assert!(p.contains("a"), "should contain a: {p}");
+        assert!(p.contains('a'), "should contain a: {p}");
     }
 
     // ---- Switch ----

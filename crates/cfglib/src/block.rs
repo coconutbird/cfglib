@@ -11,17 +11,23 @@ use alloc::vec::Vec;
 pub struct BlockId(pub(crate) u32);
 
 impl BlockId {
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(u32::try_from(index).expect("block index exceeds u32::MAX"))
+    }
+
     /// Create a `BlockId` from a raw `u32` index.
     ///
     /// This is intended for ISA frontends that discover blocks by
     /// decoding and need to construct IDs directly.
     #[inline]
+    #[must_use]
     pub fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
     /// Returns the raw index.
     #[inline]
+    #[must_use]
     pub fn index(self) -> usize {
         self.0 as usize
     }
@@ -66,12 +72,14 @@ pub struct BasicBlock<I> {
 impl<I> BasicBlock<I> {
     /// The block's unique identifier.
     #[inline]
+    #[must_use]
     pub fn id(&self) -> BlockId {
         self.id
     }
 
     /// The instructions inside this block.
     #[inline]
+    #[must_use]
     pub fn instructions(&self) -> &[I] {
         &self.instructions
     }
@@ -84,12 +92,14 @@ impl<I> BasicBlock<I> {
 
     /// Optional label for this block.
     #[inline]
+    #[must_use]
     pub fn label(&self) -> Option<&str> {
         self.label.as_deref()
     }
 
     /// Returns `true` if the block contains no instructions.
     #[inline]
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.instructions.is_empty()
     }
@@ -118,6 +128,7 @@ impl<I> BasicBlock<I> {
 
     /// The predication guard, if any.
     #[inline]
+    #[must_use]
     pub fn guard(&self) -> Option<&Guard> {
         self.guard.as_ref()
     }
@@ -130,6 +141,7 @@ impl<I> BasicBlock<I> {
 
     /// Returns `true` if this block is predicated (guarded).
     #[inline]
+    #[must_use]
     pub fn is_guarded(&self) -> bool {
         self.guard.is_some()
     }

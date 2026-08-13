@@ -38,7 +38,7 @@ impl<I: InstrInfo> Problem<I> for LivenessProblem {
         a.union(b).copied().collect()
     }
 
-    /// Backward transfer: live_in = uses ∪ (live_out − defs).
+    /// Backward transfer: `live_in` = uses ∪ (`live_out` − defs).
     ///
     /// Walk the block's instructions in **reverse** to compute the
     /// set of locations live at the block's entry.
@@ -95,32 +95,38 @@ pub struct Liveness {
 
 impl Liveness {
     /// Run liveness analysis on the given CFG.
+    #[must_use]
     pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
         let result = fixpoint::solve(cfg, &LivenessProblem);
         Self { inner: result }
     }
 
     /// Locations live at the **entry** of a block.
+    #[must_use]
     pub fn live_in(&self, block: BlockId) -> &BTreeSet<Location> {
         self.inner.fact_in(block)
     }
 
     /// Locations live at the **exit** of a block.
+    #[must_use]
     pub fn live_out(&self, block: BlockId) -> &BTreeSet<Location> {
         self.inner.fact_out(block)
     }
 
     /// Check if a location is live at a block's entry.
+    #[must_use]
     pub fn is_live_in(&self, loc: Location, block: BlockId) -> bool {
         self.live_in(block).contains(&loc)
     }
 
     /// Check if a location is live at a block's exit.
+    #[must_use]
     pub fn is_live_out(&self, loc: Location, block: BlockId) -> bool {
         self.live_out(block).contains(&loc)
     }
 
     /// All locations that are live somewhere in the program.
+    #[must_use]
     pub fn all_live_locations<I: InstrInfo>(&self, cfg: &Cfg<I>) -> BTreeSet<Location> {
         let mut all = BTreeSet::new();
         for b in cfg.blocks() {

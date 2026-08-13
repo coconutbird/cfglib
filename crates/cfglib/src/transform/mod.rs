@@ -6,7 +6,7 @@
 //! - [`cleanup`] — unreachable removal, block merging, empty-block bypass, combined simplify.
 //! - [`critical`] — critical edge splitting (required for SSA).
 //! - [`dce`] — dead code elimination via liveness analysis.
-//! - [`linearize`] — re-serialize a CFG back to a flat instruction stream.
+//! - [`linearize()`] — re-serialize a CFG back to a flat instruction stream.
 
 pub mod cleanup;
 pub mod coloring;

@@ -44,7 +44,7 @@ pub fn rotate_loop<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<Rotat
     }
 
     let header = lp.header;
-    let latch = *lp.latches.iter().next().unwrap();
+    let &latch = lp.latches.iter().next()?;
 
     // Header must have exactly two successors (conditional).
     let header_succs: Vec<BlockId> = cfg.successors(header).collect();
@@ -97,6 +97,7 @@ pub fn rotate_loop<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<Rotat
 /// - Defined by other loop-invariant instructions.
 ///
 /// Returns indices `(block, instruction_index)` of invariant instructions.
+#[must_use]
 pub fn find_loop_invariants<I: InstrInfo>(cfg: &Cfg<I>, lp: &NaturalLoop) -> Vec<(BlockId, usize)> {
     let mut invariants = BTreeSet::new();
     let mut changed = true;

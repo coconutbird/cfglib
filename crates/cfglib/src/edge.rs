@@ -10,8 +10,13 @@ use crate::block::BlockId;
 pub struct EdgeId(pub(crate) u32);
 
 impl EdgeId {
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(u32::try_from(index).expect("edge index exceeds u32::MAX"))
+    }
+
     /// Returns the raw index.
     #[inline]
+    #[must_use]
     pub fn index(self) -> usize {
         self.0 as usize
     }
@@ -133,6 +138,7 @@ pub struct CallSite {
 
 impl CallSite {
     /// Create a call site with just a target name.
+    #[must_use]
     pub fn named(name: &str) -> Self {
         Self {
             target_name: Some(alloc::string::String::from(name)),
@@ -143,6 +149,7 @@ impl CallSite {
     }
 
     /// Create a call site with a raw address.
+    #[must_use]
     pub fn at_address(addr: u64) -> Self {
         Self {
             target_name: None,
@@ -156,30 +163,35 @@ impl CallSite {
 impl Edge {
     /// The edge's unique identifier.
     #[inline]
+    #[must_use]
     pub fn id(&self) -> EdgeId {
         self.id
     }
 
     /// The source block of this edge.
     #[inline]
+    #[must_use]
     pub fn source(&self) -> BlockId {
         self.source
     }
 
     /// The target block of this edge.
     #[inline]
+    #[must_use]
     pub fn target(&self) -> BlockId {
         self.target
     }
 
     /// The classification of this edge.
     #[inline]
+    #[must_use]
     pub fn kind(&self) -> EdgeKind {
         self.kind
     }
 
     /// The branch weight / probability, if set.
     #[inline]
+    #[must_use]
     pub fn weight(&self) -> Option<f64> {
         self.weight
     }
@@ -192,6 +204,7 @@ impl Edge {
 
     /// The call-site metadata, if this is a call edge.
     #[inline]
+    #[must_use]
     pub fn call_site(&self) -> Option<&CallSite> {
         self.call_site.as_ref()
     }

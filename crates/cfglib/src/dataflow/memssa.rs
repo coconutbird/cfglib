@@ -67,6 +67,7 @@ pub struct MemorySSA {
 ///
 /// Assigns memory version numbers to all memory-accessing instructions
 /// and inserts memory phis at join points where memory versions differ.
+#[must_use]
 pub fn build_memory_ssa<I: MemoryEffect>(cfg: &Cfg<I>, dom: &DominatorTree) -> MemorySSA {
     let rpo = cfg.reverse_postorder();
     let mut next_ver: MemoryVersion = 1; // version 0 = initial (entry) memory

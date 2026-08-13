@@ -35,6 +35,7 @@ impl ConstValue {
     /// - Const(a) ⊓ Const(a) = Const(a)
     /// - Const(a) ⊓ Const(b) = Bottom  (a ≠ b)
     /// - Bottom ⊓ x = Bottom
+    #[must_use]
     pub fn meet(self, other: Self) -> Self {
         match (self, other) {
             (ConstValue::Top, x) | (x, ConstValue::Top) => x,
@@ -44,11 +45,13 @@ impl ConstValue {
     }
 
     /// Whether this is a known constant.
+    #[must_use]
     pub fn is_const(self) -> bool {
         matches!(self, ConstValue::Const(_))
     }
 
     /// Extract the constant value, if any.
+    #[must_use]
     pub fn as_const(self) -> Option<i64> {
         match self {
             ConstValue::Const(v) => Some(v),
@@ -130,6 +133,7 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
 }
 
 /// Run constant propagation on the CFG.
+#[must_use]
 pub fn constant_propagation<I: ConstantFolder>(cfg: &Cfg<I>) -> FixpointResult<ConstFact> {
     fixpoint::solve(cfg, &ConstPropProblem)
 }

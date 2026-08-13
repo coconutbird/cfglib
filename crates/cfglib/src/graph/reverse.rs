@@ -36,6 +36,7 @@ use crate::edge::EdgeKind;
 /// let succs: Vec<_> = rev.successors(rev.entry()).collect();
 /// assert_eq!(succs.len(), 1);
 /// ```
+#[must_use]
 pub fn reverse_cfg<I: Clone>(cfg: &Cfg<I>) -> Cfg<I> {
     assert!(cfg.num_blocks() > 0, "cannot reverse an empty CFG");
 
@@ -45,9 +46,8 @@ pub fn reverse_cfg<I: Clone>(cfg: &Cfg<I>) -> Cfg<I> {
     for _i in 1..cfg.num_blocks() {
         rev.new_block();
     }
-    for i in 0..cfg.num_blocks() {
-        let bid = BlockId::from_raw(i as u32);
-        let src = cfg.block(bid);
+    for src in cfg.blocks() {
+        let bid = src.id();
         let dst = rev.block_mut(bid);
         *dst.instructions_vec_mut() = src.instructions().to_vec();
         if let Some(lbl) = src.label() {

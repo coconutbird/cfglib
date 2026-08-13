@@ -57,6 +57,7 @@ impl ControlDependenceGraph {
     /// post-dominate A, then every block on the post-dominator tree
     /// path from B up to (but excluding) the immediate post-dominator
     /// of A is control-dependent on A.
+    #[must_use]
     pub fn compute<I>(cfg: &Cfg<I>, pdom: &DominatorTree) -> Self {
         let n = cfg.num_blocks();
         let mut dependences: Vec<BTreeSet<BlockId>> = vec![BTreeSet::new(); n];
@@ -101,6 +102,7 @@ impl ControlDependenceGraph {
     ///
     /// These are the branch points whose decisions control whether
     /// `block` executes.
+    #[must_use]
     pub fn control_dependences(&self, block: BlockId) -> &BTreeSet<BlockId> {
         &self.dependences[block.index()]
     }
@@ -109,17 +111,20 @@ impl ControlDependenceGraph {
     ///
     /// These are blocks whose execution is controlled by the branch
     /// decision in `block`.
+    #[must_use]
     pub fn control_dependents(&self, block: BlockId) -> &BTreeSet<BlockId> {
         &self.dependents[block.index()]
     }
 
     /// Whether `block` is control-dependent on `on`.
+    #[must_use]
     pub fn is_dependent(&self, block: BlockId, on: BlockId) -> bool {
         self.dependences[block.index()].contains(&on)
     }
 
     /// Whether any block is control-dependent on `block` (i.e. it
     /// has a meaningful branch).
+    #[must_use]
     pub fn has_dependents(&self, block: BlockId) -> bool {
         !self.dependents[block.index()].is_empty()
     }

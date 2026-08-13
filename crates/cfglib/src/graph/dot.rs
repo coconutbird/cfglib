@@ -10,6 +10,10 @@ use crate::flow::FlowControl;
 
 impl<I: FlowControl> Cfg<I> {
     /// Write the CFG in DOT format to any `fmt::Write` sink.
+    ///
+    /// # Errors
+    ///
+    /// Returns the sink's formatting error if a write fails.
     pub fn write_dot(&self, w: &mut dyn fmt::Write) -> fmt::Result {
         writeln!(w, "digraph cfg {{")?;
         writeln!(
@@ -43,7 +47,7 @@ impl<I: FlowControl> Cfg<I> {
 
             body.push_str("\\l");
 
-            writeln!(w, "    {id} [label=\"{label_prefix}{id}\\n{body}\"];",)?;
+            writeln!(w, "    {id} [label=\"{label_prefix}{id}\\n{body}\"];")?;
         }
 
         for edge in self.edges() {
@@ -94,6 +98,10 @@ impl<I: FlowControl> Cfg<I> {
 
     /// Produce the DOT representation as a [`String`].
     ///
+    /// # Panics
+    ///
+    /// Panics only if writing to an in-memory [`String`] unexpectedly fails.
+    ///
     /// # Examples
     ///
     /// ```
@@ -113,6 +121,7 @@ impl<I: FlowControl> Cfg<I> {
     /// assert!(dot.contains("digraph cfg"));
     /// assert!(dot.contains("nop"));
     /// ```
+    #[must_use]
     pub fn to_dot(&self) -> String {
         let mut s = String::new();
         self.write_dot(&mut s)

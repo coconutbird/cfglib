@@ -47,6 +47,7 @@ impl<I> Cfg<I> {
     /// assert_eq!(cfg.num_blocks(), 2);
     /// assert_eq!(cfg.num_edges(), 1);
     /// ```
+    #[must_use]
     pub fn new() -> Self {
         let entry = BlockId(0);
         Self {
@@ -66,6 +67,7 @@ impl<I> Cfg<I> {
 
     /// The entry block of the graph.
     #[inline]
+    #[must_use]
     pub fn entry(&self) -> BlockId {
         self.entry
     }
@@ -92,6 +94,7 @@ impl<I> Cfg<I> {
     ///
     /// Panics if `id` does not refer to a block in this CFG.
     #[inline]
+    #[must_use]
     pub fn block(&self, id: BlockId) -> &BasicBlock<I> {
         debug_assert!(
             id.index() < self.blocks.len(),
@@ -120,6 +123,7 @@ impl<I> Cfg<I> {
 
     /// All blocks in allocation order.
     #[inline]
+    #[must_use]
     pub fn blocks(&self) -> &[BasicBlock<I>] {
         &self.blocks
     }
@@ -130,13 +134,14 @@ impl<I> Cfg<I> {
     ///
     /// Panics if `id` does not refer to a live edge in this CFG.
     #[inline]
+    #[must_use]
     pub fn edge(&self, id: EdgeId) -> &Edge {
         self.edges[id.index()]
             .as_ref()
             .expect("edge has been removed")
     }
 
-    /// All live edges (skips tombstones left by [`remove_edge`]).
+    /// All live edges (skips tombstones left by [`Self::remove_edge`]).
     pub fn edges(&self) -> impl Iterator<Item = &Edge> {
         self.edges.iter().filter_map(|slot| slot.as_ref())
     }
@@ -156,6 +161,7 @@ impl<I> Cfg<I> {
     ///
     /// Panics if `id` does not refer to a block in this CFG.
     #[inline]
+    #[must_use]
     pub fn successor_edges(&self, id: BlockId) -> &[EdgeId] {
         debug_assert!(
             id.index() < self.succs.len(),
@@ -172,6 +178,7 @@ impl<I> Cfg<I> {
     ///
     /// Panics if `id` does not refer to a block in this CFG.
     #[inline]
+    #[must_use]
     pub fn predecessor_edges(&self, id: BlockId) -> &[EdgeId] {
         debug_assert!(
             id.index() < self.preds.len(),
@@ -199,6 +206,7 @@ impl<I> Cfg<I> {
     /// let succs: Vec<_> = cfg.successors(b0).collect();
     /// assert_eq!(succs.len(), 2);
     /// ```
+    #[must_use]
     pub fn successors(&self, id: BlockId) -> Successors<'_, I> {
         Successors {
             cfg: self,
@@ -207,6 +215,7 @@ impl<I> Cfg<I> {
     }
 
     /// Predecessor block ids (allocation-free).
+    #[must_use]
     pub fn predecessors(&self, id: BlockId) -> Predecessors<'_, I> {
         Predecessors {
             cfg: self,
@@ -216,12 +225,14 @@ impl<I> Cfg<I> {
 
     /// Number of basic blocks.
     #[inline]
+    #[must_use]
     pub fn num_blocks(&self) -> usize {
         self.blocks.len()
     }
 
     /// Number of live edges (excludes tombstones).
     #[inline]
+    #[must_use]
     pub fn num_edges(&self) -> usize {
         self.edges.iter().filter(|e| e.is_some()).count()
     }
@@ -247,26 +258,28 @@ impl<I> Cfg<I> {
         self.blocks
             .iter()
             .filter(|b| self.succs[b.id().index()].is_empty())
-            .map(|b| b.id())
+            .map(super::block::BasicBlock::id)
     }
 
     // ── Region methods ─────────────────────────────────────────────
 
     /// All exception-handler regions.
     #[inline]
+    #[must_use]
     pub fn regions(&self) -> &[Region] {
         &self.regions
     }
 
     /// Add a region and return its id.
     pub fn add_region(&mut self, mut region: Region) -> RegionId {
-        let id = RegionId(self.regions.len() as u32);
+        let id = RegionId::from_index(self.regions.len());
         region.id = id;
         self.regions.push(region);
         id
     }
 
     /// Returns the innermost region that protects `block`, if any.
+    #[must_use]
     pub fn protecting_region(&self, block: BlockId) -> Option<&Region> {
         // Return the deepest (last-added) region whose protected set
         // contains this block.
@@ -280,12 +293,7 @@ impl<I> Cfg<I> {
 
     /// Allocate a new empty block and return its id.
     pub fn new_block(&mut self) -> BlockId {
-        debug_assert!(
-            self.blocks.len() < u32::MAX as usize,
-            "too many blocks: would overflow u32 BlockId",
-        );
-
-        let id = BlockId(self.blocks.len() as u32);
+        let id = BlockId::from_index(self.blocks.len());
         self.blocks.push(BasicBlock {
             id,
             instructions: Vec::new(),
@@ -323,11 +331,7 @@ impl<I> Cfg<I> {
         weight: Option<f64>,
         call_site: Option<crate::edge::CallSite>,
     ) -> EdgeId {
-        debug_assert!(
-            self.edges.len() < u32::MAX as usize,
-            "too many edges: would overflow u32 EdgeId",
-        );
-        let id = EdgeId(self.edges.len() as u32);
+        let id = EdgeId::from_index(self.edges.len());
         self.edges.push(Some(Edge {
             id,
             source,
@@ -410,6 +414,10 @@ impl<I> Cfg<I> {
     /// Redirect all edges that target `old` to target `new_target` instead.
     ///
     /// This is useful for bypassing a block before removal.
+    ///
+    /// # Panics
+    ///
+    /// Panics if either block is out of range or an incoming edge was removed.
     pub fn redirect_edges_to(&mut self, old: BlockId, new_target: BlockId) {
         let incoming: SmallVec<[EdgeId; 4]> = self.preds[old.index()].clone();
         for eid in incoming {
@@ -480,7 +488,7 @@ pub struct Successors<'a, I> {
     iter: slice::Iter<'a, EdgeId>,
 }
 
-impl<'a, I> Iterator for Successors<'a, I> {
+impl<I> Iterator for Successors<'_, I> {
     type Item = BlockId;
     #[inline]
     fn next(&mut self) -> Option<BlockId> {
@@ -500,7 +508,7 @@ pub struct Predecessors<'a, I> {
     iter: slice::Iter<'a, EdgeId>,
 }
 
-impl<'a, I> Iterator for Predecessors<'a, I> {
+impl<I> Iterator for Predecessors<'_, I> {
     type Item = BlockId;
     #[inline]
     fn next(&mut self) -> Option<BlockId> {
@@ -555,6 +563,7 @@ impl<I: Clone> Cfg<I> {
     /// assert_eq!(sub.num_blocks(), 2);
     /// assert_eq!(sub.num_edges(), 1); // b1→b2 dropped
     /// ```
+    #[must_use]
     pub fn subgraph(&self, blocks: &[BlockId]) -> Self {
         if blocks.is_empty() {
             return Self::new();

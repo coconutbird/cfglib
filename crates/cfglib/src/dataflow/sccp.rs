@@ -32,6 +32,7 @@ pub struct SccpResult {
 /// Requires SSA form (phi map). Uses a two-worklist algorithm:
 /// - **CFG worklist**: edges to mark executable
 /// - **SSA worklist**: locations whose lattice value changed
+#[must_use]
 pub fn sccp<I: ConstantFolder>(cfg: &Cfg<I>, phis: &PhiMap) -> SccpResult {
     let mut values: BTreeMap<Location, ConstValue> = BTreeMap::new();
     let mut exec_edges: BTreeSet<(BlockId, BlockId)> = BTreeSet::new();
@@ -49,8 +50,8 @@ pub fn sccp<I: ConstantFolder>(cfg: &Cfg<I>, phis: &PhiMap) -> SccpResult {
     // Process entry block.
     eval_block(cfg, cfg.entry(), &mut values, &mut ssa_worklist);
 
-    let mut iteration = 0u32;
-    let max_iter = (cfg.num_blocks() as u32).saturating_mul(20).max(200);
+    let mut iteration = 0usize;
+    let max_iter = cfg.num_blocks().saturating_mul(20).max(200);
 
     while (!cfg_worklist.is_empty() || !ssa_worklist.is_empty()) && iteration < max_iter {
         iteration += 1;

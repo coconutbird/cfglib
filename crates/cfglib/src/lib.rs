@@ -37,7 +37,15 @@
 
 #![no_std]
 #![warn(missing_docs)]
-extern crate alloc;
+
+pub(crate) fn usize_to_f64(value: usize) -> f64 {
+    if let Ok(value) = u32::try_from(value) {
+        return f64::from(value);
+    }
+
+    let half = usize_to_f64(value / 2);
+    half * 2.0 + f64::from(u8::from(value & 1 == 1))
+}
 
 // ── Modules ─────────────────────────────────────────────────────────
 

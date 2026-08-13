@@ -24,6 +24,7 @@ impl<I> Cfg<I> {
     /// let order = cfg.dfs_preorder();
     /// assert_eq!(order, vec![b0, b1]);
     /// ```
+    #[must_use]
     pub fn dfs_preorder(&self) -> Vec<BlockId> {
         let mut visited = vec![false; self.num_blocks()];
         let mut order = Vec::with_capacity(self.num_blocks());
@@ -52,6 +53,7 @@ impl<I> Cfg<I> {
     /// Depth-first postorder traversal starting from the entry block.
     ///
     /// Uses an explicit stack to avoid stack overflow on deep graphs.
+    #[must_use]
     pub fn dfs_postorder(&self) -> Vec<BlockId> {
         let mut visited = vec![false; self.num_blocks()];
         let mut order = Vec::with_capacity(self.num_blocks());
@@ -95,6 +97,7 @@ impl<I> Cfg<I> {
     /// // Entry always first in RPO.
     /// assert_eq!(rpo[0], b0);
     /// ```
+    #[must_use]
     pub fn reverse_postorder(&self) -> Vec<BlockId> {
         let mut rpo = self.dfs_postorder();
         rpo.reverse();
@@ -102,6 +105,7 @@ impl<I> Cfg<I> {
     }
 
     /// Breadth-first traversal starting from the entry block.
+    #[must_use]
     pub fn bfs(&self) -> Vec<BlockId> {
         let mut visited = vec![false; self.num_blocks()];
         let mut order = Vec::with_capacity(self.num_blocks());

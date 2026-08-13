@@ -45,7 +45,11 @@ pub fn dead_code_elimination<I: crate::dataflow::InstrInfo + Clone>(cfg: &mut Cf
     let mut removed = 0;
 
     // Phase 1: compute which instructions to keep per block.
-    let block_ids: Vec<BlockId> = cfg.blocks().iter().map(|b| b.id()).collect();
+    let block_ids: Vec<BlockId> = cfg
+        .blocks()
+        .iter()
+        .map(super::super::block::BasicBlock::id)
+        .collect();
     let mut replacements: Vec<(BlockId, Vec<I>)> = Vec::new();
 
     for &bid in &block_ids {

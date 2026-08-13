@@ -61,6 +61,7 @@ pub trait ValueNumberInfo: InstrInfo {
 }
 
 /// Run local value numbering on a single block.
+#[must_use]
 pub fn local_value_numbering<I: ValueNumberInfo>(
     cfg: &Cfg<I>,
     block: BlockId,
@@ -124,7 +125,8 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
 /// scoped `loc → VN` and `expr → VN` tables that are pushed on
 /// entry and popped on exit. This avoids cloning maps for every
 /// block and runs in O(n · α) time per instruction (where α is the
-/// BTreeMap operation cost).
+/// `BTreeMap` operation cost).
+#[must_use]
 pub fn global_value_numbering<I: ValueNumberInfo>(
     cfg: &Cfg<I>,
     dom: &DominatorTree,
@@ -250,6 +252,7 @@ fn gvn_dfs<I: ValueNumberInfo>(
 }
 
 /// Count total redundant instructions across all blocks.
+#[must_use]
 pub fn count_redundant(vn: &ValueNumbering) -> usize {
     vn.blocks.values().map(|b| b.redundant.len()).sum()
 }
@@ -301,8 +304,14 @@ mod tests {
     fn vn_inst(op: u32, uses: &[u32], defs: &[u32]) -> VnInst {
         VnInst {
             op,
-            uses: uses.iter().map(|&u| Location(u as u16)).collect(),
-            defs: defs.iter().map(|&d| Location(d as u16)).collect(),
+            uses: uses
+                .iter()
+                .map(|&u| Location(u16::try_from(u).expect("test location fits in u16")))
+                .collect(),
+            defs: defs
+                .iter()
+                .map(|&d| Location(u16::try_from(d).expect("test location fits in u16")))
+                .collect(),
             pure_: true,
         }
     }

@@ -10,6 +10,9 @@ description = "SM4/SM5 shader bytecode CFG adapter for cfglib"
 keywords = ["dxbc", "shader", "cfg", "control-flow", "directx"]
 categories = ["compilers", "no-std"]
 
+[lints]
+workspace = true
+
 [dependencies]
-cfglib = { version = "0.1.0", path = "../cfglib" }
-dxbc = "0.1.0"
+cfglib.workspace = true
+dxbc.workspace = true

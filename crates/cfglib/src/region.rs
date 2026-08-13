@@ -20,14 +20,20 @@ use crate::block::BlockId;
 pub struct RegionId(pub(crate) u32);
 
 impl RegionId {
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(u32::try_from(index).expect("region index exceeds u32::MAX"))
+    }
+
     /// Create a `RegionId` from a raw index.
     #[inline]
+    #[must_use]
     pub fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
     /// Returns the raw index.
     #[inline]
+    #[must_use]
     pub fn index(self) -> usize {
         self.0 as usize
     }

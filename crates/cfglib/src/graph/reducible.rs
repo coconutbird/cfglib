@@ -66,13 +66,14 @@ pub fn make_reducible<I: Clone>(cfg: &mut Cfg<I>) -> usize {
 /// Find blocks that are irreducible loop entries — targets of
 /// retreating edges that don't dominate their source.
 fn find_irreducible_entries<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BlockId> {
+    const WHITE: u8 = 0;
+    const GRAY: u8 = 1;
+    const BLACK: u8 = 2;
+
     let n = cfg.num_blocks();
     if n == 0 {
         return Vec::new();
     }
-
-    const WHITE: u8 = 0;
-    const GRAY: u8 = 1;
 
     let mut color = alloc::vec![WHITE; n];
     let mut stack: Vec<(BlockId, bool)> = alloc::vec![(cfg.entry(), false)];
@@ -81,7 +82,7 @@ fn find_irreducible_entries<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BlockId
 
     while let Some((node, processed)) = stack.pop() {
         if processed {
-            color[node.index()] = 2; // BLACK
+            color[node.index()] = BLACK;
             continue;
         }
         if color[node.index()] != WHITE {
@@ -93,11 +94,9 @@ fn find_irreducible_entries<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BlockId
         for succ in cfg.successors(node) {
             match color[succ.index()] {
                 WHITE => stack.push((succ, false)),
-                GRAY => {
-                    if !dom.dominates(succ, node) && !seen[succ.index()] {
-                        targets.push(succ);
-                        seen[succ.index()] = true;
-                    }
+                GRAY if !dom.dominates(succ, node) && !seen[succ.index()] => {
+                    targets.push(succ);
+                    seen[succ.index()] = true;
                 }
                 _ => {}
             }

@@ -3,7 +3,7 @@
 //! Generalises the fixpoint engine to work over arbitrary lattices,
 //! enabling interval analysis, sign analysis, taint tracking, etc.
 //!
-//! Internally delegates to [`fixpoint::solve`](super::fixpoint::solve)
+//! Internally delegates to [`fixpoint::solve`]
 //! so there is a single worklist implementation in the crate.
 
 extern crate alloc;
@@ -20,6 +20,7 @@ pub trait Lattice: Clone + PartialEq {
     /// Top element (most precise / most optimistic).
     fn top() -> Self;
     /// Meet (greatest lower bound) of two elements.
+    #[must_use]
     fn meet(&self, other: &Self) -> Self;
     /// Returns `true` if `self ⊑ other` in the lattice ordering.
     fn leq(&self, other: &Self) -> bool;
@@ -83,6 +84,7 @@ impl<I, D: AbstractDomain<I>> Problem<I> for AbstractProblem<D> {
 /// Forward analysis delegating to the generic fixpoint solver.
 /// The abstract domain `D` determines both the lattice and the
 /// per-instruction transfer function.
+#[must_use]
 pub fn abstract_interpret<I, D: AbstractDomain<I>>(cfg: &Cfg<I>) -> AbstractResult<D> {
     let problem = AbstractProblem::<D> {
         _marker: core::marker::PhantomData,

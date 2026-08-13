@@ -28,7 +28,7 @@ pub fn remove_unreachable<I>(cfg: &mut Cfg<I>) -> usize {
     let mut removed = 0;
     for (i, &reachable) in is_reachable.iter().enumerate() {
         if !reachable {
-            let id = BlockId::from_raw(i as u32);
+            let id = BlockId::from_index(i);
             let has_insts = !cfg.block(id).instructions().is_empty();
             let has_edges =
                 !cfg.successor_edges(id).is_empty() || !cfg.predecessor_edges(id).is_empty();

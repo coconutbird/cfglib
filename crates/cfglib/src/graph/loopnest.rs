@@ -1,7 +1,8 @@
 //! Loop nesting tree — hierarchical representation of loop nesting.
 //!
 //! Builds a proper tree from the flat [`NaturalLoop`] list returned by
-//! [`detect_loops`], enabling parent/child queries and nesting depth.
+//! [`detect_loops`](crate::graph::structure::detect_loops), enabling
+//! parent/child queries and nesting depth.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
@@ -58,7 +59,9 @@ impl LoopNestingTree {
     /// Build the nesting tree from a slice of natural loops.
     ///
     /// Loops are assumed to be sorted by depth (outermost first),
-    /// which is the order returned by [`detect_loops`].
+    /// which is the order returned by
+    /// [`detect_loops`](crate::graph::structure::detect_loops).
+    #[must_use]
     pub fn build(loops: &[NaturalLoop]) -> Self {
         let n = loops.len();
         let mut nodes: Vec<LoopNestNode> = loops
@@ -124,11 +127,13 @@ impl LoopNestingTree {
     }
 
     /// Get the innermost loop containing a block, if any.
+    #[must_use]
     pub fn innermost_loop(&self, block: BlockId) -> Option<usize> {
         self.block_to_loop.get(&block).copied()
     }
 
     /// Get outermost (root) loops — those with no parent.
+    #[must_use]
     pub fn roots(&self) -> Vec<usize> {
         self.nodes
             .iter()
@@ -138,16 +143,19 @@ impl LoopNestingTree {
     }
 
     /// Nesting depth of a loop (0 for outermost).
+    #[must_use]
     pub fn depth(&self, loop_index: usize) -> usize {
         self.nodes[loop_index].depth
     }
 
     /// Number of loops.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
     /// Whether the tree is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }

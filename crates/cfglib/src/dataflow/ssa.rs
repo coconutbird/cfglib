@@ -26,6 +26,7 @@ pub struct DominanceFrontiers {
 impl DominanceFrontiers {
     /// Compute dominance frontiers using the algorithm from
     /// Cooper, Harvey & Kennedy (2001) — "A Simple, Fast Dominance Algorithm".
+    #[must_use]
     pub fn compute<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Self {
         let n = cfg.num_blocks();
         let mut frontiers = vec![BTreeSet::new(); n];
@@ -51,6 +52,7 @@ impl DominanceFrontiers {
     }
 
     /// The dominance frontier set for `block`.
+    #[must_use]
     pub fn frontier(&self, block: BlockId) -> &BTreeSet<BlockId> {
         &self.frontiers[block.index()]
     }
@@ -76,13 +78,15 @@ pub struct PhiMap {
 
 impl PhiMap {
     /// φ-functions at the given block.
+    #[must_use]
     pub fn phis_at(&self, block: BlockId) -> &[PhiNode] {
         &self.phis[block.index()]
     }
 
     /// Total number of φ-functions across all blocks.
+    #[must_use]
     pub fn total_phis(&self) -> usize {
-        self.phis.iter().map(|v| v.len()).sum()
+        self.phis.iter().map(alloc::vec::Vec::len).sum()
     }
 
     /// Iterate over all (block, phi) pairs.
@@ -90,7 +94,7 @@ impl PhiMap {
         self.phis
             .iter()
             .enumerate()
-            .flat_map(|(i, phis)| phis.iter().map(move |phi| (BlockId(i as u32), phi)))
+            .flat_map(|(i, phis)| phis.iter().map(move |phi| (BlockId::from_index(i), phi)))
     }
 }
 
@@ -132,6 +136,7 @@ impl PhiMap {
 /// // b3 needs a phi for r0 (defined in both b1 and b2).
 /// assert!(phis.phis_at(b3).iter().any(|p| p.location == r0));
 /// ```
+#[must_use]
 pub fn insert_phis<I: InstrInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PhiMap {
     let n = cfg.num_blocks();
     let df = DominanceFrontiers::compute(cfg, dom);

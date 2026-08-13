@@ -106,6 +106,7 @@ pub struct ReachingDefs {
 
 impl ReachingDefs {
     /// Run reaching definitions on the given CFG.
+    #[must_use]
     pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
         let result = fixpoint::solve(cfg, &ReachingDefsProblem);
         Self { inner: result }
@@ -113,17 +114,20 @@ impl ReachingDefs {
 
     /// Definitions reaching the **entry** of a block (before any
     /// instruction in the block executes).
+    #[must_use]
     pub fn reaching_in(&self, block: BlockId) -> &BTreeSet<ReachingDef> {
         self.inner.fact_in(block)
     }
 
     /// Definitions reaching the **exit** of a block (after all
     /// instructions in the block have executed).
+    #[must_use]
     pub fn reaching_out(&self, block: BlockId) -> &BTreeSet<ReachingDef> {
         self.inner.fact_out(block)
     }
 
     /// All definitions of a specific location reaching a block's entry.
+    #[must_use]
     pub fn defs_of_at_entry(&self, loc: Location, block: BlockId) -> Vec<DefSite> {
         self.reaching_in(block)
             .iter()

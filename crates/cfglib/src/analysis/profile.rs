@@ -44,6 +44,7 @@ impl CfgProfile {
     /// let profile = CfgProfile::from_edge_weights(&cfg);
     /// assert!(profile.hottest_block().is_some());
     /// ```
+    #[must_use]
     pub fn from_edge_weights<I>(cfg: &Cfg<I>) -> Self {
         let mut edge_weights = BTreeMap::new();
         let mut block_weights = BTreeMap::new();
@@ -80,13 +81,17 @@ impl CfgProfile {
 
     /// Set uniform edge weights (equal probability for all successors).
     pub fn set_uniform_weights<I>(cfg: &mut Cfg<I>) {
-        let block_ids: Vec<BlockId> = cfg.blocks().iter().map(|b| b.id()).collect();
+        let block_ids: Vec<BlockId> = cfg
+            .blocks()
+            .iter()
+            .map(super::super::block::BasicBlock::id)
+            .collect();
         for bid in block_ids {
             let succs = cfg.successor_edges(bid).to_vec();
             if succs.is_empty() {
                 continue;
             }
-            let w = 1.0 / succs.len() as f64;
+            let w = 1.0 / crate::usize_to_f64(succs.len());
             for eid in succs {
                 cfg.edge_mut(eid).set_weight(Some(w));
             }
@@ -94,6 +99,7 @@ impl CfgProfile {
     }
 
     /// Get the hottest block (highest frequency).
+    #[must_use]
     pub fn hottest_block(&self) -> Option<(BlockId, f64)> {
         self.block_weights
             .iter()
@@ -102,6 +108,7 @@ impl CfgProfile {
     }
 
     /// Get the coldest block (lowest frequency).
+    #[must_use]
     pub fn coldest_block(&self) -> Option<(BlockId, f64)> {
         self.block_weights
             .iter()
@@ -110,6 +117,7 @@ impl CfgProfile {
     }
 
     /// Hot blocks above a frequency threshold.
+    #[must_use]
     pub fn hot_blocks(&self, threshold: f64) -> Vec<BlockId> {
         self.block_weights
             .iter()

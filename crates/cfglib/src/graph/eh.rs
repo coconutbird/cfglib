@@ -70,6 +70,7 @@ pub struct EhModel {
 /// // No exception edges, so no landing pads.
 /// assert!(model.eh_edges.is_empty());
 /// ```
+#[must_use]
 pub fn build_eh_model<I>(cfg: &Cfg<I>) -> EhModel {
     let mut block_kinds = BTreeMap::new();
     let mut eh_edges = Vec::new();
@@ -104,9 +105,10 @@ pub fn build_eh_model<I>(cfg: &Cfg<I>) -> EhModel {
                 crate::region::HandlerKind::Catch | crate::region::HandlerKind::CatchAll => {
                     EhBlockKind::LandingPad
                 }
-                crate::region::HandlerKind::Finally => EhBlockKind::Cleanup,
+                crate::region::HandlerKind::Finally | crate::region::HandlerKind::Fault => {
+                    EhBlockKind::Cleanup
+                }
                 crate::region::HandlerKind::Filter { .. } => EhBlockKind::CatchSwitch,
-                crate::region::HandlerKind::Fault => EhBlockKind::Cleanup,
             });
             for &bid in &region.protected_blocks {
                 protected_by.entry(target).or_default().insert(bid);
@@ -127,6 +129,7 @@ pub fn build_eh_model<I>(cfg: &Cfg<I>) -> EhModel {
 }
 
 /// Returns all landing pad blocks.
+#[must_use]
 pub fn landing_pads(model: &EhModel) -> Vec<BlockId> {
     model
         .block_kinds
@@ -137,6 +140,7 @@ pub fn landing_pads(model: &EhModel) -> Vec<BlockId> {
 }
 
 /// Returns all cleanup blocks.
+#[must_use]
 pub fn cleanup_blocks(model: &EhModel) -> Vec<BlockId> {
     model
         .block_kinds

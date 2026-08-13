@@ -11,3 +11,27 @@ authors = ["coconutbird"]
 rust-version = "1.85"
 keywords = ["cfg", "control-flow", "compiler", "binary-analysis", "decompiler"]
 categories = ["compilers", "no-std"]
+
+[workspace.dependencies]
+cfglib = { version = "0.1.0", path = "crates/cfglib" }
+dxbc = "0.1.0"
+serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
+smallvec = { version = "1.15.1", default-features = false }
+
+[workspace.lints.rust]
+warnings = { level = "deny", priority = -2 }
+unused = { level = "deny", priority = -1 }
+nonstandard_style = { level = "deny", priority = -1 }
+rust_2018_idioms = { level = "deny", priority = -1 }
+future_incompatible = { level = "deny", priority = -1 }
+
+[workspace.lints.clippy]
+correctness = { level = "deny", priority = -1 }
+suspicious = { level = "deny", priority = -1 }
+style = { level = "deny", priority = -1 }
+complexity = { level = "deny", priority = -1 }
+perf = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+[workspace.lints.rustdoc]
+all = { level = "deny", priority = -1 }

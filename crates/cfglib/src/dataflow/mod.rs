@@ -43,12 +43,14 @@ pub struct Location(pub u16);
 impl Location {
     /// Create a new location with the given index.
     #[inline]
+    #[must_use]
     pub fn new(index: u16) -> Self {
         Self(index)
     }
 
     /// Returns the raw index.
     #[inline]
+    #[must_use]
     pub fn index(self) -> usize {
         self.0 as usize
     }

@@ -64,6 +64,7 @@ pub struct BackEdge {
 /// assert_eq!(backs[0].header, b0);
 /// assert_eq!(backs[0].tail, b1);
 /// ```
+#[must_use]
 pub fn find_back_edges<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackEdge> {
     let mut backs = Vec::new();
     for edge in cfg.edges() {
@@ -126,6 +127,7 @@ fn loop_body_for<I>(cfg: &Cfg<I>, header: BlockId, tail: BlockId) -> BTreeSet<Bl
 /// assert_eq!(loops[0].header, b0);
 /// assert!(loops[0].body.contains(&b1));
 /// ```
+#[must_use]
 pub fn detect_loops<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
     let backs = find_back_edges(cfg, dom);
     if backs.is_empty() {
@@ -164,7 +166,7 @@ pub fn detect_loops<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
                 containing[b.index()] += 1;
             }
         }
-        for lp in loops.iter_mut() {
+        for lp in &mut loops {
             // Every loop's body includes its own header, so subtract 1.
             lp.depth = (containing[lp.header.index()] - 1) as usize;
         }
@@ -186,17 +188,18 @@ pub fn detect_loops<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
 /// dominates `source` the edge is a natural back-edge (fine); any
 /// other edge where `target` was already visited but does **not**
 /// dominate `source` witnesses an irreducible cycle.
+#[must_use]
 pub fn is_reducible<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> bool {
+    const WHITE: u8 = 0;
+    const GRAY: u8 = 1;
+    const BLACK: u8 = 2;
+
     // DFS to classify edges. An edge to an ancestor that doesn't
     // dominate the source is irreducible.
     let n = cfg.num_blocks();
     if n == 0 {
         return true;
     }
-
-    const WHITE: u8 = 0;
-    const GRAY: u8 = 1;
-    const BLACK: u8 = 2;
 
     let mut color = alloc::vec![WHITE; n];
     let mut stack: Vec<(BlockId, bool)> = alloc::vec![(cfg.entry(), false)];
@@ -215,12 +218,11 @@ pub fn is_reducible<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> bool {
         for succ in cfg.successors(node) {
             match color[succ.index()] {
                 WHITE => stack.push((succ, false)),
-                GRAY => {
+                GRAY
                     // Retreating edge — must be a natural back-edge.
-                    if !dom.dominates(succ, node) {
+                    if !dom.dominates(succ, node) => {
                         return false;
                     }
-                }
                 _ => {} // Cross/forward edge — fine.
             }
         }
@@ -287,6 +289,7 @@ pub fn insert_preheader<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<
 ///
 /// An exit block is any block **outside** the loop body that has a
 /// predecessor inside the loop body.
+#[must_use]
 pub fn loop_exit_blocks<I>(cfg: &Cfg<I>, lp: &NaturalLoop) -> BTreeSet<BlockId> {
     let mut exits = BTreeSet::new();
     for &b in &lp.body {

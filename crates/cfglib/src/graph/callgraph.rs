@@ -63,6 +63,7 @@ pub struct CallGraph {
 
 impl CallGraph {
     /// Create an empty call graph.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             nodes: Vec::new(),
@@ -88,56 +89,66 @@ impl CallGraph {
         id
     }
     /// Record a call from `caller` to `callee`.
-    pub fn add_call(&mut self, caller: FunctionId, callee: FunctionId, tail: bool) {
-        self.out_edges[caller].insert(callee);
-        self.in_edges[callee].insert(caller);
+    pub fn add_call(&mut self, source: FunctionId, target: FunctionId, tail: bool) {
+        self.out_edges[source].insert(target);
+        self.in_edges[target].insert(source);
         self.edges.push(CallEdge {
-            caller,
-            callee,
+            caller: source,
+            callee: target,
             is_tail_call: tail,
         });
     }
     /// Functions called by `id`.
+    #[must_use]
     pub fn callees(&self, id: FunctionId) -> &BTreeSet<FunctionId> {
         &self.out_edges[id]
     }
     /// Functions that call `id`.
+    #[must_use]
     pub fn callers(&self, id: FunctionId) -> &BTreeSet<FunctionId> {
         &self.in_edges[id]
     }
     /// Look up a function node by id.
+    #[must_use]
     pub fn function(&self, id: FunctionId) -> &FunctionNode {
         &self.nodes[id]
     }
     /// Look up a function id by name.
+    #[must_use]
     pub fn function_by_name(&self, n: &str) -> Option<FunctionId> {
         self.name_to_id.get(n).copied()
     }
     /// Number of function nodes.
+    #[must_use]
     pub fn num_functions(&self) -> usize {
         self.nodes.len()
     }
     /// All call edges.
+    #[must_use]
     pub fn edges(&self) -> &[CallEdge] {
         &self.edges
     }
     /// All function nodes.
+    #[must_use]
     pub fn functions(&self) -> &[FunctionNode] {
         &self.nodes
     }
     /// Leaf functions (no callees).
+    #[must_use]
     pub fn leaf_functions(&self) -> Vec<FunctionId> {
         (0..self.nodes.len())
             .filter(|&i| self.out_edges[i].is_empty())
             .collect()
     }
     /// Root functions (no callers).
+    #[must_use]
     pub fn root_functions(&self) -> Vec<FunctionId> {
         (0..self.nodes.len())
             .filter(|&i| self.in_edges[i].is_empty())
             .collect()
     }
     /// Whether `id` is recursive (directly or via mutual recursion).
+    #[must_use]
     pub fn is_recursive(&self, id: FunctionId) -> bool {
         self.out_edges[id].contains(&id)
             || self
@@ -146,6 +157,7 @@ impl CallGraph {
                 .any(|scc| scc.len() > 1 && scc.contains(&id))
     }
     /// Build a call graph by scanning CFGs for call edges.
+    #[must_use]
     pub fn build_from_cfgs<I>(cfgs: &[(&str, &Cfg<I>)]) -> Self {
         let mut cg = Self::new();
         for &(name, _) in cfgs {
@@ -166,11 +178,8 @@ impl CallGraph {
         cg
     }
     /// Topological order (returns `None` if cycles exist).
+    #[must_use]
     pub fn topological_order(&self) -> Option<Vec<FunctionId>> {
-        let n = self.nodes.len();
-        let mut vis = vec![false; n];
-        let mut stk = vec![false; n];
-        let mut out = Vec::with_capacity(n);
         fn go(
             id: usize,
             a: &[BTreeSet<usize>],
@@ -192,6 +201,11 @@ impl CallGraph {
             o.push(id);
             true
         }
+
+        let n = self.nodes.len();
+        let mut vis = vec![false; n];
+        let mut stk = vec![false; n];
+        let mut out = Vec::with_capacity(n);
         for i in 0..n {
             if !vis[i] && !go(i, &self.out_edges, &mut vis, &mut stk, &mut out) {
                 return None;
@@ -201,6 +215,7 @@ impl CallGraph {
         Some(out)
     }
     /// Strongly connected components (Tarjan's algorithm).
+    #[must_use]
     pub fn sccs(&self) -> Vec<Vec<FunctionId>> {
         let n = self.nodes.len();
         let mut state = TarjanState {

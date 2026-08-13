@@ -1,7 +1,7 @@
 //! Tail call detection.
 //!
 //! Identifies blocks that end with a call immediately followed by a
-//! return (or where the call edge's [`CallSite`] is already marked
+//! return (or where the call edge's [`CallSite`](crate::edge::CallSite) is already marked
 //! `is_tail_call`). These are candidates for tail call optimization.
 
 extern crate alloc;
@@ -19,7 +19,8 @@ pub struct TailCall {
     pub block: BlockId,
     /// Index of the call instruction within the block (if identifiable).
     pub inst_idx: Option<usize>,
-    /// Whether this was explicitly marked via [`CallSite::is_tail_call`].
+    /// Whether this was explicitly marked via
+    /// [`CallSite::is_tail_call`](crate::edge::CallSite::is_tail_call).
     pub explicit: bool,
 }
 
@@ -32,6 +33,7 @@ pub struct TailCall {
 ///    last instruction is a call.
 ///
 /// Returns all detected tail call sites.
+#[must_use]
 pub fn detect_tail_calls<I: FlowControl>(cfg: &Cfg<I>) -> Vec<TailCall> {
     let mut results = Vec::new();
     let exit_blocks: alloc::collections::BTreeSet<BlockId> = cfg.exit_blocks().collect();

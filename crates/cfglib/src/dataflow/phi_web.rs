@@ -9,6 +9,7 @@ use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::cmp::Ordering;
 
 use crate::dataflow::Location;
 use crate::dataflow::ssa::PhiMap;
@@ -42,13 +43,13 @@ impl UnionFind {
         if ra == rb {
             return;
         }
-        if self.rank[ra] < self.rank[rb] {
-            self.parent[ra] = rb;
-        } else if self.rank[ra] > self.rank[rb] {
-            self.parent[rb] = ra;
-        } else {
-            self.parent[rb] = ra;
-            self.rank[ra] += 1;
+        match self.rank[ra].cmp(&self.rank[rb]) {
+            Ordering::Less => self.parent[ra] = rb,
+            Ordering::Greater => self.parent[rb] = ra,
+            Ordering::Equal => {
+                self.parent[rb] = ra;
+                self.rank[ra] += 1;
+            }
         }
     }
 }
@@ -73,6 +74,7 @@ pub struct PhiWebs {
 ///
 /// Locations connected through the same φ-node are placed in the
 /// same congruence class.
+#[must_use]
 pub fn compute_phi_webs(phis: &PhiMap) -> PhiWebs {
     // Collect all locations mentioned in phis.
     let mut all_locs: Vec<Location> = Vec::new();

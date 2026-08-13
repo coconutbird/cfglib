@@ -98,7 +98,7 @@ pub enum AstNode<I> {
     /// A predicated/guarded region — executes only when a condition
     /// register is set (ARM IT blocks, GPU wave predication, CMOV).
     Guarded {
-        /// Human-readable predicate description (e.g. "p0", "!cc_z").
+        /// Human-readable predicate description (e.g. "p0", "!`cc_z`").
         predicate: alloc::string::String,
         /// The guarded body.
         body: Vec<AstNode<I>>,
@@ -127,18 +127,20 @@ pub struct SwitchCase<I> {
 
 impl<I> AstNode<I> {
     /// Returns `true` if this is an empty sequence.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         matches!(self, AstNode::Sequence { body } if body.is_empty())
     }
 
     /// Flatten nested single-element sequences.
+    #[must_use]
     pub fn simplify(self) -> Self {
         match self {
             AstNode::Sequence { mut body } => {
                 body = body.into_iter().map(AstNode::simplify).collect();
                 // Unwrap single-element sequences.
                 if body.len() == 1 {
-                    body.into_iter().next().unwrap()
+                    body.pop().unwrap_or(AstNode::Sequence { body: Vec::new() })
                 } else {
                     AstNode::Sequence { body }
                 }
@@ -209,6 +211,7 @@ use crate::flow::FlowControl;
 
 impl<I: FlowControl> AstNode<I> {
     /// Render this AST as indented pseudocode.
+    #[must_use]
     pub fn to_pseudocode(&self) -> String {
         let mut out = String::new();
         write_node(&mut out, self, 0);
@@ -233,51 +236,107 @@ fn write_insts<I: FlowControl>(out: &mut String, insts: &[I], depth: usize) {
     }
 }
 
+fn write_nodes<I: FlowControl>(out: &mut String, nodes: &[AstNode<I>], depth: usize) {
+    for node in nodes {
+        write_node(out, node, depth);
+    }
+}
+
+fn write_if_then_else<I: FlowControl>(
+    out: &mut String,
+    condition_instructions: &[I],
+    then_body: &[AstNode<I>],
+    else_body: &[AstNode<I>],
+    depth: usize,
+) {
+    if condition_instructions.len() > 1 {
+        write_insts(
+            out,
+            &condition_instructions[..condition_instructions.len() - 1],
+            depth,
+        );
+    }
+    write_indent(out, depth);
+    out.push_str("if {\n");
+    write_nodes(out, then_body, depth + 1);
+    if !else_body.is_empty() {
+        write_indent(out, depth);
+        out.push_str("} else {\n");
+        write_nodes(out, else_body, depth + 1);
+    }
+    write_indent(out, depth);
+    out.push_str("}\n");
+}
+
+fn write_switch<I: FlowControl>(
+    out: &mut String,
+    condition_instructions: &[I],
+    cases: &[SwitchCase<I>],
+    depth: usize,
+) {
+    if condition_instructions.len() > 1 {
+        write_insts(
+            out,
+            &condition_instructions[..condition_instructions.len() - 1],
+            depth,
+        );
+    }
+    write_indent(out, depth);
+    out.push_str("switch {\n");
+    for case in cases {
+        write_indent(out, depth);
+        out.push_str("  case {\n");
+        write_insts(out, &case.header_instructions, depth + 2);
+        write_nodes(out, &case.body, depth + 2);
+        write_indent(out, depth);
+        out.push_str("  }\n");
+    }
+    write_indent(out, depth);
+    out.push_str("}\n");
+}
+
+fn write_try_catch<I: FlowControl>(
+    out: &mut String,
+    try_body: &[AstNode<I>],
+    handlers: &[CatchHandler<I>],
+    finally_body: &[AstNode<I>],
+    depth: usize,
+) {
+    write_indent(out, depth);
+    out.push_str("try {\n");
+    write_nodes(out, try_body, depth + 1);
+    for handler in handlers {
+        write_indent(out, depth);
+        out.push_str("} catch {\n");
+        write_nodes(out, &handler.body, depth + 1);
+    }
+    if !finally_body.is_empty() {
+        write_indent(out, depth);
+        out.push_str("} finally {\n");
+        write_nodes(out, finally_body, depth + 1);
+    }
+    write_indent(out, depth);
+    out.push_str("}\n");
+}
+
 fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize) {
     match node {
-        AstNode::Block { instructions, .. } => {
+        AstNode::Block { instructions, .. } | AstNode::Return { instructions } => {
             write_insts(out, instructions, depth);
         }
         AstNode::Sequence { body } => {
-            for child in body {
-                write_node(out, child, depth);
-            }
+            write_nodes(out, body, depth);
         }
         AstNode::IfThenElse {
             condition_instructions,
             then_body,
             else_body,
             ..
-        } => {
-            // Print instructions before the "if" (like mov, cmp).
-            if condition_instructions.len() > 1 {
-                write_insts(
-                    out,
-                    &condition_instructions[..condition_instructions.len() - 1],
-                    depth,
-                );
-            }
-            write_indent(out, depth);
-            out.push_str("if {\n");
-            for child in then_body {
-                write_node(out, child, depth + 1);
-            }
-            if !else_body.is_empty() {
-                write_indent(out, depth);
-                out.push_str("} else {\n");
-                for child in else_body {
-                    write_node(out, child, depth + 1);
-                }
-            }
-            write_indent(out, depth);
-            out.push_str("}\n");
-        }
+        } => write_if_then_else(out, condition_instructions, then_body, else_body, depth),
         AstNode::Loop { body, .. } => {
             write_indent(out, depth);
             out.push_str("loop {\n");
-            for child in body {
-                write_node(out, child, depth + 1);
-            }
+            write_nodes(out, body, depth + 1);
             write_indent(out, depth);
             out.push_str("}\n");
         }
@@ -285,29 +344,7 @@ fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize)
             condition_instructions,
             cases,
             ..
-        } => {
-            if condition_instructions.len() > 1 {
-                write_insts(
-                    out,
-                    &condition_instructions[..condition_instructions.len() - 1],
-                    depth,
-                );
-            }
-            write_indent(out, depth);
-            out.push_str("switch {\n");
-            for case in cases {
-                write_indent(out, depth);
-                out.push_str("  case {\n");
-                write_insts(out, &case.header_instructions, depth + 2);
-                for child in &case.body {
-                    write_node(out, child, depth + 2);
-                }
-                write_indent(out, depth);
-                out.push_str("  }\n");
-            }
-            write_indent(out, depth);
-            out.push_str("}\n");
-        }
+        } => write_switch(out, condition_instructions, cases, depth),
         AstNode::Break => {
             write_indent(out, depth);
             out.push_str("break;\n");
@@ -316,16 +353,11 @@ fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize)
             write_indent(out, depth);
             out.push_str("continue;\n");
         }
-        AstNode::Return { instructions } => {
-            write_insts(out, instructions, depth);
-        }
         AstNode::Label { name, body } => {
             write_indent(out, depth);
             out.push_str(name);
             out.push_str(":\n");
-            for child in body {
-                write_node(out, child, depth + 1);
-            }
+            write_nodes(out, body, depth + 1);
         }
         AstNode::Goto { target } => {
             write_indent(out, depth);
@@ -337,37 +369,13 @@ fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize)
             try_body,
             handlers,
             finally_body,
-        } => {
-            write_indent(out, depth);
-            out.push_str("try {\n");
-            for child in try_body {
-                write_node(out, child, depth + 1);
-            }
-            for handler in handlers {
-                write_indent(out, depth);
-                out.push_str("} catch {\n");
-                for child in &handler.body {
-                    write_node(out, child, depth + 1);
-                }
-            }
-            if !finally_body.is_empty() {
-                write_indent(out, depth);
-                out.push_str("} finally {\n");
-                for child in finally_body {
-                    write_node(out, child, depth + 1);
-                }
-            }
-            write_indent(out, depth);
-            out.push_str("}\n");
-        }
+        } => write_try_catch(out, try_body, handlers, finally_body, depth),
         AstNode::Guarded { predicate, body } => {
             write_indent(out, depth);
             out.push_str("@guarded(");
             out.push_str(predicate);
             out.push_str(") {\n");
-            for child in body {
-                write_node(out, child, depth + 1);
-            }
+            write_nodes(out, body, depth + 1);
             write_indent(out, depth);
             out.push_str("}\n");
         }

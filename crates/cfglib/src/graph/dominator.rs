@@ -34,22 +34,49 @@ pub struct DominatorTree {
     idom: Vec<Option<BlockId>>,
 }
 
+fn reverse_graph_rpo(entry: usize, successors: &[Vec<usize>]) -> Vec<usize> {
+    let mut visited = vec![false; successors.len()];
+    let mut order = Vec::with_capacity(successors.len());
+    let mut stack = vec![(entry, false)];
+
+    while let Some((node, processed)) = stack.pop() {
+        if processed {
+            order.push(node);
+            continue;
+        }
+        if visited[node] {
+            continue;
+        }
+        visited[node] = true;
+        stack.push((node, true));
+        for &successor in successors[node].iter().rev() {
+            if !visited[successor] {
+                stack.push((successor, false));
+            }
+        }
+    }
+
+    order.reverse();
+    order
+}
+
 impl DominatorTree {
     /// Compute the dominator tree for the given CFG using the iterative
     /// algorithm by Cooper, Harvey, and Kennedy.
+    #[must_use]
     pub fn compute<I>(cfg: &Cfg<I>) -> Self {
         let rpo = cfg.reverse_postorder();
         let n = cfg.num_blocks();
 
         // Map BlockId → reverse-postorder index.
-        let mut rpo_num = vec![u32::MAX; n];
+        let mut rpo_num = vec![usize::MAX; n];
         for (i, &id) in rpo.iter().enumerate() {
-            rpo_num[id.index()] = i as u32;
+            rpo_num[id.index()] = i;
         }
 
-        let mut doms: Vec<Option<u32>> = vec![None; n];
-        let entry_rpo = rpo_num[cfg.entry().index()] as usize;
-        doms[entry_rpo] = Some(entry_rpo as u32);
+        let mut doms: Vec<Option<usize>> = vec![None; n];
+        let entry_rpo = rpo_num[cfg.entry().index()];
+        doms[entry_rpo] = Some(entry_rpo);
 
         let mut changed = true;
         while changed {
@@ -58,15 +85,15 @@ impl DominatorTree {
                 if b == cfg.entry() {
                     continue;
                 }
-                let b_rpo = rpo_num[b.index()] as usize;
+                let b_rpo = rpo_num[b.index()];
                 let preds: Vec<BlockId> = cfg.predecessors(b).collect();
 
                 // Find the first processed predecessor.
                 let mut new_idom = None;
                 for &p in &preds {
-                    let p_rpo = rpo_num[p.index()] as usize;
+                    let p_rpo = rpo_num[p.index()];
                     if doms[p_rpo].is_some() {
-                        new_idom = Some(p_rpo as u32);
+                        new_idom = Some(p_rpo);
                         break;
                     }
                 }
@@ -76,9 +103,9 @@ impl DominatorTree {
 
                 // Intersect with remaining processed predecessors.
                 for &p in &preds {
-                    let p_rpo = rpo_num[p.index()] as usize;
-                    if doms[p_rpo].is_some() && p_rpo as u32 != new_idom {
-                        new_idom = Self::intersect(&doms, p_rpo as u32, new_idom);
+                    let p_rpo = rpo_num[p.index()];
+                    if doms[p_rpo].is_some() && p_rpo != new_idom {
+                        new_idom = Self::intersect(&doms, p_rpo, new_idom);
                     }
                 }
 
@@ -94,7 +121,7 @@ impl DominatorTree {
         for (rpo_idx, &dom) in doms.iter().enumerate() {
             if rpo_idx < rpo.len() {
                 let block = rpo[rpo_idx];
-                idom_result[block.index()] = dom.map(|d| rpo[d as usize]);
+                idom_result[block.index()] = dom.map(|d| rpo[d]);
             }
         }
 
@@ -104,13 +131,13 @@ impl DominatorTree {
         DominatorTree { idom: idom_result }
     }
 
-    fn intersect(doms: &[Option<u32>], mut a: u32, mut b: u32) -> u32 {
+    fn intersect(doms: &[Option<usize>], mut a: usize, mut b: usize) -> usize {
         while a != b {
             while a > b {
-                a = doms[a as usize].unwrap();
+                a = doms[a].expect("processed dominator must have a parent");
             }
             while b > a {
-                b = doms[b as usize].unwrap();
+                b = doms[b].expect("processed dominator must have a parent");
             }
         }
         a
@@ -118,11 +145,13 @@ impl DominatorTree {
 
     /// Returns the immediate dominator of `block`, or `None` if `block`
     /// is the entry.
+    #[must_use]
     pub fn idom(&self, block: BlockId) -> Option<BlockId> {
         self.idom[block.index()]
     }
 
     /// Returns `true` if `a` dominates `b`.
+    #[must_use]
     pub fn dominates(&self, a: BlockId, b: BlockId) -> bool {
         if a == b {
             return true;
@@ -143,11 +172,12 @@ impl DominatorTree {
 
     /// Returns the children of `block` in the dominator tree (blocks
     /// whose immediate dominator is `block`).
+    #[must_use]
     pub fn children(&self, block: BlockId) -> Vec<BlockId> {
         let mut result = Vec::new();
         for (i, dom) in self.idom.iter().enumerate() {
             if *dom == Some(block) && i != block.index() {
-                result.push(BlockId(i as u32));
+                result.push(BlockId::from_index(i));
             }
         }
         result
@@ -158,6 +188,7 @@ impl DominatorTree {
     /// The entry block (or root) has depth 0. Each step toward a leaf
     /// adds 1. Returns `None` if the block is unreachable (has no idom
     /// chain to the root).
+    #[must_use]
     pub fn depth(&self, block: BlockId) -> Option<usize> {
         let mut d = 0;
         let mut cur = block;
@@ -179,11 +210,12 @@ impl DominatorTree {
     ///
     /// Returns a vector indexed by block index. Unreachable blocks get
     /// `usize::MAX`.
+    #[must_use]
     pub fn depths(&self) -> Vec<usize> {
         let n = self.idom.len();
         let mut result = vec![usize::MAX; n];
         for (i, slot) in result.iter_mut().enumerate().take(n) {
-            let bid = BlockId::from_raw(i as u32);
+            let bid = BlockId::from_index(i);
             if let Some(d) = self.depth(bid) {
                 *slot = d;
             }
@@ -199,6 +231,7 @@ impl DominatorTree {
     /// from that virtual exit.
     ///
     /// This correctly handles CFGs with multiple exit points.
+    #[must_use]
     pub fn compute_post<I>(cfg: &Cfg<I>) -> Self {
         let n = cfg.num_blocks();
         if n == 0 {
@@ -210,12 +243,12 @@ impl DominatorTree {
             .blocks()
             .iter()
             .filter(|b| cfg.successor_edges(b.id()).is_empty())
-            .map(|b| b.id())
+            .map(super::super::block::BasicBlock::id)
             .collect();
 
         // If no natural exits, fall back to the last block.
         let exit_set: Vec<BlockId> = if exits.is_empty() {
-            vec![BlockId((n - 1) as u32)]
+            vec![BlockId::from_index(n - 1)]
         } else {
             exits
         };
@@ -239,40 +272,17 @@ impl DominatorTree {
             rev_succs[virt].push(ex.index());
         }
 
-        // Iterative DFS postorder on the reverse graph, starting from
-        // the virtual exit.
-        let mut visited = vec![false; total];
-        let mut rpo: Vec<usize> = Vec::with_capacity(total);
-        {
-            let mut stack: Vec<(usize, bool)> = vec![(virt, false)];
-            while let Some((node, processed)) = stack.pop() {
-                if processed {
-                    rpo.push(node);
-                    continue;
-                }
-                if visited[node] {
-                    continue;
-                }
-                visited[node] = true;
-                stack.push((node, true));
-                for &succ in rev_succs[node].iter().rev() {
-                    if !visited[succ] {
-                        stack.push((succ, false));
-                    }
-                }
-            }
-            rpo.reverse();
-        }
+        let rpo = reverse_graph_rpo(virt, &rev_succs);
 
         // Map node index → RPO position.
-        let mut rpo_num = vec![u32::MAX; total];
+        let mut rpo_num = vec![usize::MAX; total];
         for (i, &node) in rpo.iter().enumerate() {
-            rpo_num[node] = i as u32;
+            rpo_num[node] = i;
         }
 
-        let mut doms: Vec<Option<u32>> = vec![None; total];
-        let virt_rpo = rpo_num[virt] as usize;
-        doms[virt_rpo] = Some(virt_rpo as u32);
+        let mut doms: Vec<Option<usize>> = vec![None; total];
+        let virt_rpo = rpo_num[virt];
+        doms[virt_rpo] = Some(virt_rpo);
 
         let mut changed = true;
         while changed {
@@ -282,16 +292,15 @@ impl DominatorTree {
                     continue;
                 }
                 let b_rpo = rpo_num[b];
-                if b_rpo == u32::MAX {
+                if b_rpo == usize::MAX {
                     continue;
                 }
-                let b_rpo = b_rpo as usize;
 
                 // Predecessors in the reverse graph = successors in
                 // the original graph + virtual exit if b is an exit.
                 let mut rev_preds: Vec<usize> = cfg
-                    .successors(BlockId(b as u32))
-                    .map(|s| s.index())
+                    .successors(BlockId::from_index(b))
+                    .map(super::super::block::BlockId::index)
                     .collect();
                 if exit_set.iter().any(|e| e.index() == b) {
                     rev_preds.push(virt);
@@ -300,7 +309,7 @@ impl DominatorTree {
                 let mut new_idom = None;
                 for &p in &rev_preds {
                     let p_rpo = rpo_num[p];
-                    if p_rpo != u32::MAX && doms[p_rpo as usize].is_some() {
+                    if p_rpo != usize::MAX && doms[p_rpo].is_some() {
                         new_idom = Some(p_rpo);
                         break;
                     }
@@ -311,7 +320,7 @@ impl DominatorTree {
 
                 for &p in &rev_preds {
                     let p_rpo = rpo_num[p];
-                    if p_rpo != u32::MAX && doms[p_rpo as usize].is_some() && p_rpo != new_idom {
+                    if p_rpo != usize::MAX && doms[p_rpo].is_some() && p_rpo != new_idom {
                         new_idom = Self::intersect(&doms, p_rpo, new_idom);
                     }
                 }
@@ -327,10 +336,6 @@ impl DominatorTree {
         // virtual exit. If a block's immediate post-dominator is the
         // virtual exit, record `None` (it's a top-level exit).
         //
-        // NOTE: `BlockId(node as u32)` is safe here because real blocks
-        // are allocated with contiguous indices 0..n by `Cfg::new_block`,
-        // so the `usize` graph index and the `BlockId` raw value are
-        // identical.
         let mut idom_result = vec![None; n];
         for (rpo_idx, &dom) in doms.iter().enumerate() {
             if rpo_idx >= rpo.len() {
@@ -341,13 +346,13 @@ impl DominatorTree {
                 continue;
             }
             idom_result[node] = dom.map(|d| {
-                let real = rpo[d as usize];
+                let real = rpo[d];
                 if real == virt {
                     // Post-dominator is virtual exit → top-level.
                     // We'll clean this up below.
-                    BlockId(node as u32)
+                    BlockId::from_index(node)
                 } else {
-                    BlockId(real as u32)
+                    BlockId::from_index(real)
                 }
             });
         }
@@ -355,7 +360,7 @@ impl DominatorTree {
         // Blocks whose idom maps to themselves had the virtual exit
         // as their post-dominator — set to None.
         for (i, slot) in idom_result.iter_mut().enumerate().take(n) {
-            if *slot == Some(BlockId(i as u32)) {
+            if *slot == Some(BlockId::from_index(i)) {
                 *slot = None;
             }
         }
@@ -427,12 +432,12 @@ mod tests {
     #[test]
     fn unreachable_block_not_dominated() {
         let mut cfg: Cfg<MockInst> = Cfg::new();
-        let _unreachable = cfg.new_block();
+        let unreachable = cfg.new_block();
         let dom = DominatorTree::compute(&cfg);
         // Entry still dominates itself.
         assert!(dom.dominates(cfg.entry(), cfg.entry()));
         // Unreachable block has no idom.
-        assert_eq!(dom.idom(_unreachable), None);
+        assert_eq!(dom.idom(unreachable), None);
     }
 
     #[test]

@@ -84,7 +84,11 @@ pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropResu
 
     // Phase 2: rewrite uses across all blocks.
     let mut uses_rewritten = 0;
-    let block_ids: Vec<BlockId> = cfg.blocks().iter().map(|b| b.id()).collect();
+    let block_ids: Vec<BlockId> = cfg
+        .blocks()
+        .iter()
+        .map(super::super::block::BasicBlock::id)
+        .collect();
 
     for &bid in &block_ids {
         let insts = cfg.block_mut(bid).instructions_vec_mut();

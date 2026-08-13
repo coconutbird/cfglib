@@ -52,6 +52,7 @@ impl DefUseChains {
     /// // Defs with no uses would show up in dead_defs().
     /// assert!(chains.dead_defs().is_empty());
     /// ```
+    #[must_use]
     pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
         let reaching = ReachingDefs::compute(cfg);
 
@@ -114,6 +115,7 @@ impl DefUseChains {
     }
 
     /// Get all use sites that read from a given definition.
+    #[must_use]
     pub fn uses_of(&self, def: DefSite) -> &BTreeSet<UseSite> {
         static EMPTY: BTreeSet<UseSite> = BTreeSet::new();
         self.def_use.get(&def).unwrap_or(&EMPTY)
@@ -121,12 +123,14 @@ impl DefUseChains {
 
     /// Get all definition sites that could supply a value read at a
     /// given use site.
+    #[must_use]
     pub fn defs_of(&self, use_site: UseSite) -> &BTreeSet<DefSite> {
         static EMPTY: BTreeSet<DefSite> = BTreeSet::new();
         self.use_def.get(&use_site).unwrap_or(&EMPTY)
     }
 
     /// Definitions that have no uses (dead code candidates).
+    #[must_use]
     pub fn dead_defs(&self) -> Vec<DefSite> {
         self.def_use
             .iter()

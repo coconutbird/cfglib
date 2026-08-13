@@ -45,9 +45,10 @@ pub struct IncrementalUpdate {
 /// // b2 is now dominated by b0 (reachable directly).
 /// assert_eq!(new_dom.idom(b2), Some(b0));
 /// ```
+#[must_use]
 pub fn update_after_edge_insert<I>(
     cfg: &Cfg<I>,
-    _old_dom: &DominatorTree,
+    old_dom: &DominatorTree,
     _src: BlockId,
     _tgt: BlockId,
 ) -> (DominatorTree, IncrementalUpdate) {
@@ -55,21 +56,22 @@ pub fn update_after_edge_insert<I>(
     // is that we track *which* blocks changed so the caller can
     // selectively update downstream analyses.
     let new_dom = DominatorTree::compute(cfg);
-    let changed = diff_dom_trees(_old_dom, &new_dom, cfg);
+    let changed = diff_dom_trees(old_dom, &new_dom, cfg);
     (new_dom, IncrementalUpdate { changed })
 }
 
 /// Update the dominator tree after removing an edge `(src, tgt)`.
 ///
 /// Same strategy as insertion: recompute and diff.
+#[must_use]
 pub fn update_after_edge_remove<I>(
     cfg: &Cfg<I>,
-    _old_dom: &DominatorTree,
+    old_dom: &DominatorTree,
     _src: BlockId,
     _tgt: BlockId,
 ) -> (DominatorTree, IncrementalUpdate) {
     let new_dom = DominatorTree::compute(cfg);
-    let changed = diff_dom_trees(_old_dom, &new_dom, cfg);
+    let changed = diff_dom_trees(old_dom, &new_dom, cfg);
     (new_dom, IncrementalUpdate { changed })
 }
 

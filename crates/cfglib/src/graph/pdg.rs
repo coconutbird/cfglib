@@ -65,11 +65,13 @@ pub struct ProgramDependenceGraph {
 
 impl ProgramDependenceGraph {
     /// Build from pre-computed components.
+    #[must_use]
     pub fn new(cdg: ControlDependenceGraph, def_use: DefUseChains) -> Self {
         Self { cdg, def_use }
     }
 
     /// Compute the full PDG from a CFG in one step.
+    #[must_use]
     pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
         let pdom = DominatorTree::compute_post(cfg);
         let cdg = ControlDependenceGraph::compute(cfg, &pdom);
@@ -78,21 +80,25 @@ impl ProgramDependenceGraph {
     }
 
     /// All blocks that `block` is control-dependent on.
+    #[must_use]
     pub fn control_dependences(&self, block: BlockId) -> &BTreeSet<BlockId> {
         self.cdg.control_dependences(block)
     }
 
     /// All blocks whose execution is controlled by `block`.
+    #[must_use]
     pub fn control_dependents(&self, block: BlockId) -> &BTreeSet<BlockId> {
         self.cdg.control_dependents(block)
     }
 
     /// All use-sites that read the value defined at `def`.
+    #[must_use]
     pub fn data_dependents(&self, def: DefSite) -> &BTreeSet<UseSite> {
         self.def_use.uses_of(def)
     }
 
     /// All def-sites that reach the use at `use_site`.
+    #[must_use]
     pub fn data_dependences(&self, use_site: UseSite) -> &BTreeSet<DefSite> {
         self.def_use.defs_of(use_site)
     }
@@ -100,12 +106,13 @@ impl ProgramDependenceGraph {
     /// Collect **all** dependence edges in the graph.
     ///
     /// Useful for serialization, visualization, or whole-graph analysis.
+    #[must_use]
     pub fn all_dependences(&self, num_blocks: usize) -> Vec<Dependence> {
         let mut deps = Vec::new();
 
         // Control dependences.
         for idx in 0..num_blocks {
-            let block = BlockId::from_raw(idx as u32);
+            let block = BlockId::from_index(idx);
             for &on in self.cdg.control_dependences(block) {
                 deps.push(Dependence::Control {
                     on,
@@ -132,6 +139,7 @@ impl ProgramDependenceGraph {
     /// Returns all program points (block, instruction index) that
     /// transitively affect the value or execution of `seed`, following
     /// both data and control dependences.
+    #[must_use]
     pub fn backward_slice(&self, seed: UseSite) -> BTreeSet<DefSite> {
         let mut visited = BTreeSet::new();
         let mut worklist: Vec<UseSite> = alloc::vec![seed];

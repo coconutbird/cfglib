@@ -58,11 +58,13 @@ pub struct FixpointResult<F> {
 
 impl<F> FixpointResult<F> {
     /// Get the IN fact for a block.
+    #[must_use]
     pub fn fact_in(&self, block: BlockId) -> &F {
         &self.block_in[block.index()]
     }
 
     /// Get the OUT fact for a block.
+    #[must_use]
     pub fn fact_out(&self, block: BlockId) -> &F {
         &self.block_out[block.index()]
     }
