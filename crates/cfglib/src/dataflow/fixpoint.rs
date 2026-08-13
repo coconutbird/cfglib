@@ -25,7 +25,7 @@ pub enum Direction {
 /// A data flow problem to be solved by the fixpoint engine.
 ///
 /// `F` is the flow fact type (e.g. `BTreeSet<DefSite>` for reaching
-/// definitions, `BTreeSet<Location>` for liveness).
+/// definitions, or `BTreeSet<I::Variable>` for liveness).
 pub trait Problem<I> {
     /// The flow fact (lattice element) type.
     type Fact: Clone + PartialEq;
@@ -79,17 +79,18 @@ impl<F> FixpointResult<F> {
 /// for concrete usage.
 ///
 /// ```
-/// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+/// # use cfglib::{Cfg, EdgeKind, InstrInfo};
 /// # #[derive(Debug, Clone)]
-/// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+/// # struct Inst { uses: Vec<u16>, defs: Vec<u16> }
 /// # impl InstrInfo for Inst {
-/// #     fn uses(&self) -> &[Location] { &self.uses }
-/// #     fn defs(&self) -> &[Location] { &self.defs }
+/// #     type Variable = u16;
+/// #     fn uses(&self) -> &[u16] { &self.uses }
+/// #     fn defs(&self) -> &[u16] { &self.defs }
 /// # }
 /// use cfglib::dataflow::liveness::Liveness;
 ///
 /// let mut cfg = Cfg::<Inst>::new();
-/// cfg.block_mut(cfg.entry()).push(Inst { uses: vec![], defs: vec![Location(0)] });
+/// cfg.block_mut(cfg.entry()).push(Inst { uses: vec![], defs: vec![0] });
 ///
 /// let live = Liveness::compute(&cfg);
 /// assert!(live.live_in(cfg.entry()).is_empty()); // r0 defined, not used

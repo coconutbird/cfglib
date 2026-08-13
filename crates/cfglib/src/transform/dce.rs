@@ -1,7 +1,7 @@
 //! Dead code elimination (DCE).
 //!
 //! Removes instructions whose definitions are never used. Uses
-//! liveness analysis to identify instructions that define locations
+//! liveness analysis to identify instructions that define variables
 //! which are not live after the instruction. Instructions with side
 //! effects (non-empty `effects()`) are always kept.
 
@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 
-/// Dead code elimination — remove instructions whose definitions
+/// Dead code elimination: remove instructions whose definitions
 /// are never used.
 ///
 /// Returns the number of instructions removed.
@@ -20,19 +20,20 @@ use crate::cfg::Cfg;
 /// # Examples
 ///
 /// ```
-/// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+/// # use cfglib::{Cfg, EdgeKind, InstrInfo};
 /// # #[derive(Debug, Clone)]
-/// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+/// # struct Inst { uses: Vec<u16>, defs: Vec<u16> }
 /// # impl InstrInfo for Inst {
-/// #     fn uses(&self) -> &[Location] { &self.uses }
-/// #     fn defs(&self) -> &[Location] { &self.defs }
+/// #     type Variable = u16;
+/// #     fn uses(&self) -> &[u16] { &self.uses }
+/// #     fn defs(&self) -> &[u16] { &self.defs }
 /// # }
 /// use cfglib::dead_code_elimination;
 ///
 /// let mut cfg = Cfg::<Inst>::new();
 /// let b0 = cfg.entry();
 /// // Dead definition: defines r0 but nothing uses it.
-/// cfg.block_mut(b0).push(Inst { uses: vec![], defs: vec![Location(0)] });
+/// cfg.block_mut(b0).push(Inst { uses: vec![], defs: vec![0] });
 ///
 /// let removed = dead_code_elimination(&mut cfg);
 /// assert_eq!(removed, 1);
@@ -70,7 +71,7 @@ pub fn dead_code_elimination<I: crate::dataflow::InstrInfo + Clone>(cfg: &mut Cf
                     live.remove(d);
                 }
                 for u in inst.uses() {
-                    live.insert(*u);
+                    live.insert(u.clone());
                 }
             }
         }

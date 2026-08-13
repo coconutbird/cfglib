@@ -10,8 +10,9 @@
 //! # Usage
 //!
 //! Implement [`InstrInfo`] for your instruction type to declare which
-//! locations each instruction reads from and writes to, then run any
-//! of the provided analyses.
+//! IR variables each instruction reads from and writes to, then run any
+//! of the provided analyses. Variables are supplied by the IR adapter;
+//! the framework does not impose a register numbering scheme.
 
 pub mod abs_int;
 pub mod constprop;
@@ -28,42 +29,21 @@ pub mod ssa_destruct;
 
 use crate::block::BlockId;
 
-/// An abstract storage location that an instruction can read or write.
+/// An IR-defined identity that participates in data-flow analysis.
 ///
-/// Locations are identified by a `u16` index, which the ISA adapter
-/// maps to concrete resources (registers, temporaries, memory slots, etc.).
+/// This blanket trait accepts any ordered, cloneable type. An adapter can
+/// therefore use a compact integer, an x86 register/flag enum, a shader
+/// register-component structure, or another native identity directly.
 ///
-/// For SM4/SM5 shaders this might be:
-/// - `Location(0..=15)` → `r0`–`r15` (temporaries)
-/// - `Location(16..=31)` → `v0`–`v15` (inputs)
-/// - `Location(32..=39)` → `o0`–`o7` (outputs)
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct Location(pub u16);
+/// The identity must describe the atomic unit tracked by the analyses. For
+/// architectures with overlapping resources, such as x86 subregisters, the
+/// adapter is responsible for exposing canonical units or all affected units.
+pub trait VariableId: Clone + Ord {}
 
-impl Location {
-    /// Create a new location with the given index.
-    #[inline]
-    #[must_use]
-    pub fn new(index: u16) -> Self {
-        Self(index)
-    }
-
-    /// Returns the raw index.
-    #[inline]
-    #[must_use]
-    pub fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl core::fmt::Display for Location {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "loc{}", self.0)
-    }
-}
+impl<T: Clone + Ord> VariableId for T {}
 
 /// Trait that an instruction type implements to expose its data
-/// dependencies (which locations it reads and writes) and its
+/// dependencies (which variables it reads and writes) and its
 /// side effects.
 ///
 /// This is the data-flow counterpart of [`FlowControl`](crate::FlowControl),
@@ -72,11 +52,14 @@ impl core::fmt::Display for Location {
 /// Returns slices rather than `Vec`s to avoid heap allocations in
 /// hot-path fixpoint iteration.
 pub trait InstrInfo {
-    /// Locations that this instruction **reads** (uses).
-    fn uses(&self) -> &[Location];
+    /// IR variable identity used by this instruction representation.
+    type Variable: VariableId;
 
-    /// Locations that this instruction **writes** (defines).
-    fn defs(&self) -> &[Location];
+    /// Variables that this instruction **reads** (uses).
+    fn uses(&self) -> &[Self::Variable];
+
+    /// Variables that this instruction **writes** (defines).
+    fn defs(&self) -> &[Self::Variable];
 
     /// Side effects beyond simple register defs/uses (memory, I/O, etc.).
     ///

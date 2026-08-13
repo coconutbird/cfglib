@@ -107,7 +107,7 @@ pub fn find_loop_invariants<I: InstrInfo>(cfg: &Cfg<I>, lp: &NaturalLoop) -> Vec
     for &bid in &lp.body {
         for (idx, inst) in cfg.block(bid).instructions().iter().enumerate() {
             for d in inst.defs() {
-                loop_defs.insert((bid, idx, *d));
+                loop_defs.insert((bid, idx, d.clone()));
             }
         }
     }
@@ -121,11 +121,11 @@ pub fn find_loop_invariants<I: InstrInfo>(cfg: &Cfg<I>, lp: &NaturalLoop) -> Vec
                 }
                 // Check: all uses are defined outside loop or by invariants.
                 let all_uses_invariant = inst.uses().iter().all(|u| {
-                    // Is there a def of this location inside the loop
+                    // Is there a def of this variable inside the loop
                     // that is NOT invariant?
-                    !loop_defs
-                        .iter()
-                        .any(|&(db, di, dl)| dl == *u && !invariants.contains(&(db, di)))
+                    !loop_defs.iter().any(|(db, di, variable)| {
+                        variable == u && !invariants.contains(&(*db, *di))
+                    })
                 });
                 if all_uses_invariant {
                     invariants.insert((bid, idx));

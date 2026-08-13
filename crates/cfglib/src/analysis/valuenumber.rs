@@ -11,7 +11,7 @@ use smallvec::SmallVec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dataflow::{InstrInfo, Location};
+use crate::dataflow::InstrInfo;
 use crate::graph::dominator::DominatorTree;
 
 /// A value number — opaque identifier for a computed value.
@@ -23,7 +23,7 @@ pub type ValueNumber = u32;
 /// operands (the vast majority of real instructions).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ExprKey {
-    /// Instruction "opcode" or name (ISA-specific identifier).
+    /// Instruction opcode or another IR-specific operation identifier.
     pub opcode: u32,
     /// Value numbers of the operands.
     pub operands: SmallVec<[ValueNumber; 4]>,
@@ -68,7 +68,7 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
     start_vn: ValueNumber,
 ) -> (BlockValueNumbers, ValueNumber) {
     let mut next_vn = start_vn;
-    let mut loc_to_vn: BTreeMap<Location, ValueNumber> = BTreeMap::new();
+    let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
     let mut expr_to_vn: BTreeMap<ExprKey, ValueNumber> = BTreeMap::new();
     let insts = cfg.block(block).instructions();
     let mut inst_vn = Vec::with_capacity(insts.len());
@@ -84,8 +84,8 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
         let operands: SmallVec<[ValueNumber; 4]> = inst
             .uses()
             .iter()
-            .map(|loc| {
-                *loc_to_vn.entry(*loc).or_insert_with(|| {
+            .map(|variable| {
+                *variable_values.entry(variable.clone()).or_insert_with(|| {
                     let vn = next_vn;
                     next_vn += 1;
                     vn
@@ -102,16 +102,16 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
             // Redundant — same expression already computed.
             inst_vn.push(Some(existing_vn));
             redundant.push(idx);
-            for d in inst.defs() {
-                loc_to_vn.insert(*d, existing_vn);
+            for variable in inst.defs() {
+                variable_values.insert(variable.clone(), existing_vn);
             }
         } else {
             let vn = next_vn;
             next_vn += 1;
             expr_to_vn.insert(key, vn);
             inst_vn.push(Some(vn));
-            for d in inst.defs() {
-                loc_to_vn.insert(*d, vn);
+            for variable in inst.defs() {
+                variable_values.insert(variable.clone(), vn);
             }
         }
     }
@@ -132,7 +132,7 @@ pub fn global_value_numbering<I: ValueNumberInfo>(
     dom: &DominatorTree,
 ) -> ValueNumbering {
     let mut blocks = BTreeMap::new();
-    let mut loc_to_vn: BTreeMap<Location, ValueNumber> = BTreeMap::new();
+    let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
     let mut expr_to_vn: BTreeMap<ExprKey, ValueNumber> = BTreeMap::new();
     let mut next_vn: ValueNumber = 0;
 
@@ -140,7 +140,7 @@ pub fn global_value_numbering<I: ValueNumberInfo>(
         cfg,
         dom,
         cfg.entry(),
-        &mut loc_to_vn,
+        &mut variable_values,
         &mut expr_to_vn,
         &mut next_vn,
         &mut blocks,
@@ -157,19 +157,14 @@ fn gvn_dfs<I: ValueNumberInfo>(
     cfg: &Cfg<I>,
     dom: &DominatorTree,
     bid: BlockId,
-    loc_to_vn: &mut BTreeMap<Location, ValueNumber>,
+    variable_values: &mut BTreeMap<I::Variable, ValueNumber>,
     expr_to_vn: &mut BTreeMap<ExprKey, ValueNumber>,
     next_vn: &mut ValueNumber,
     blocks: &mut BTreeMap<BlockId, BlockValueNumbers>,
 ) {
     // Snapshot the current scope so we can restore on exit.
-    let loc_snapshot: Vec<(Location, ValueNumber)> = Vec::new();
-    let expr_snapshot: Vec<ExprKey> = Vec::new();
-    let mut loc_added: Vec<Location> = Vec::new();
-    let mut loc_overwritten: Vec<(Location, ValueNumber)> = Vec::new();
+    let mut saved_variables: BTreeMap<I::Variable, Option<ValueNumber>> = BTreeMap::new();
     let mut expr_added: Vec<ExprKey> = Vec::new();
-    let vn_before = *next_vn;
-    let _ = (loc_snapshot, expr_snapshot); // suppress unused warnings
 
     // Process instructions in this block.
     let insts = cfg.block(bid).instructions();
@@ -185,14 +180,14 @@ fn gvn_dfs<I: ValueNumberInfo>(
         let operands: SmallVec<[ValueNumber; 4]> = inst
             .uses()
             .iter()
-            .map(|loc| {
-                if let Some(&vn) = loc_to_vn.get(loc) {
+            .map(|variable| {
+                if let Some(&vn) = variable_values.get(variable) {
                     vn
                 } else {
                     let vn = *next_vn;
                     *next_vn += 1;
-                    loc_added.push(*loc);
-                    loc_to_vn.insert(*loc, vn);
+                    saved_variables.insert(variable.clone(), None);
+                    variable_values.insert(variable.clone(), vn);
                     vn
                 }
             })
@@ -206,12 +201,11 @@ fn gvn_dfs<I: ValueNumberInfo>(
         if let Some(&existing_vn) = expr_to_vn.get(&key) {
             inst_vn.push(Some(existing_vn));
             redundant.push(idx);
-            for d in inst.defs() {
-                if let Some(old) = loc_to_vn.insert(*d, existing_vn) {
-                    loc_overwritten.push((*d, old));
-                } else {
-                    loc_added.push(*d);
-                }
+            for variable in inst.defs() {
+                saved_variables
+                    .entry(variable.clone())
+                    .or_insert_with(|| variable_values.get(variable).copied());
+                variable_values.insert(variable.clone(), existing_vn);
             }
         } else {
             let vn = *next_vn;
@@ -219,12 +213,11 @@ fn gvn_dfs<I: ValueNumberInfo>(
             expr_added.push(key.clone());
             expr_to_vn.insert(key, vn);
             inst_vn.push(Some(vn));
-            for d in inst.defs() {
-                if let Some(old) = loc_to_vn.insert(*d, vn) {
-                    loc_overwritten.push((*d, old));
-                } else {
-                    loc_added.push(*d);
-                }
+            for variable in inst.defs() {
+                saved_variables
+                    .entry(variable.clone())
+                    .or_insert_with(|| variable_values.get(variable).copied());
+                variable_values.insert(variable.clone(), vn);
             }
         }
     }
@@ -234,21 +227,28 @@ fn gvn_dfs<I: ValueNumberInfo>(
     // Recurse into dominator-tree children.
     let children = dom.children(bid);
     for child in children {
-        gvn_dfs(cfg, dom, child, loc_to_vn, expr_to_vn, next_vn, blocks);
+        gvn_dfs(
+            cfg,
+            dom,
+            child,
+            variable_values,
+            expr_to_vn,
+            next_vn,
+            blocks,
+        );
     }
 
     // Pop scope: undo all insertions/overwrites from this block.
     for key in expr_added {
         expr_to_vn.remove(&key);
     }
-    for loc in loc_added {
-        loc_to_vn.remove(&loc);
+    for (variable, previous) in saved_variables {
+        if let Some(value_number) = previous {
+            variable_values.insert(variable, value_number);
+        } else {
+            variable_values.remove(&variable);
+        }
     }
-    for (loc, old_vn) in loc_overwritten {
-        loc_to_vn.insert(loc, old_vn);
-    }
-    // Note: next_vn is NOT rolled back — value numbers are global.
-    let _ = vn_before;
 }
 
 /// Count total redundant instructions across all blocks.
@@ -261,7 +261,6 @@ pub fn count_redundant(vn: &ValueNumbering) -> usize {
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::Location;
     use crate::edge::EdgeKind;
     use crate::flow::{FlowControl, FlowEffect};
     use alloc::borrow::Cow;
@@ -269,8 +268,8 @@ mod tests {
     #[derive(Debug, Clone)]
     struct VnInst {
         op: u32,
-        uses: Vec<Location>,
-        defs: Vec<Location>,
+        uses: Vec<u16>,
+        defs: Vec<u16>,
         pure_: bool,
     }
 
@@ -284,10 +283,12 @@ mod tests {
     }
 
     impl InstrInfo for VnInst {
-        fn uses(&self) -> &[Location] {
+        type Variable = u16;
+
+        fn uses(&self) -> &[u16] {
             &self.uses
         }
-        fn defs(&self) -> &[Location] {
+        fn defs(&self) -> &[u16] {
             &self.defs
         }
     }
@@ -301,17 +302,11 @@ mod tests {
         }
     }
 
-    fn vn_inst(op: u32, uses: &[u32], defs: &[u32]) -> VnInst {
+    fn vn_inst(op: u32, uses: &[u16], defs: &[u16]) -> VnInst {
         VnInst {
             op,
-            uses: uses
-                .iter()
-                .map(|&u| Location(u16::try_from(u).expect("test location fits in u16")))
-                .collect(),
-            defs: defs
-                .iter()
-                .map(|&d| Location(u16::try_from(d).expect("test location fits in u16")))
-                .collect(),
+            uses: uses.to_vec(),
+            defs: defs.to_vec(),
             pure_: true,
         }
     }

@@ -16,8 +16,8 @@ use alloc::vec::Vec;
 
 use crate::analysis::expr::ExprInstr;
 use crate::analysis::purity::Effect;
+use crate::dataflow::InstrInfo;
 use crate::dataflow::copyprop::CopySource;
-use crate::dataflow::{InstrInfo, Location};
 use crate::flow::{FlowControl, FlowEffect};
 
 // ── MockInst (flow-only) ────────────────────────────────────────────
@@ -52,10 +52,10 @@ pub struct DfInst {
     pub effect: FlowEffect,
     /// Mnemonic label.
     pub name: &'static str,
-    /// Locations read by this instruction.
-    pub uses: Vec<Location>,
-    /// Locations written by this instruction.
-    pub defs: Vec<Location>,
+    /// Variables read by this instruction.
+    pub uses: Vec<u16>,
+    /// Variables written by this instruction.
+    pub defs: Vec<u16>,
     /// Side effects (memory, I/O, etc.).
     pub side_effects: Vec<Effect>,
     /// If `true`, this instruction is a simple copy (`defs[0] := uses[0]`).
@@ -77,10 +77,12 @@ impl FlowControl for DfInst {
 }
 
 impl InstrInfo for DfInst {
-    fn uses(&self) -> &[Location] {
+    type Variable = u16;
+
+    fn uses(&self) -> &[u16] {
         &self.uses
     }
-    fn defs(&self) -> &[Location] {
+    fn defs(&self) -> &[u16] {
         &self.defs
     }
     fn effects(&self) -> &[Effect] {
@@ -89,24 +91,24 @@ impl InstrInfo for DfInst {
 }
 
 impl CopySource for DfInst {
-    fn as_copy(&self) -> Option<(Location, Location)> {
+    fn as_copy(&self) -> Option<(u16, u16)> {
         if self.is_copy && self.defs.len() == 1 && self.uses.len() == 1 {
             Some((self.defs[0], self.uses[0]))
         } else {
             None
         }
     }
-    fn rewrite_use(&mut self, old: Location, new: Location) {
+    fn rewrite_use(&mut self, old: &u16, new: &u16) {
         for u in &mut self.uses {
-            if *u == old {
-                *u = new;
+            if u == old {
+                *u = *new;
             }
         }
     }
 }
 
 impl ExprInstr for DfInst {
-    fn as_expr(&self) -> Option<(&str, &[Location])> {
+    fn as_expr(&self) -> Option<(&str, &[u16])> {
         self.op.map(|op| (op, self.uses.as_slice()))
     }
     fn as_const(&self) -> Option<i64> {
@@ -115,10 +117,7 @@ impl ExprInstr for DfInst {
 }
 
 impl crate::dataflow::constprop::ConstantFolder for DfInst {
-    fn fold_constant(
-        &self,
-        _known: &alloc::collections::BTreeMap<Location, i64>,
-    ) -> Option<(Location, i64)> {
+    fn fold_constant(&self, _known: &alloc::collections::BTreeMap<u16, i64>) -> Option<(u16, i64)> {
         // If this instruction is a constant load, report it.
         if let Some(val) = self.constant
             && let Some(&dst) = self.defs.first()
@@ -145,18 +144,18 @@ fn df_base(name: &'static str) -> DfInst {
     }
 }
 
-/// Create a [`DfInst`] that defines a single location.
+/// Create a [`DfInst`] that defines a single variable.
 pub fn df_def(name: &'static str, loc: u16) -> DfInst {
     DfInst {
-        defs: alloc::vec![Location(loc)],
+        defs: alloc::vec![loc],
         ..df_base(name)
     }
 }
 
-/// Create a [`DfInst`] that uses a single location.
+/// Create a [`DfInst`] that uses a single variable.
 pub fn df_use(name: &'static str, loc: u16) -> DfInst {
     DfInst {
-        uses: alloc::vec![Location(loc)],
+        uses: alloc::vec![loc],
         ..df_base(name)
     }
 }
@@ -188,8 +187,8 @@ pub fn df_impure(name: &'static str, e: Effect) -> DfInst {
 /// Create a copy instruction (`dst := src`).
 pub fn df_copy(name: &'static str, dst: u16, src: u16) -> DfInst {
     DfInst {
-        defs: alloc::vec![Location(dst)],
-        uses: alloc::vec![Location(src)],
+        defs: alloc::vec![dst],
+        uses: alloc::vec![src],
         is_copy: true,
         ..df_base(name)
     }
@@ -198,8 +197,8 @@ pub fn df_copy(name: &'static str, dst: u16, src: u16) -> DfInst {
 /// Create an expression instruction (`dst = op(srcs...)`).
 pub fn df_op(name: &'static str, op: &'static str, dst: u16, srcs: &[u16]) -> DfInst {
     DfInst {
-        defs: alloc::vec![Location(dst)],
-        uses: srcs.iter().map(|&s| Location(s)).collect(),
+        defs: alloc::vec![dst],
+        uses: srcs.to_vec(),
         op: Some(op),
         ..df_base(name)
     }
@@ -208,7 +207,7 @@ pub fn df_op(name: &'static str, op: &'static str, dst: u16, srcs: &[u16]) -> Df
 /// Create a constant-load instruction (`dst = constant`).
 pub fn df_const(name: &'static str, dst: u16, val: i64) -> DfInst {
     DfInst {
-        defs: alloc::vec![Location(dst)],
+        defs: alloc::vec![dst],
         constant: Some(val),
         ..df_base(name)
     }

@@ -8,7 +8,7 @@ authors.workspace = true
 rust-version.workspace = true
 keywords.workspace = true
 categories.workspace = true
-description = "Generic, no_std control-flow graph library for binary analysis, decompilation, and compiler infrastructure"
+description = "Generic no_std graph and dataflow framework for code intelligence and program analysis"
 readme = "../../README.md"
 
 [lints]

@@ -1,8 +1,8 @@
 //! Graph metrics — cyclomatic complexity, nesting depth, code density.
 //!
 //! Provides quantitative measurements of CFG complexity that are useful
-//! for binary analysis, code quality assessment, and heuristic-driven
-//! decompilation.
+//! for program analysis, code quality assessment, and heuristic-driven
+//! transformation or decompilation.
 
 extern crate alloc;
 use alloc::vec;

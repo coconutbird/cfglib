@@ -4,7 +4,7 @@ extern crate alloc;
 
 use crate::block::BlockId;
 
-/// Opaque identifier for an edge within a [`Cfg`](crate::Cfg).
+/// Opaque identifier for an edge within a graph arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EdgeId(pub(crate) u32);
@@ -12,6 +12,12 @@ pub struct EdgeId(pub(crate) u32);
 impl EdgeId {
     pub(crate) fn from_index(index: usize) -> Self {
         Self(u32::try_from(index).expect("edge index exceeds u32::MAX"))
+    }
+
+    /// Construct an identity from its raw integer representation.
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
     }
 
     /// Returns the raw index.

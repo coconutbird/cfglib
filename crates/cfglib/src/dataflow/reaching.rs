@@ -9,15 +9,15 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use super::fixpoint::{self, Direction, FixpointResult, Problem};
-use super::{DefSite, InstrInfo, Location};
+use super::{DefSite, InstrInfo, VariableId};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 
-/// A reaching definition: which location was defined, and where.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ReachingDef {
-    /// The location that was written.
-    pub location: Location,
+/// A reaching definition: which IR variable was defined, and where.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ReachingDef<V> {
+    /// The IR variable that was written.
+    pub variable: V,
     /// Where the write happened.
     pub site: DefSite,
 }
@@ -26,7 +26,7 @@ pub struct ReachingDef {
 pub struct ReachingDefsProblem;
 
 impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
-    type Fact = BTreeSet<ReachingDef>;
+    type Fact = BTreeSet<ReachingDef<I::Variable>>;
 
     fn direction(&self) -> Direction {
         Direction::Forward
@@ -41,7 +41,7 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
     }
 
     fn meet(&self, a: &Self::Fact, b: &Self::Fact) -> Self::Fact {
-        a.union(b).copied().collect()
+        a.union(b).cloned().collect()
     }
 
     fn transfer(&self, cfg: &Cfg<I>, block: BlockId, input: &Self::Fact) -> Self::Fact {
@@ -55,14 +55,14 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
                     block,
                     inst_idx: idx,
                 };
-                // Kill: remove all previous defs of the same locations.
-                for loc in defs {
-                    out.retain(|rd| rd.location != *loc);
+                // Kill: remove all previous defs of the same variables.
+                for variable in defs {
+                    out.retain(|rd| &rd.variable != variable);
                 }
                 // Gen: add the new defs.
-                for &loc in defs {
+                for variable in defs {
                     out.insert(ReachingDef {
-                        location: loc,
+                        variable: variable.clone(),
                         site,
                     });
                 }
@@ -78,12 +78,13 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
 /// # Examples
 ///
 /// ```
-/// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+/// # use cfglib::{Cfg, EdgeKind, InstrInfo};
 /// # #[derive(Debug, Clone)]
-/// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+/// # struct Inst { uses: Vec<u16>, defs: Vec<u16> }
 /// # impl InstrInfo for Inst {
-/// #     fn uses(&self) -> &[Location] { &self.uses }
-/// #     fn defs(&self) -> &[Location] { &self.defs }
+/// #     type Variable = u16;
+/// #     fn uses(&self) -> &[u16] { &self.uses }
+/// #     fn defs(&self) -> &[u16] { &self.defs }
 /// # }
 /// use cfglib::dataflow::reaching::ReachingDefs;
 ///
@@ -92,7 +93,7 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
 /// let b1 = cfg.new_block();
 /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
 ///
-/// let r0 = Location(0);
+/// let r0 = 0;
 /// cfg.block_mut(b0).push(Inst { uses: vec![], defs: vec![r0] });
 /// cfg.block_mut(b1).push(Inst { uses: vec![r0], defs: vec![] });
 ///
@@ -100,14 +101,14 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
 /// // The def of r0 in b0 reaches b1.
 /// assert!(!rd.reaching_in(b1).is_empty());
 /// ```
-pub struct ReachingDefs {
-    inner: FixpointResult<BTreeSet<ReachingDef>>,
+pub struct ReachingDefs<V> {
+    inner: FixpointResult<BTreeSet<ReachingDef<V>>>,
 }
 
-impl ReachingDefs {
+impl<V: VariableId> ReachingDefs<V> {
     /// Run reaching definitions on the given CFG.
     #[must_use]
-    pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
+    pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
         let result = fixpoint::solve(cfg, &ReachingDefsProblem);
         Self { inner: result }
     }
@@ -115,23 +116,23 @@ impl ReachingDefs {
     /// Definitions reaching the **entry** of a block (before any
     /// instruction in the block executes).
     #[must_use]
-    pub fn reaching_in(&self, block: BlockId) -> &BTreeSet<ReachingDef> {
+    pub fn reaching_in(&self, block: BlockId) -> &BTreeSet<ReachingDef<V>> {
         self.inner.fact_in(block)
     }
 
     /// Definitions reaching the **exit** of a block (after all
     /// instructions in the block have executed).
     #[must_use]
-    pub fn reaching_out(&self, block: BlockId) -> &BTreeSet<ReachingDef> {
+    pub fn reaching_out(&self, block: BlockId) -> &BTreeSet<ReachingDef<V>> {
         self.inner.fact_out(block)
     }
 
-    /// All definitions of a specific location reaching a block's entry.
+    /// All definitions of a specific variable reaching a block's entry.
     #[must_use]
-    pub fn defs_of_at_entry(&self, loc: Location, block: BlockId) -> Vec<DefSite> {
+    pub fn defs_of_at_entry(&self, variable: &V, block: BlockId) -> Vec<DefSite> {
         self.reaching_in(block)
             .iter()
-            .filter(|rd| rd.location == loc)
+            .filter(|rd| &rd.variable == variable)
             .map(|rd| rd.site)
             .collect()
     }
@@ -156,7 +157,7 @@ mod tests {
         let rd = ReachingDefs::compute(&cfg);
         let out = rd.reaching_out(cfg.entry());
         assert_eq!(out.len(), 1);
-        assert!(out.iter().any(|r| r.location == Location(0)));
+        assert!(out.iter().any(|r| r.variable == 0));
     }
 
     #[test]
@@ -171,7 +172,7 @@ mod tests {
     }
 
     #[test]
-    fn reaching_linear_two_locations() {
+    fn reaching_linear_two_variables() {
         // bb0: def r0; def r1 — both should reach the exit
         let cfg = CfgBuilder::build(vec![def("def_r0", 0), def("def_r1", 1)]).unwrap();
         let rd = ReachingDefs::compute(&cfg);
@@ -198,7 +199,7 @@ mod tests {
         .unwrap();
         let merge_block = cfg.blocks().last().unwrap().id();
         let rd = ReachingDefs::compute(&cfg);
-        let defs_at_merge = rd.defs_of_at_entry(Location(0), merge_block);
+        let defs_at_merge = rd.defs_of_at_entry(&0, merge_block);
         assert_eq!(
             defs_at_merge.len(),
             2,
@@ -223,7 +224,7 @@ mod tests {
         // The loop header should have defs reaching from both
         // the pre-loop init and the loop body update (via back-edge).
         let header = BlockId(1);
-        let defs = rd.defs_of_at_entry(Location(0), header);
+        let defs = rd.defs_of_at_entry(&0, header);
         assert!(!defs.is_empty(), "at least the init def reaches the header");
     }
 }

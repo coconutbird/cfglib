@@ -21,19 +21,19 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dataflow::{InstrInfo, Location};
+use crate::dataflow::InstrInfo;
 
 /// A node in an expression tree.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExprNode {
-    /// A leaf: a location (register, variable) that is an input.
-    Leaf(Location),
+pub enum ExprNode<V> {
+    /// A leaf source-IR variable.
+    Leaf(V),
     /// An operation with an operator name and operand sub-expressions.
     Op {
         /// The operator (e.g. "add", "mul", "shl", "load").
         operator: String,
         /// The operands, each an expression sub-tree.
-        operands: Vec<ExprNode>,
+        operands: Vec<ExprNode<V>>,
     },
     /// A constant value.
     Const(i64),
@@ -47,7 +47,7 @@ pub enum ExprNode {
     },
 }
 
-impl ExprNode {
+impl<V> ExprNode<V> {
     /// Whether this is a leaf node.
     #[must_use]
     pub fn is_leaf(&self) -> bool {
@@ -89,11 +89,11 @@ impl ExprNode {
 /// each instruction represents and what its operands are.
 pub trait ExprInstr: InstrInfo {
     /// If this instruction can be represented as an expression,
-    /// return the operator name and the list of operand locations.
+    /// return the operator name and the list of operand variables.
     ///
     /// Return `None` for instructions that can't be decomposed
     /// (side-effecting, control flow, etc.).
-    fn as_expr(&self) -> Option<(&str, &[Location])>;
+    fn as_expr(&self) -> Option<(&str, &[Self::Variable])>;
 
     /// If this instruction loads a constant, return the value.
     fn as_const(&self) -> Option<i64> {
@@ -103,13 +103,13 @@ pub trait ExprInstr: InstrInfo {
 
 /// Expression trees recovered for a single block.
 #[derive(Debug, Clone)]
-pub struct BlockExprTrees {
+pub struct BlockExprTrees<V> {
     /// The block these trees belong to.
     pub block: BlockId,
     /// Expression tree for each "root" definition in the block.
     /// A root def is one whose result is used outside this block
     /// or is a side-effecting instruction's output.
-    pub roots: Vec<(Location, ExprNode)>,
+    pub roots: Vec<(V, ExprNode<V>)>,
 }
 
 /// Recover expression trees for a single block.
@@ -117,18 +117,21 @@ pub struct BlockExprTrees {
 /// Walks the block's instructions and builds expression trees by
 /// inlining single-use temporaries into their use sites.
 #[must_use]
-pub fn recover_block_expressions<I: ExprInstr>(cfg: &Cfg<I>, block: BlockId) -> BlockExprTrees {
+pub fn recover_block_expressions<I: ExprInstr>(
+    cfg: &Cfg<I>,
+    block: BlockId,
+) -> BlockExprTrees<I::Variable> {
     let insts = cfg.block(block).instructions();
 
-    // Map from location → the expression that defines it (within this block).
-    let mut loc_expr: BTreeMap<Location, ExprNode> = BTreeMap::new();
-    // Count uses of each location within this block.
-    let mut use_count: BTreeMap<Location, usize> = BTreeMap::new();
+    // Map from variable → the expression that defines it (within this block).
+    let mut variable_expressions = BTreeMap::new();
+    // Count uses of each variable within this block.
+    let mut use_count = BTreeMap::new();
 
     // First pass: count intra-block uses.
     for inst in insts {
-        for &u in inst.uses() {
-            *use_count.entry(u).or_insert(0) += 1;
+        for variable in inst.uses() {
+            *use_count.entry(variable.clone()).or_insert(0) += 1;
         }
     }
 
@@ -136,27 +139,27 @@ pub fn recover_block_expressions<I: ExprInstr>(cfg: &Cfg<I>, block: BlockId) -> 
     for (idx, inst) in insts.iter().enumerate() {
         if let Some(c) = inst.as_const() {
             // Constant load.
-            if let Some(&dst) = inst.defs().first() {
-                loc_expr.insert(dst, ExprNode::Const(c));
+            if let Some(destination) = inst.defs().first() {
+                variable_expressions.insert(destination.clone(), ExprNode::Const(c));
             }
         } else if let Some((op, _operand_locs)) = inst.as_expr() {
-            let operands: Vec<ExprNode> = inst
+            let operands: Vec<ExprNode<I::Variable>> = inst
                 .uses()
                 .iter()
-                .map(|&loc| {
+                .map(|variable| {
                     // Inline if this is a single-use temporary defined in this block.
-                    if use_count.get(&loc).copied().unwrap_or(0) == 1
-                        && let Some(sub) = loc_expr.remove(&loc)
+                    if use_count.get(variable).copied().unwrap_or(0) == 1
+                        && let Some(subexpression) = variable_expressions.remove(variable)
                     {
-                        return sub;
+                        return subexpression;
                     }
-                    ExprNode::Leaf(loc)
+                    ExprNode::Leaf(variable.clone())
                 })
                 .collect();
 
-            if let Some(&dst) = inst.defs().first() {
-                loc_expr.insert(
-                    dst,
+            if let Some(destination) = inst.defs().first() {
+                variable_expressions.insert(
+                    destination.clone(),
                     ExprNode::Op {
                         operator: String::from(op),
                         operands,
@@ -165,9 +168,9 @@ pub fn recover_block_expressions<I: ExprInstr>(cfg: &Cfg<I>, block: BlockId) -> 
             }
         } else {
             // Opaque instruction — keep as-is.
-            for &dst in inst.defs() {
-                loc_expr.insert(
-                    dst,
+            for destination in inst.defs() {
+                variable_expressions.insert(
+                    destination.clone(),
                     ExprNode::Opaque {
                         block,
                         inst_idx: idx,
@@ -177,15 +180,15 @@ pub fn recover_block_expressions<I: ExprInstr>(cfg: &Cfg<I>, block: BlockId) -> 
         }
     }
 
-    // Collect roots: everything still in loc_expr (not inlined).
-    let roots: Vec<(Location, ExprNode)> = loc_expr.into_iter().collect();
+    // Collect roots: everything still in the map was not inlined.
+    let roots = variable_expressions.into_iter().collect();
 
     BlockExprTrees { block, roots }
 }
 
 /// Recover expression trees for all blocks in the CFG.
 #[must_use]
-pub fn recover_expressions<I: ExprInstr>(cfg: &Cfg<I>) -> Vec<BlockExprTrees> {
+pub fn recover_expressions<I: ExprInstr>(cfg: &Cfg<I>) -> Vec<BlockExprTrees<I::Variable>> {
     cfg.blocks()
         .iter()
         .map(|b| recover_block_expressions(cfg, b.id()))
@@ -196,7 +199,6 @@ pub fn recover_expressions<I: ExprInstr>(cfg: &Cfg<I>) -> Vec<BlockExprTrees> {
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::Location;
     use crate::test_util::{DfInst, df_const, df_op};
 
     #[test]
@@ -212,14 +214,14 @@ mod tests {
         let trees = recover_block_expressions(&cfg, cfg.entry());
         assert_eq!(trees.roots.len(), 1, "only t1 should remain as root");
         let (loc, ref expr) = trees.roots[0];
-        assert_eq!(loc, Location(11));
+        assert_eq!(loc, 11);
 
         // Should be Op("add", [Leaf(r0), Op("mul", [Leaf(r1), Leaf(r2)])])
         match expr {
             ExprNode::Op { operator, operands } => {
                 assert_eq!(operator, "add");
                 assert_eq!(operands.len(), 2);
-                assert_eq!(operands[0], ExprNode::Leaf(Location(0)));
+                assert_eq!(operands[0], ExprNode::Leaf(0));
                 match &operands[1] {
                     ExprNode::Op {
                         operator: inner_op,
@@ -227,8 +229,8 @@ mod tests {
                     } => {
                         assert_eq!(inner_op, "mul");
                         assert_eq!(inner_ops.len(), 2);
-                        assert_eq!(inner_ops[0], ExprNode::Leaf(Location(1)));
-                        assert_eq!(inner_ops[1], ExprNode::Leaf(Location(2)));
+                        assert_eq!(inner_ops[0], ExprNode::Leaf(1));
+                        assert_eq!(inner_ops[1], ExprNode::Leaf(2));
                     }
                     _ => panic!("expected nested Op for mul"),
                 }
@@ -275,7 +277,7 @@ mod tests {
             if let ExprNode::Op { operands, .. } = expr {
                 for op in operands {
                     if let ExprNode::Leaf(loc) = op
-                        && *loc == Location(10)
+                        && *loc == 10
                     {
                         // Good — t0 is a leaf, not inlined.
                     }

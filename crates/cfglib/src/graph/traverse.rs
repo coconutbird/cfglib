@@ -1,4 +1,4 @@
-//! Graph traversal iterators: DFS, BFS, and derived orderings.
+//! Generic directed-graph traversals and ordering algorithms.
 
 extern crate alloc;
 use alloc::collections::VecDeque;
@@ -7,244 +7,312 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
+use crate::graph::directed::{DenseNodeId, DirectedGraphView};
+
+/// Direction in which a graph traversal follows edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraversalDirection {
+    /// Follow edges from source to target.
+    Outgoing,
+    /// Follow edges from target to source.
+    Incoming,
+}
+
+fn neighbors<G: DirectedGraphView>(
+    graph: &G,
+    node: G::NodeId,
+    direction: TraversalDirection,
+) -> Vec<G::NodeId> {
+    match direction {
+        TraversalDirection::Outgoing => graph.successors(node).collect(),
+        TraversalDirection::Incoming => graph.predecessors(node).collect(),
+    }
+}
+
+/// Return nodes in depth-first preorder from `start`.
+///
+/// # Panics
+///
+/// Panics when `start` is not a node in `graph`.
+#[must_use]
+pub fn depth_first_preorder<G: DirectedGraphView>(
+    graph: &G,
+    start: G::NodeId,
+    direction: TraversalDirection,
+) -> Vec<G::NodeId> {
+    assert!(
+        start.index() < graph.node_count(),
+        "start node is out of range"
+    );
+    let mut visited = vec![false; graph.node_count()];
+    let mut order = Vec::with_capacity(graph.node_count());
+    let mut stack = vec![start];
+
+    while let Some(node) = stack.pop() {
+        if visited[node.index()] {
+            continue;
+        }
+        visited[node.index()] = true;
+        order.push(node);
+
+        for successor in neighbors(graph, node, direction).into_iter().rev() {
+            if !visited[successor.index()] {
+                stack.push(successor);
+            }
+        }
+    }
+
+    order
+}
+
+/// Return nodes in depth-first postorder from `start`.
+///
+/// # Panics
+///
+/// Panics when `start` is not a node in `graph`.
+#[must_use]
+pub fn depth_first_postorder<G: DirectedGraphView>(
+    graph: &G,
+    start: G::NodeId,
+    direction: TraversalDirection,
+) -> Vec<G::NodeId> {
+    assert!(
+        start.index() < graph.node_count(),
+        "start node is out of range"
+    );
+    let mut visited = vec![false; graph.node_count()];
+    let mut order = Vec::with_capacity(graph.node_count());
+    let mut stack = vec![(start, false)];
+
+    while let Some((node, processed)) = stack.pop() {
+        if processed {
+            order.push(node);
+            continue;
+        }
+        if visited[node.index()] {
+            continue;
+        }
+
+        visited[node.index()] = true;
+        stack.push((node, true));
+        for successor in neighbors(graph, node, direction).into_iter().rev() {
+            if !visited[successor.index()] {
+                stack.push((successor, false));
+            }
+        }
+    }
+
+    order
+}
+
+/// Return reverse postorder from `start`.
+#[must_use]
+pub fn reverse_postorder<G: DirectedGraphView>(
+    graph: &G,
+    start: G::NodeId,
+    direction: TraversalDirection,
+) -> Vec<G::NodeId> {
+    let mut order = depth_first_postorder(graph, start, direction);
+    order.reverse();
+    order
+}
+
+/// Return nodes in breadth-first order from `start`.
+///
+/// # Panics
+///
+/// Panics when `start` is not a node in `graph`.
+#[must_use]
+pub fn breadth_first<G: DirectedGraphView>(
+    graph: &G,
+    start: G::NodeId,
+    direction: TraversalDirection,
+) -> Vec<G::NodeId> {
+    assert!(
+        start.index() < graph.node_count(),
+        "start node is out of range"
+    );
+    let mut visited = vec![false; graph.node_count()];
+    let mut order = Vec::with_capacity(graph.node_count());
+    let mut queue = VecDeque::new();
+    visited[start.index()] = true;
+    queue.push_back(start);
+
+    while let Some(node) = queue.pop_front() {
+        order.push(node);
+        for adjacent in neighbors(graph, node, direction) {
+            if !visited[adjacent.index()] {
+                visited[adjacent.index()] = true;
+                queue.push_back(adjacent);
+            }
+        }
+    }
+
+    order
+}
+
+/// Return a shortest unweighted path from `start` to `goal`.
+///
+/// The result includes both endpoints. Parallel edges do not affect the path.
+///
+/// # Panics
+///
+/// Panics when either endpoint is not a node in `graph`.
+#[must_use]
+pub fn shortest_path<G: DirectedGraphView>(
+    graph: &G,
+    start: G::NodeId,
+    goal: G::NodeId,
+    direction: TraversalDirection,
+) -> Option<Vec<G::NodeId>> {
+    assert!(
+        start.index() < graph.node_count(),
+        "start node is out of range"
+    );
+    assert!(
+        goal.index() < graph.node_count(),
+        "goal node is out of range"
+    );
+    let mut previous = vec![None; graph.node_count()];
+    let mut visited = vec![false; graph.node_count()];
+    let mut queue = VecDeque::new();
+    visited[start.index()] = true;
+    queue.push_back(start);
+
+    while let Some(node) = queue.pop_front() {
+        if node == goal {
+            let mut path = vec![goal];
+            let mut current = goal;
+            while current != start {
+                current = previous[current.index()]?;
+                path.push(current);
+            }
+            path.reverse();
+            return Some(path);
+        }
+
+        for adjacent in neighbors(graph, node, direction) {
+            if !visited[adjacent.index()] {
+                visited[adjacent.index()] = true;
+                previous[adjacent.index()] = Some(node);
+                queue.push_back(adjacent);
+            }
+        }
+    }
+
+    None
+}
+
+/// Return a topological ordering, or `None` when the graph contains a cycle.
+#[must_use]
+pub fn topological_sort<G: DirectedGraphView>(graph: &G) -> Option<Vec<G::NodeId>> {
+    let mut incoming_counts = vec![0_usize; graph.node_count()];
+    for node in graph.node_ids() {
+        incoming_counts[node.index()] = graph.predecessors(node).count();
+    }
+
+    let mut queue: VecDeque<G::NodeId> = graph
+        .node_ids()
+        .filter(|node| incoming_counts[node.index()] == 0)
+        .collect();
+    let mut order = Vec::with_capacity(graph.node_count());
+
+    while let Some(node) = queue.pop_front() {
+        order.push(node);
+        for successor in graph.successors(node) {
+            let count = &mut incoming_counts[successor.index()];
+            *count -= 1;
+            if *count == 0 {
+                queue.push_back(successor);
+            }
+        }
+    }
+
+    (order.len() == graph.node_count()).then_some(order)
+}
 
 impl<I> Cfg<I> {
     /// Depth-first preorder traversal starting from the entry block.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use cfglib::{Cfg, EdgeKind};
-    ///
-    /// let mut cfg = Cfg::<u32>::new();
-    /// let b0 = cfg.entry();
-    /// let b1 = cfg.new_block();
-    /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
-    ///
-    /// let order = cfg.dfs_preorder();
-    /// assert_eq!(order, vec![b0, b1]);
-    /// ```
     #[must_use]
     pub fn dfs_preorder(&self) -> Vec<BlockId> {
-        let mut visited = vec![false; self.num_blocks()];
-        let mut order = Vec::with_capacity(self.num_blocks());
-        let mut stack = vec![self.entry];
-
-        while let Some(id) = stack.pop() {
-            if visited[id.index()] {
-                continue;
-            }
-
-            visited[id.index()] = true;
-            order.push(id);
-
-            // Push successors in reverse so the first successor is visited first.
-            // Collect into a small buffer to reverse iteration order.
-            let succs: Vec<BlockId> = self.successors(id).collect();
-            for &s in succs.iter().rev() {
-                if !visited[s.index()] {
-                    stack.push(s);
-                }
-            }
-        }
-        order
+        depth_first_preorder(self, self.entry(), TraversalDirection::Outgoing)
     }
 
     /// Depth-first postorder traversal starting from the entry block.
-    ///
-    /// Uses an explicit stack to avoid stack overflow on deep graphs.
     #[must_use]
     pub fn dfs_postorder(&self) -> Vec<BlockId> {
-        let mut visited = vec![false; self.num_blocks()];
-        let mut order = Vec::with_capacity(self.num_blocks());
-        let mut stack: Vec<(BlockId, bool)> = vec![(self.entry, false)];
-
-        while let Some((id, processed)) = stack.pop() {
-            if processed {
-                order.push(id);
-                continue;
-            }
-            if visited[id.index()] {
-                continue;
-            }
-            visited[id.index()] = true;
-            stack.push((id, true));
-            // Push successors in reverse so leftmost is visited first.
-            let succs: Vec<BlockId> = self.successors(id).collect();
-            for &s in succs.iter().rev() {
-                if !visited[s.index()] {
-                    stack.push((s, false));
-                }
-            }
-        }
-
-        order
+        depth_first_postorder(self, self.entry(), TraversalDirection::Outgoing)
     }
 
-    /// Reverse postorder — a topological ordering useful for data-flow analysis.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use cfglib::{Cfg, EdgeKind};
-    ///
-    /// let mut cfg = Cfg::<u32>::new();
-    /// let b0 = cfg.entry();
-    /// let b1 = cfg.new_block();
-    /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
-    ///
-    /// let rpo = cfg.reverse_postorder();
-    /// // Entry always first in RPO.
-    /// assert_eq!(rpo[0], b0);
-    /// ```
+    /// Reverse postorder starting from the entry block.
     #[must_use]
     pub fn reverse_postorder(&self) -> Vec<BlockId> {
-        let mut rpo = self.dfs_postorder();
-        rpo.reverse();
-        rpo
+        reverse_postorder(self, self.entry(), TraversalDirection::Outgoing)
     }
 
     /// Breadth-first traversal starting from the entry block.
     #[must_use]
     pub fn bfs(&self) -> Vec<BlockId> {
-        let mut visited = vec![false; self.num_blocks()];
-        let mut order = Vec::with_capacity(self.num_blocks());
-        let mut queue = VecDeque::new();
-
-        visited[self.entry.index()] = true;
-        queue.push_back(self.entry);
-
-        while let Some(id) = queue.pop_front() {
-            order.push(id);
-            for s in self.successors(id) {
-                if !visited[s.index()] {
-                    visited[s.index()] = true;
-                    queue.push_back(s);
-                }
-            }
-        }
-        order
+        breadth_first(self, self.entry(), TraversalDirection::Outgoing)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    extern crate alloc;
+    use super::*;
+    use crate::edge::EdgeKind;
+    use crate::graph::directed::DirectedGraph;
+    use crate::test_util::ff;
     use alloc::vec;
 
-    use crate::cfg::Cfg;
-    use crate::edge::EdgeKind;
-    use crate::test_util::ff;
-
     #[test]
-    fn single_block_traversals() {
+    fn cfg_traversal_methods_delegate_to_generic_algorithms() {
         let mut cfg = Cfg::new();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
+        let middle = cfg.new_block();
+        let last = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(ff("entry"));
+        cfg.block_mut(middle).push(ff("middle"));
+        cfg.block_mut(last).push(ff("last"));
+        cfg.add_edge(cfg.entry(), middle, EdgeKind::Fallthrough);
+        cfg.add_edge(middle, last, EdgeKind::Fallthrough);
 
-        assert_eq!(cfg.dfs_preorder(), vec![cfg.entry()]);
-        assert_eq!(cfg.dfs_postorder(), vec![cfg.entry()]);
-        assert_eq!(cfg.reverse_postorder(), vec![cfg.entry()]);
-        assert_eq!(cfg.bfs(), vec![cfg.entry()]);
+        assert_eq!(cfg.dfs_preorder(), vec![cfg.entry(), middle, last]);
+        assert_eq!(cfg.dfs_postorder(), vec![last, middle, cfg.entry()]);
+        assert_eq!(cfg.reverse_postorder(), vec![cfg.entry(), middle, last]);
+        assert_eq!(cfg.bfs(), vec![cfg.entry(), middle, last]);
     }
 
     #[test]
-    fn linear_chain_order() {
-        let mut cfg = Cfg::new();
-        let b = cfg.new_block();
-        let c = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(c).instructions_vec_mut().push(ff("c"));
-        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
-        cfg.add_edge(b, c, EdgeKind::Fallthrough);
+    fn directed_graph_can_be_walked_in_both_directions() {
+        let mut graph = DirectedGraph::<&str, ()>::new();
+        let first = graph.add_node("first");
+        let second = graph.add_node("second");
+        let third = graph.add_node("third");
+        graph.add_edge(first, second, ());
+        graph.add_edge(second, third, ());
 
-        let pre = cfg.dfs_preorder();
-        assert_eq!(pre, vec![cfg.entry(), b, c]);
-
-        let post = cfg.dfs_postorder();
-        assert_eq!(post, vec![c, b, cfg.entry()]);
-
-        let rpo = cfg.reverse_postorder();
-        assert_eq!(rpo, vec![cfg.entry(), b, c]);
-
-        let bfs = cfg.bfs();
-        assert_eq!(bfs, vec![cfg.entry(), b, c]);
-    }
-
-    #[test]
-    fn diamond_traversal_visits_all() {
-        let mut cfg = Cfg::new();
-        let a = cfg.new_block();
-        let b = cfg.new_block();
-        let merge = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("entry"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(merge)
-            .instructions_vec_mut()
-            .push(ff("merge"));
-        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
-        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
-        cfg.add_edge(a, merge, EdgeKind::Fallthrough);
-        cfg.add_edge(b, merge, EdgeKind::Fallthrough);
-
-        let pre = cfg.dfs_preorder();
-        assert_eq!(pre.len(), 4);
-        assert_eq!(pre[0], cfg.entry());
-        assert!(pre.contains(&a));
-        assert!(pre.contains(&b));
-        assert!(pre.contains(&merge));
-
-        let bfs_order = cfg.bfs();
-        assert_eq!(bfs_order.len(), 4);
-        assert_eq!(bfs_order[0], cfg.entry());
-    }
-
-    #[test]
-    fn unreachable_block_not_visited() {
-        let mut cfg = Cfg::new();
-        let reachable = cfg.new_block();
-        let orphan = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("entry"));
-        cfg.block_mut(reachable)
-            .instructions_vec_mut()
-            .push(ff("r"));
-        cfg.block_mut(orphan)
-            .instructions_vec_mut()
-            .push(ff("dead"));
-        cfg.add_edge(cfg.entry(), reachable, EdgeKind::Fallthrough);
-
-        let pre = cfg.dfs_preorder();
-        assert_eq!(pre.len(), 2);
-        assert!(!pre.contains(&orphan));
-
-        let bfs_order = cfg.bfs();
-        assert_eq!(bfs_order.len(), 2);
-        assert!(!bfs_order.contains(&orphan));
-    }
-
-    #[test]
-    fn postorder_visits_children_before_parent() {
-        let mut cfg: Cfg<crate::test_util::MockInst> = Cfg::new();
-        let b = cfg.new_block();
-        let c = cfg.new_block();
-        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
-        cfg.add_edge(b, c, EdgeKind::Fallthrough);
-
-        let post = cfg.dfs_postorder();
-        let pos_entry = post.iter().position(|&x| x == cfg.entry()).unwrap();
-        let pos_c = post.iter().position(|&x| x == c).unwrap();
-        assert!(
-            pos_c < pos_entry,
-            "child c should appear before entry in postorder"
+        assert_eq!(
+            breadth_first(&graph, first, TraversalDirection::Outgoing),
+            vec![first, second, third]
         );
+        assert_eq!(
+            breadth_first(&graph, third, TraversalDirection::Incoming),
+            vec![third, second, first]
+        );
+        assert_eq!(
+            shortest_path(&graph, first, third, TraversalDirection::Outgoing),
+            Some(vec![first, second, third])
+        );
+    }
+
+    #[test]
+    fn topological_sort_rejects_cycles() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let left = graph.add_node(());
+        let right = graph.add_node(());
+        graph.add_edge(left, right, ());
+        assert_eq!(topological_sort(&graph), Some(vec![left, right]));
+        graph.add_edge(right, left, ());
+        assert!(topological_sort(&graph).is_none());
     }
 }

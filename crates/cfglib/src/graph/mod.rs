@@ -3,6 +3,7 @@
 pub mod callgraph;
 pub mod cdg;
 pub mod diff;
+pub mod directed;
 pub mod dominator;
 pub mod dot;
 pub mod eh;

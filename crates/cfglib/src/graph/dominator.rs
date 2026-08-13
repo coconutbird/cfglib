@@ -7,8 +7,10 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
+use crate::graph::directed::{DenseNodeId, DirectedGraph, DirectedGraphView};
+use crate::graph::traverse::{TraversalDirection, reverse_postorder};
 
-/// A dominator tree computed from a [`Cfg`].
+/// A dominator tree computed from a rooted directed graph.
 ///
 /// # Examples
 ///
@@ -29,198 +31,162 @@ use crate::cfg::Cfg;
 /// assert!(dom.dominates(b0, b2));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DominatorTree {
-    /// Immediate dominator for each block. `idom[entry] == None`.
-    idom: Vec<Option<BlockId>>,
+pub struct DominatorTree<N = BlockId> {
+    /// Immediate dominator for each node. The root has no parent.
+    idom: Vec<Option<N>>,
+    reachable: Vec<bool>,
 }
 
-fn reverse_graph_rpo(entry: usize, successors: &[Vec<usize>]) -> Vec<usize> {
-    let mut visited = vec![false; successors.len()];
-    let mut order = Vec::with_capacity(successors.len());
-    let mut stack = vec![(entry, false)];
-
-    while let Some((node, processed)) = stack.pop() {
-        if processed {
-            order.push(node);
-            continue;
-        }
-        if visited[node] {
-            continue;
-        }
-        visited[node] = true;
-        stack.push((node, true));
-        for &successor in successors[node].iter().rev() {
-            if !visited[successor] {
-                stack.push((successor, false));
-            }
-        }
-    }
-
-    order.reverse();
-    order
-}
-
-impl DominatorTree {
-    /// Compute the dominator tree for the given CFG using the iterative
-    /// algorithm by Cooper, Harvey, and Kennedy.
+impl<N: DenseNodeId> DominatorTree<N> {
+    /// Compute dominators for any directed graph view from an explicit root.
     #[must_use]
-    pub fn compute<I>(cfg: &Cfg<I>) -> Self {
-        let rpo = cfg.reverse_postorder();
-        let n = cfg.num_blocks();
-
-        // Map BlockId → reverse-postorder index.
-        let mut rpo_num = vec![usize::MAX; n];
-        for (i, &id) in rpo.iter().enumerate() {
-            rpo_num[id.index()] = i;
+    pub fn compute_from<G>(graph: &G, root: N) -> Self
+    where
+        G: DirectedGraphView<NodeId = N>,
+    {
+        let order = reverse_postorder(graph, root, TraversalDirection::Outgoing);
+        let node_count = graph.node_count();
+        let mut order_index = vec![usize::MAX; node_count];
+        for (index, node) in order.iter().copied().enumerate() {
+            order_index[node.index()] = index;
         }
 
-        let mut doms: Vec<Option<usize>> = vec![None; n];
-        let entry_rpo = rpo_num[cfg.entry().index()];
-        doms[entry_rpo] = Some(entry_rpo);
+        let mut dominators = vec![None; order.len()];
+        dominators[order_index[root.index()]] = Some(order_index[root.index()]);
 
         let mut changed = true;
         while changed {
             changed = false;
-            for &b in &rpo {
-                if b == cfg.entry() {
-                    continue;
-                }
-                let b_rpo = rpo_num[b.index()];
-                let preds: Vec<BlockId> = cfg.predecessors(b).collect();
-
-                // Find the first processed predecessor.
-                let mut new_idom = None;
-                for &p in &preds {
-                    let p_rpo = rpo_num[p.index()];
-                    if doms[p_rpo].is_some() {
-                        new_idom = Some(p_rpo);
-                        break;
-                    }
-                }
-                let Some(mut new_idom) = new_idom else {
+            for node in order.iter().copied().filter(|node| *node != root) {
+                let node_order = order_index[node.index()];
+                let predecessors: Vec<N> = graph.predecessors(node).collect();
+                let mut new_parent = predecessors.iter().find_map(|predecessor| {
+                    let predecessor_order = order_index[predecessor.index()];
+                    (predecessor_order != usize::MAX && dominators[predecessor_order].is_some())
+                        .then_some(predecessor_order)
+                });
+                let Some(mut new_parent_index) = new_parent.take() else {
                     continue;
                 };
 
-                // Intersect with remaining processed predecessors.
-                for &p in &preds {
-                    let p_rpo = rpo_num[p.index()];
-                    if doms[p_rpo].is_some() && p_rpo != new_idom {
-                        new_idom = Self::intersect(&doms, p_rpo, new_idom);
+                for predecessor in predecessors {
+                    let predecessor_order = order_index[predecessor.index()];
+                    if predecessor_order != usize::MAX
+                        && dominators[predecessor_order].is_some()
+                        && predecessor_order != new_parent_index
+                    {
+                        new_parent_index =
+                            Self::intersect(&dominators, predecessor_order, new_parent_index);
                     }
                 }
 
-                if doms[b_rpo] != Some(new_idom) {
-                    doms[b_rpo] = Some(new_idom);
+                if dominators[node_order] != Some(new_parent_index) {
+                    dominators[node_order] = Some(new_parent_index);
                     changed = true;
                 }
             }
         }
 
-        // Convert RPO indices back to BlockIds.
-        let mut idom_result = vec![None; n];
-        for (rpo_idx, &dom) in doms.iter().enumerate() {
-            if rpo_idx < rpo.len() {
-                let block = rpo[rpo_idx];
-                idom_result[block.index()] = dom.map(|d| rpo[d]);
+        let mut immediate = vec![None; node_count];
+        for (index, parent) in dominators.into_iter().enumerate() {
+            let node = order[index];
+            immediate[node.index()] = parent.map(|parent_index| order[parent_index]);
+        }
+        immediate[root.index()] = None;
+        let mut reachable = vec![false; node_count];
+        for node in order {
+            reachable[node.index()] = true;
+        }
+        Self {
+            idom: immediate,
+            reachable,
+        }
+    }
+
+    fn intersect(dominators: &[Option<usize>], mut left: usize, mut right: usize) -> usize {
+        while left != right {
+            while left > right {
+                left = dominators[left].expect("processed dominator must have a parent");
+            }
+            while right > left {
+                right = dominators[right].expect("processed dominator must have a parent");
             }
         }
-
-        // Entry dominates itself — represented as None.
-        idom_result[cfg.entry().index()] = None;
-
-        DominatorTree { idom: idom_result }
+        left
     }
 
-    fn intersect(doms: &[Option<usize>], mut a: usize, mut b: usize) -> usize {
-        while a != b {
-            while a > b {
-                a = doms[a].expect("processed dominator must have a parent");
-            }
-            while b > a {
-                b = doms[b].expect("processed dominator must have a parent");
-            }
-        }
-        a
-    }
-
-    /// Returns the immediate dominator of `block`, or `None` if `block`
-    /// is the entry.
+    /// Return the immediate dominator of `node`, or `None` for a root.
     #[must_use]
-    pub fn idom(&self, block: BlockId) -> Option<BlockId> {
-        self.idom[block.index()]
+    pub fn idom(&self, node: N) -> Option<N> {
+        self.idom[node.index()]
     }
 
-    /// Returns `true` if `a` dominates `b`.
+    /// Return whether `dominator` dominates `node`.
     #[must_use]
-    pub fn dominates(&self, a: BlockId, b: BlockId) -> bool {
-        if a == b {
+    pub fn dominates(&self, dominator: N, node: N) -> bool {
+        if dominator == node {
             return true;
         }
 
-        let mut cur = b;
-        while let Some(d) = self.idom(cur) {
-            if d == a {
+        let mut current = node;
+        while let Some(parent) = self.idom(current) {
+            if parent == dominator {
                 return true;
             }
-            if d == cur {
+            if parent == current {
                 break;
             }
-            cur = d;
+            current = parent;
         }
         false
     }
 
-    /// Returns the children of `block` in the dominator tree (blocks
-    /// whose immediate dominator is `block`).
+    /// Return nodes whose immediate dominator is `node`.
     #[must_use]
-    pub fn children(&self, block: BlockId) -> Vec<BlockId> {
-        let mut result = Vec::new();
-        for (i, dom) in self.idom.iter().enumerate() {
-            if *dom == Some(block) && i != block.index() {
-                result.push(BlockId::from_index(i));
-            }
-        }
-        result
+    pub fn children(&self, node: N) -> Vec<N> {
+        self.idom
+            .iter()
+            .enumerate()
+            .filter(|(index, parent)| **parent == Some(node) && *index != node.index())
+            .map(|(index, _)| N::from_index(index))
+            .collect()
     }
 
-    /// Compute the depth of a block in the dominator tree.
-    ///
-    /// The entry block (or root) has depth 0. Each step toward a leaf
-    /// adds 1. Returns `None` if the block is unreachable (has no idom
-    /// chain to the root).
+    /// Return a node's depth in the dominator tree.
     #[must_use]
-    pub fn depth(&self, block: BlockId) -> Option<usize> {
-        let mut d = 0;
-        let mut cur = block;
+    pub fn depth(&self, node: N) -> Option<usize> {
+        if !self.reachable[node.index()] {
+            return None;
+        }
+        let mut depth = 0;
+        let mut current = node;
         loop {
-            match self.idom[cur.index()] {
-                None => return Some(d), // reached root
+            match self.idom[current.index()] {
+                None => return Some(depth),
+                Some(parent) if parent == current => return Some(depth),
                 Some(parent) => {
-                    if parent == cur {
-                        return Some(d); // self-loop at root
-                    }
-                    d += 1;
-                    cur = parent;
+                    depth += 1;
+                    current = parent;
                 }
             }
         }
     }
 
-    /// Compute depths for all blocks at once.
-    ///
-    /// Returns a vector indexed by block index. Unreachable blocks get
-    /// `usize::MAX`.
+    /// Return depths indexed by dense node index.
     #[must_use]
     pub fn depths(&self) -> Vec<usize> {
-        let n = self.idom.len();
-        let mut result = vec![usize::MAX; n];
-        for (i, slot) in result.iter_mut().enumerate().take(n) {
-            let bid = BlockId::from_index(i);
-            if let Some(d) = self.depth(bid) {
-                *slot = d;
-            }
-        }
-        result
+        (0..self.idom.len())
+            .map(|index| self.depth(N::from_index(index)).unwrap_or(usize::MAX))
+            .collect()
+    }
+}
+
+impl DominatorTree<BlockId> {
+    /// Compute the dominator tree for the given CFG using the iterative
+    /// algorithm by Cooper, Harvey, and Kennedy.
+    #[must_use]
+    pub fn compute<I>(cfg: &Cfg<I>) -> Self {
+        Self::compute_from(cfg, cfg.entry())
     }
 
     /// Compute the **post-dominator** tree for the given CFG.
@@ -233,139 +199,47 @@ impl DominatorTree {
     /// This correctly handles CFGs with multiple exit points.
     #[must_use]
     pub fn compute_post<I>(cfg: &Cfg<I>) -> Self {
-        let n = cfg.num_blocks();
-        if n == 0 {
-            return DominatorTree { idom: Vec::new() };
+        let node_count = cfg.num_blocks();
+        if node_count == 0 {
+            return DominatorTree {
+                idom: Vec::new(),
+                reachable: Vec::new(),
+            };
         }
 
-        // Find exit blocks (no successors).
-        let exits: Vec<BlockId> = cfg
-            .blocks()
-            .iter()
-            .filter(|b| cfg.successor_edges(b.id()).is_empty())
-            .map(super::super::block::BasicBlock::id)
-            .collect();
+        let mut exits: Vec<BlockId> = cfg.exit_blocks().collect();
+        if exits.is_empty() {
+            exits.push(BlockId::from_index(node_count - 1));
+        }
 
-        // If no natural exits, fall back to the last block.
-        let exit_set: Vec<BlockId> = if exits.is_empty() {
-            vec![BlockId::from_index(n - 1)]
-        } else {
-            exits
-        };
-
-        // We introduce a virtual exit node at index `n`. This node
-        // has edges **from** every real exit block. In the reversed
-        // graph it becomes the unique entry from which we run the
-        // dominator algorithm.
-        let virt = n; // virtual exit index (not a real BlockId)
-        let total = n + 1;
-
-        // Build reverse-graph adjacency: rev_succs[u] = predecessors
-        // of u in the original graph (i.e. successors in the reversed
-        // graph).
-        let mut rev_succs: Vec<Vec<usize>> = vec![Vec::new(); total];
+        let mut reverse = DirectedGraph::with_capacity(
+            node_count + 1,
+            cfg.num_edges().saturating_add(exits.len()),
+        );
+        let nodes: Vec<_> = (0..node_count).map(|_| reverse.add_node(())).collect();
+        let virtual_exit = reverse.add_node(());
         for edge in cfg.edges() {
-            rev_succs[edge.target().index()].push(edge.source().index());
+            reverse.add_edge(
+                nodes[edge.target().index()],
+                nodes[edge.source().index()],
+                (),
+            );
         }
-        // Virtual exit's reverse-successors are the real exit blocks.
-        for &ex in &exit_set {
-            rev_succs[virt].push(ex.index());
-        }
-
-        let rpo = reverse_graph_rpo(virt, &rev_succs);
-
-        // Map node index → RPO position.
-        let mut rpo_num = vec![usize::MAX; total];
-        for (i, &node) in rpo.iter().enumerate() {
-            rpo_num[node] = i;
+        for exit in exits {
+            reverse.add_edge(virtual_exit, nodes[exit.index()], ());
         }
 
-        let mut doms: Vec<Option<usize>> = vec![None; total];
-        let virt_rpo = rpo_num[virt];
-        doms[virt_rpo] = Some(virt_rpo);
-
-        let mut changed = true;
-        while changed {
-            changed = false;
-            for &b in &rpo {
-                if b == virt {
-                    continue;
-                }
-                let b_rpo = rpo_num[b];
-                if b_rpo == usize::MAX {
-                    continue;
-                }
-
-                // Predecessors in the reverse graph = successors in
-                // the original graph + virtual exit if b is an exit.
-                let mut rev_preds: Vec<usize> = cfg
-                    .successors(BlockId::from_index(b))
-                    .map(super::super::block::BlockId::index)
-                    .collect();
-                if exit_set.iter().any(|e| e.index() == b) {
-                    rev_preds.push(virt);
-                }
-
-                let mut new_idom = None;
-                for &p in &rev_preds {
-                    let p_rpo = rpo_num[p];
-                    if p_rpo != usize::MAX && doms[p_rpo].is_some() {
-                        new_idom = Some(p_rpo);
-                        break;
-                    }
-                }
-                let Some(mut new_idom) = new_idom else {
-                    continue;
-                };
-
-                for &p in &rev_preds {
-                    let p_rpo = rpo_num[p];
-                    if p_rpo != usize::MAX && doms[p_rpo].is_some() && p_rpo != new_idom {
-                        new_idom = Self::intersect(&doms, p_rpo, new_idom);
-                    }
-                }
-
-                if doms[b_rpo] != Some(new_idom) {
-                    doms[b_rpo] = Some(new_idom);
-                    changed = true;
-                }
-            }
-        }
-
-        // Convert RPO indices back to real BlockIds, skipping the
-        // virtual exit. If a block's immediate post-dominator is the
-        // virtual exit, record `None` (it's a top-level exit).
-        //
-        let mut idom_result = vec![None; n];
-        for (rpo_idx, &dom) in doms.iter().enumerate() {
-            if rpo_idx >= rpo.len() {
-                continue;
-            }
-            let node = rpo[rpo_idx];
-            if node == virt {
-                continue;
-            }
-            idom_result[node] = dom.map(|d| {
-                let real = rpo[d];
-                if real == virt {
-                    // Post-dominator is virtual exit → top-level.
-                    // We'll clean this up below.
-                    BlockId::from_index(node)
-                } else {
-                    BlockId::from_index(real)
-                }
-            });
-        }
-
-        // Blocks whose idom maps to themselves had the virtual exit
-        // as their post-dominator — set to None.
-        for (i, slot) in idom_result.iter_mut().enumerate().take(n) {
-            if *slot == Some(BlockId::from_index(i)) {
-                *slot = None;
-            }
-        }
-
-        DominatorTree { idom: idom_result }
+        let reverse_dominators = DominatorTree::compute_from(&reverse, virtual_exit);
+        let idom = nodes
+            .iter()
+            .map(|&node| {
+                reverse_dominators.idom(node).and_then(|parent| {
+                    (parent != virtual_exit).then(|| BlockId::from_index(parent.index()))
+                })
+            })
+            .collect();
+        let reachable = reverse_dominators.reachable[..node_count].to_vec();
+        DominatorTree { idom, reachable }
     }
 }
 

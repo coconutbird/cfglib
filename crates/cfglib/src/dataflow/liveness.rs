@@ -1,17 +1,17 @@
 //! Liveness analysis.
 //!
 //! A **backward** data flow analysis that computes, for each program
-//! point, the set of locations whose values may be read in the future
+//! point, the set of variables whose values may be read in the future
 //! before being overwritten.
 //!
-//! A location is **live** at a point if there exists a path from that
-//! point to a use of the location with no intervening definition.
+//! A variable is **live** at a point if there exists a path from that
+//! point to a use of the variable with no intervening definition.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
 
 use super::fixpoint::{self, Direction, FixpointResult, Problem};
-use super::{InstrInfo, Location};
+use super::{InstrInfo, VariableId};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 
@@ -19,7 +19,7 @@ use crate::cfg::Cfg;
 pub struct LivenessProblem;
 
 impl<I: InstrInfo> Problem<I> for LivenessProblem {
-    type Fact = BTreeSet<Location>;
+    type Fact = BTreeSet<I::Variable>;
 
     fn direction(&self) -> Direction {
         Direction::Backward
@@ -35,26 +35,26 @@ impl<I: InstrInfo> Problem<I> for LivenessProblem {
     }
 
     fn meet(&self, a: &Self::Fact, b: &Self::Fact) -> Self::Fact {
-        a.union(b).copied().collect()
+        a.union(b).cloned().collect()
     }
 
     /// Backward transfer: `live_in` = uses ∪ (`live_out` − defs).
     ///
     /// Walk the block's instructions in **reverse** to compute the
-    /// set of locations live at the block's entry.
+    /// set of variables live at the block's entry.
     fn transfer(&self, cfg: &Cfg<I>, block: BlockId, live_out: &Self::Fact) -> Self::Fact {
         let mut live = live_out.clone();
         let insts = cfg.block(block).instructions();
 
         // Walk backwards through the block.
         for inst in insts.iter().rev() {
-            // Kill: locations defined here are no longer live above.
+            // Kill: variables defined here are no longer live above.
             for loc in inst.defs() {
                 live.remove(loc);
             }
-            // Gen: locations used here are live above.
-            for &loc in inst.uses() {
-                live.insert(loc);
+            // Gen: variables used here are live above.
+            for variable in inst.uses() {
+                live.insert(variable.clone());
             }
         }
 
@@ -67,12 +67,13 @@ impl<I: InstrInfo> Problem<I> for LivenessProblem {
 /// # Examples
 ///
 /// ```
-/// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+/// # use cfglib::{Cfg, EdgeKind, InstrInfo};
 /// # #[derive(Debug, Clone)]
-/// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+/// # struct Inst { uses: Vec<u16>, defs: Vec<u16> }
 /// # impl InstrInfo for Inst {
-/// #     fn uses(&self) -> &[Location] { &self.uses }
-/// #     fn defs(&self) -> &[Location] { &self.defs }
+/// #     type Variable = u16;
+/// #     fn uses(&self) -> &[u16] { &self.uses }
+/// #     fn defs(&self) -> &[u16] { &self.defs }
 /// # }
 /// use cfglib::dataflow::liveness::Liveness;
 ///
@@ -81,57 +82,57 @@ impl<I: InstrInfo> Problem<I> for LivenessProblem {
 /// let b1 = cfg.new_block();
 /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
 ///
-/// let r0 = Location(0);
+/// let r0 = 0;
 /// cfg.block_mut(b0).push(Inst { uses: vec![], defs: vec![r0] });
 /// cfg.block_mut(b1).push(Inst { uses: vec![r0], defs: vec![] });
 ///
 /// let live = Liveness::compute(&cfg);
 /// // r0 is live-out of b0 (used in b1).
-/// assert!(live.is_live_out(r0, b0));
+/// assert!(live.is_live_out(&r0, b0));
 /// ```
-pub struct Liveness {
-    inner: FixpointResult<BTreeSet<Location>>,
+pub struct Liveness<V> {
+    inner: FixpointResult<BTreeSet<V>>,
 }
 
-impl Liveness {
+impl<V: VariableId> Liveness<V> {
     /// Run liveness analysis on the given CFG.
     #[must_use]
-    pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
+    pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
         let result = fixpoint::solve(cfg, &LivenessProblem);
         Self { inner: result }
     }
 
-    /// Locations live at the **entry** of a block.
+    /// Variables live at the **entry** of a block.
     #[must_use]
-    pub fn live_in(&self, block: BlockId) -> &BTreeSet<Location> {
+    pub fn live_in(&self, block: BlockId) -> &BTreeSet<V> {
         self.inner.fact_in(block)
     }
 
-    /// Locations live at the **exit** of a block.
+    /// Variables live at the **exit** of a block.
     #[must_use]
-    pub fn live_out(&self, block: BlockId) -> &BTreeSet<Location> {
+    pub fn live_out(&self, block: BlockId) -> &BTreeSet<V> {
         self.inner.fact_out(block)
     }
 
-    /// Check if a location is live at a block's entry.
+    /// Check if a variable is live at a block's entry.
     #[must_use]
-    pub fn is_live_in(&self, loc: Location, block: BlockId) -> bool {
-        self.live_in(block).contains(&loc)
+    pub fn is_live_in(&self, variable: &V, block: BlockId) -> bool {
+        self.live_in(block).contains(variable)
     }
 
-    /// Check if a location is live at a block's exit.
+    /// Check if a variable is live at a block's exit.
     #[must_use]
-    pub fn is_live_out(&self, loc: Location, block: BlockId) -> bool {
-        self.live_out(block).contains(&loc)
+    pub fn is_live_out(&self, variable: &V, block: BlockId) -> bool {
+        self.live_out(block).contains(variable)
     }
 
-    /// All locations that are live somewhere in the program.
+    /// All variables that are live somewhere in the program.
     #[must_use]
-    pub fn all_live_locations<I: InstrInfo>(&self, cfg: &Cfg<I>) -> BTreeSet<Location> {
+    pub fn all_live_variables<I: InstrInfo<Variable = V>>(&self, cfg: &Cfg<I>) -> BTreeSet<V> {
         let mut all = BTreeSet::new();
         for b in cfg.blocks() {
-            all.extend(self.live_in(b.id()));
-            all.extend(self.live_out(b.id()));
+            all.extend(self.live_in(b.id()).iter().cloned());
+            all.extend(self.live_out(b.id()).iter().cloned());
         }
         all
     }
@@ -157,7 +158,7 @@ mod tests {
         //  backward: use generates, def kills → net: not live-in
         //  actually: backward walk: use_r0 gens r0, def_r0 kills r0 → live_in = {})
         // But there's nothing after, so live_out = {}
-        assert!(!live.is_live_out(Location(0), cfg.entry()));
+        assert!(!live.is_live_out(&0, cfg.entry()));
     }
 
     #[test]
@@ -165,7 +166,7 @@ mod tests {
         // bb0: use r0 (no def) → r0 should be live-in
         let cfg = CfgBuilder::build(vec![use_("use_r0", 0)]).unwrap();
         let live = Liveness::compute(&cfg);
-        assert!(live.is_live_in(Location(0), cfg.entry()));
+        assert!(live.is_live_in(&0, cfg.entry()));
     }
 
     #[test]
@@ -173,8 +174,8 @@ mod tests {
         // bb0: def r0 (never used) → r0 should NOT be live anywhere
         let cfg = CfgBuilder::build(vec![def("def_r0", 0)]).unwrap();
         let live = Liveness::compute(&cfg);
-        assert!(!live.is_live_in(Location(0), cfg.entry()));
-        assert!(!live.is_live_out(Location(0), cfg.entry()));
+        assert!(!live.is_live_in(&0, cfg.entry()));
+        assert!(!live.is_live_out(&0, cfg.entry()));
     }
 
     #[test]
@@ -194,7 +195,7 @@ mod tests {
         .unwrap();
         let live = Liveness::compute(&cfg);
         assert!(
-            live.is_live_out(Location(0), cfg.entry()),
+            live.is_live_out(&0, cfg.entry()),
             "r0 is live-out of entry because the true branch uses it"
         );
     }
@@ -205,8 +206,8 @@ mod tests {
         use crate::test_util::DfInst;
         let cfg = CfgBuilder::build(alloc::vec::Vec::<DfInst>::new()).unwrap();
         let live = Liveness::compute(&cfg);
-        assert!(!live.is_live_in(Location(0), cfg.entry()));
-        assert!(!live.is_live_out(Location(0), cfg.entry()));
+        assert!(!live.is_live_in(&0, cfg.entry()));
+        assert!(!live.is_live_out(&0, cfg.entry()));
     }
 
     #[test]
@@ -224,20 +225,20 @@ mod tests {
         cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
         let live = Liveness::compute(&cfg);
         assert!(
-            live.is_live_in(Location(0), cfg.entry()),
+            live.is_live_in(&0, cfg.entry()),
             "r0 used but not defined in self-loop"
         );
     }
 
     #[test]
-    fn liveness_all_live_locations() {
+    fn liveness_all_live_variables() {
         let cfg = CfgBuilder::build(vec![use_("use_r0", 0), use_("use_r1", 1), def("def_r2", 2)])
             .unwrap();
         let live = Liveness::compute(&cfg);
-        let all = live.all_live_locations(&cfg);
-        assert!(all.contains(&Location(0)));
-        assert!(all.contains(&Location(1)));
+        let all = live.all_live_variables(&cfg);
+        assert!(all.contains(&0));
+        assert!(all.contains(&1));
         // r2 is defined but never used, so not live.
-        assert!(!all.contains(&Location(2)));
+        assert!(!all.contains(&2));
     }
 }

@@ -13,8 +13,8 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
+use super::InstrInfo;
 use super::defuse::DefUseChains;
-use super::{InstrInfo, Location};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 
@@ -28,12 +28,12 @@ pub trait CopySource: InstrInfo {
     ///
     /// Return `None` if the instruction is not a copy (has side effects,
     /// multiple defs, computation, etc.).
-    fn as_copy(&self) -> Option<(Location, Location)>;
+    fn as_copy(&self) -> Option<(Self::Variable, Self::Variable)>;
 
     /// Rewrite a use of `old` to `new` in this instruction.
     ///
     /// Called during propagation to replace operands.
-    fn rewrite_use(&mut self, old: Location, new: Location);
+    fn rewrite_use(&mut self, old: &Self::Variable, new: &Self::Variable);
 }
 
 /// Result of copy propagation.
@@ -56,7 +56,7 @@ pub struct CopyPropResult {
 pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropResult {
     // Phase 1: identify copies and build a substitution map.
     // We iterate to a fixpoint in case of copy chains: a = b; c = a → c = b.
-    let mut subst: BTreeMap<Location, Location> = BTreeMap::new();
+    let mut substitutions: BTreeMap<I::Variable, I::Variable> = BTreeMap::new();
 
     for block in cfg.blocks() {
         for inst in block.instructions() {
@@ -64,18 +64,18 @@ pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropResu
                 // Resolve through existing substitutions for chains.
                 let mut resolved = src;
                 let mut seen = alloc::collections::BTreeSet::new();
-                while let Some(&next) = subst.get(&resolved) {
-                    if !seen.insert(next) {
+                while let Some(next) = substitutions.get(&resolved).cloned() {
+                    if !seen.insert(next.clone()) {
                         break; // cycle guard
                     }
                     resolved = next;
                 }
-                subst.insert(dst, resolved);
+                substitutions.insert(dst, resolved);
             }
         }
     }
 
-    if subst.is_empty() {
+    if substitutions.is_empty() {
         return CopyPropResult {
             uses_rewritten: 0,
             copies_removed: 0,
@@ -93,8 +93,8 @@ pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropResu
     for &bid in &block_ids {
         let insts = cfg.block_mut(bid).instructions_vec_mut();
         for inst in insts.iter_mut() {
-            for (&old, &new) in &subst {
-                if inst.uses().contains(&old) {
+            for (old, new) in &substitutions {
+                if inst.uses().contains(old) {
                     inst.rewrite_use(old, new);
                     uses_rewritten += 1;
                 }
@@ -135,7 +135,6 @@ pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropResu
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::Location;
     use crate::edge::EdgeKind;
     use crate::test_util::{DfInst, df_copy, df_def, df_use};
 
@@ -158,7 +157,7 @@ mod tests {
 
         // The use should now reference r0 instead of r1.
         let exit_inst = &cfg.block(exit).instructions()[0];
-        assert_eq!(exit_inst.uses[0], Location(0));
+        assert_eq!(exit_inst.uses[0], 0);
     }
 
     #[test]
@@ -177,6 +176,6 @@ mod tests {
         // The final use should reference r0.
         let insts = cfg.block(cfg.entry()).instructions();
         let last = insts.last().unwrap();
-        assert_eq!(last.uses[0], Location(0));
+        assert_eq!(last.uses[0], 0);
     }
 }

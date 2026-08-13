@@ -138,7 +138,6 @@ pub fn build_memory_ssa<I: MemoryEffect>(cfg: &Cfg<I>, dom: &DominatorTree) -> M
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::Location;
     use crate::edge::EdgeKind;
     use crate::flow::{FlowControl, FlowEffect};
     use crate::graph::dominator::DominatorTree;
@@ -158,10 +157,12 @@ mod tests {
         }
     }
     impl InstrInfo for MemInst {
-        fn uses(&self) -> &[Location] {
+        type Variable = u16;
+
+        fn uses(&self) -> &[u16] {
             &[]
         }
-        fn defs(&self) -> &[Location] {
+        fn defs(&self) -> &[u16] {
             &[]
         }
     }

@@ -1,58 +1,42 @@
-//! SSA destruction (phi elimination).
+//! SSA destruction support.
 //!
-//! Converts out of SSA form by replacing phi nodes with parallel copy
-//! instructions placed on incoming edges. This is the inverse of
-//! [`insert_phis`](super::ssa::insert_phis).
-//!
-//! The consumer is responsible for inserting the actual copy instructions
-//! into the CFG; this module computes **what** copies are needed and
-//! **where** they should go.
+//! Converts renamed phis into parallel copies on incoming CFG edges. The
+//! consumer remains responsible for materializing those copies in its native
+//! instruction representation and for sequencing copy cycles.
 
 extern crate alloc;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
-use crate::dataflow::Location;
-use crate::dataflow::ssa::PhiMap;
+use crate::dataflow::VariableId;
+use crate::dataflow::ssa::{SsaForm, SsaValue};
 
-/// A copy to be inserted on a specific CFG edge.
+/// A copy to be materialized on a specific CFG edge.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PhiCopy {
-    /// The predecessor block (source of the edge).
+pub struct PhiCopy<V> {
+    /// Predecessor block containing the source side of the edge.
     pub from_block: BlockId,
-    /// The block containing the phi node (target of the edge).
+    /// Block containing the lowered phi.
     pub to_block: BlockId,
-    /// The destination location (the phi's target variable).
-    pub dst: Location,
-    /// The source location (the operand from `from_block`).
-    pub src: Location,
+    /// SSA value defined by the phi.
+    pub destination: SsaValue<V>,
+    /// SSA value supplied by `from_block`.
+    pub source: SsaValue<V>,
 }
 
-/// Compute the copies needed to eliminate all phi nodes.
-///
-/// For each phi node at a merge point, generates a [`PhiCopy`] for
-/// every incoming edge. The copies should be placed at the **end** of
-/// the predecessor block (or on a critical edge split block).
-///
-/// # Example
-///
-/// ```ignore
-/// let dom = DominatorTree::compute(&cfg);
-/// let phis = insert_phis(&cfg, &dom);
-/// let copies = eliminate_phis(&phis);
-/// // Insert copy instructions for each PhiCopy into the CFG.
-/// ```
+/// Compute all edge copies needed to eliminate the phis in `ssa`.
 #[must_use]
-pub fn eliminate_phis(phi_map: &PhiMap) -> Vec<PhiCopy> {
+pub fn eliminate_phis<V: VariableId>(ssa: &SsaForm<V>) -> Vec<PhiCopy<V>> {
     let mut copies = Vec::new();
 
-    for (block, phi) in phi_map.iter() {
-        for &(pred_block, src_loc) in &phi.operands {
+    for (block, phi) in ssa.phis() {
+        for (predecessor, source) in &phi.operands {
             copies.push(PhiCopy {
-                from_block: pred_block,
+                from_block: *predecessor,
                 to_block: block,
-                dst: phi.location,
-                src: src_loc,
+                destination: phi.result.clone(),
+                source: source.clone(),
             });
         }
     }
@@ -60,99 +44,81 @@ pub fn eliminate_phis(phi_map: &PhiMap) -> Vec<PhiCopy> {
     copies
 }
 
-/// Group phi copies by the predecessor block they should be placed in.
+/// Group phi copies by the predecessor block where they must be emitted.
 ///
-/// Returns `(predecessor_block, copies)` pairs. Copies within each group
-/// form a parallel assignment and may need sequencing if there are
-/// circular dependencies.
+/// Copies in one group form a parallel assignment and may need a temporary
+/// when the native instruction representation lowers a cycle.
 #[must_use]
-pub fn copies_by_predecessor(copies: &[PhiCopy]) -> Vec<(BlockId, Vec<&PhiCopy>)> {
-    use alloc::collections::BTreeMap;
-    let mut map: BTreeMap<BlockId, Vec<&PhiCopy>> = BTreeMap::new();
+pub fn copies_by_predecessor<V>(copies: &[PhiCopy<V>]) -> Vec<(BlockId, Vec<&PhiCopy<V>>)> {
+    let mut by_predecessor: BTreeMap<BlockId, Vec<&PhiCopy<V>>> = BTreeMap::new();
     for copy in copies {
-        map.entry(copy.from_block).or_default().push(copy);
+        by_predecessor
+            .entry(copy.from_block)
+            .or_default()
+            .push(copy);
     }
-    map.into_iter().collect()
+    by_predecessor.into_iter().collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::ssa::insert_phis;
+    use crate::dataflow::ssa::build_ssa;
     use crate::edge::EdgeKind;
     use crate::graph::dominator::DominatorTree;
     use crate::test_util::{DfInst, df_def, df_use};
+    use alloc::vec;
 
     #[test]
-    fn eliminate_phis_on_diamond() {
-        // entry(def loc0) → a, entry → b, a → merge(use loc0), b → merge
-        let mut cfg: Cfg<DfInst> = Cfg::new();
-        let a = cfg.new_block();
-        let b = cfg.new_block();
+    fn diamond_phis_lower_to_renamed_copies() {
+        let mut cfg = Cfg::<DfInst>::new();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
         let merge = cfg.new_block();
-
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(df_def("def0", 0));
-        cfg.block_mut(a)
-            .instructions_vec_mut()
-            .push(df_def("def_a", 0));
-        cfg.block_mut(b)
-            .instructions_vec_mut()
-            .push(df_def("def_b", 0));
-        cfg.block_mut(merge)
-            .instructions_vec_mut()
-            .push(df_use("use0", 0));
-
-        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
-        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
-        cfg.add_edge(a, merge, EdgeKind::Fallthrough);
-        cfg.add_edge(b, merge, EdgeKind::Fallthrough);
+        cfg.block_mut(left).push(df_def("left", 0));
+        cfg.block_mut(right).push(df_def("right", 0));
+        cfg.block_mut(merge).push(df_use("merged", 0));
+        cfg.add_edge(cfg.entry(), left, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), right, EdgeKind::ConditionalFalse);
+        cfg.add_edge(left, merge, EdgeKind::Fallthrough);
+        cfg.add_edge(right, merge, EdgeKind::Fallthrough);
 
         let dom = DominatorTree::compute(&cfg);
-        let phis = insert_phis(&cfg, &dom);
-        let copies = eliminate_phis(&phis);
+        let ssa = build_ssa(&cfg, &dom);
+        let copies = eliminate_phis(&ssa);
+        let merge_copies: Vec<_> = copies
+            .iter()
+            .filter(|copy| copy.to_block == merge)
+            .collect();
 
-        // Phi at merge for loc0 should generate copies from a and b.
-        let merge_copies: Vec<_> = copies.iter().filter(|c| c.to_block == merge).collect();
-        assert!(
-            !merge_copies.is_empty(),
-            "phi at merge should generate copies"
-        );
+        assert_eq!(merge_copies.len(), 2);
+        assert!(merge_copies.iter().all(|copy| {
+            copy.destination.variable == 0
+                && copy.source.variable == 0
+                && copy.destination != copy.source
+        }));
     }
 
     #[test]
-    fn copies_grouped_by_predecessor() {
-        let mut cfg: Cfg<DfInst> = Cfg::new();
-        let a = cfg.new_block();
-        let b = cfg.new_block();
-        let merge = cfg.new_block();
+    fn copies_are_grouped_by_predecessor() {
+        let copies = vec![
+            PhiCopy {
+                from_block: BlockId(0),
+                to_block: BlockId(2),
+                destination: SsaValue::new(0_u16, 3),
+                source: SsaValue::new(0_u16, 1),
+            },
+            PhiCopy {
+                from_block: BlockId(1),
+                to_block: BlockId(2),
+                destination: SsaValue::new(0_u16, 3),
+                source: SsaValue::new(0_u16, 2),
+            },
+        ];
 
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(df_def("def0", 0));
-        cfg.block_mut(a)
-            .instructions_vec_mut()
-            .push(df_def("def_a", 0));
-        cfg.block_mut(b)
-            .instructions_vec_mut()
-            .push(df_def("def_b", 0));
-        cfg.block_mut(merge)
-            .instructions_vec_mut()
-            .push(df_use("use0", 0));
-
-        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
-        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
-        cfg.add_edge(a, merge, EdgeKind::Fallthrough);
-        cfg.add_edge(b, merge, EdgeKind::Fallthrough);
-
-        let dom = DominatorTree::compute(&cfg);
-        let phis = insert_phis(&cfg, &dom);
-        let copies = eliminate_phis(&phis);
         let grouped = copies_by_predecessor(&copies);
-
-        // Should have at least one group.
-        assert!(!grouped.is_empty());
+        assert_eq!(grouped.len(), 2);
+        assert!(grouped.iter().all(|(_, group)| group.len() == 1));
     }
 }

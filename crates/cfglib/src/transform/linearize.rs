@@ -39,10 +39,10 @@ pub struct LinearInst<I> {
     pub index: usize,
 }
 
-/// ISA adapter for emitting jump, branch, and label instructions.
+/// IR or language adapter for emitting jump, branch, and label instructions.
 ///
-/// cfglib does not know how to create machine instructions, so the
-/// ISA frontend must implement this trait.
+/// cfglib does not know how to create consumer instructions or operations, so
+/// the frontend must implement this trait.
 pub trait Emitter<I> {
     /// Emit an unconditional jump to the given label.
     fn emit_jump(&self, target: &str) -> I;

@@ -1,9 +1,11 @@
-//! Generic control-flow graph library for binary analysis.
+//! Generic graph and dataflow framework for code intelligence and program analysis.
 //!
-//! This crate provides an ISA-agnostic [`Cfg<I>`] data structure and a
-//! suite of analyses, transforms, and visualization tools for working
-//! with control-flow graphs. The only requirement is that the
-//! instruction type `I` implements the [`FlowControl`] trait.
+//! [`DirectedGraph`] stores arbitrary node and edge payloads for value-flow,
+//! symbol, type-relation, import, call, and grammar graphs. Algorithms consume
+//! [`DirectedGraphView`], so consumer-owned graph stores can participate too.
+//! [`Cfg<I>`] adds basic-block and control-flow semantics when the graph really
+//! is a program CFG, and the dataflow layer uses an IR adapter's native variable
+//! identities rather than imposing an ISA-specific numbering scheme.
 //!
 //! # Quick start
 //!
@@ -17,16 +19,22 @@
 //! // println!("{}", cfg.to_dot());
 //! ```
 //!
-//! # Trait hierarchy
+//! # Extension contracts
 //!
-//! Instruction types implement progressively richer traits depending on
-//! which analyses they want to use:
+//! [`DirectedGraph`] owns arbitrary graph storage without requiring a consumer
+//! trait. Existing graph stores implement [`DenseNodeId`] and
+//! [`DirectedGraphView`] to reuse the generic algorithms. Instruction types
+//! implement progressively richer traits only when they need CFG or dataflow
+//! facilities:
 //!
 //! ```text
-//! FlowControl              (required — control-flow classification)
+//! DirectedGraph<N, E>       (owned arbitrary graph; no adapter trait)
+//! DirectedGraphView         (existing consumer-owned graph storage)
+//!
+//! FlowControl               (required only by CfgBuilder)
 //!   └─ SwitchCandidate     (optional — switch table recovery)
 //!
-//! InstrInfo                (optional — defs/uses/effects for dataflow)
+//! InstrInfo<Variable = V>  (optional — native IR variables for dataflow)
 //!   ├─ CopySource          (optional — copy propagation)
 //!   ├─ ConstantFolder      (optional — constant propagation)
 //!   └─ ExprInstr           (optional — expression tree recovery)
@@ -89,14 +97,21 @@ pub use region::{Handler, HandlerKind, Region, RegionId};
 // ── Re-exports: Dataflow framework & SSA ────────────────────────────
 
 pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
-pub use dataflow::ssa::{DominanceFrontiers, PhiMap, PhiNode, insert_phis};
-pub use dataflow::{InstrInfo, Location, ProgramPoint};
+pub use dataflow::ssa::{
+    DominanceFrontiers, PhiPlacement, PhiPlacements, SsaBlock, SsaForm, SsaInstruction, SsaPhi,
+    SsaValue, SsaVersion, build_ssa, place_phis,
+};
+pub use dataflow::{InstrInfo, ProgramPoint, VariableId};
 
 // ── Re-exports: Graph algorithms ────────────────────────────────────
 
-pub use graph::callgraph::{CallEdge, CallGraph, FunctionId, FunctionNode};
+pub use graph::callgraph::{CallEdge, CallGraph, CallMetadata, FunctionId, FunctionNode};
 pub use graph::cdg::ControlDependenceGraph;
 pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff, cfg_diff};
+pub use graph::directed::{
+    DenseNodeId, DirectedEdge, DirectedGraph, DirectedGraphView, GraphPredecessors,
+    GraphSuccessors, NodeId,
+};
 pub use graph::dominator::DominatorTree;
 pub use graph::eh::{EhBlockKind, EhEdge, EhModel, build_eh_model, cleanup_blocks, landing_pads};
 pub use graph::inc_dom::{IncrementalUpdate, update_after_edge_insert, update_after_edge_remove};
@@ -108,6 +123,10 @@ pub use graph::scc::{Scc, SccResult, tarjan_scc};
 pub use graph::structure::{
     BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, find_back_edges,
     insert_preheader, loop_exit_blocks,
+};
+pub use graph::traverse::{
+    TraversalDirection, breadth_first, depth_first_postorder, depth_first_preorder,
+    reverse_postorder, shortest_path, topological_sort,
 };
 pub use graph::verify::{VerifyError, VerifyResult, verify};
 pub use graph::visitor::{CfgVisitor, walk_bfs, walk_dfs};

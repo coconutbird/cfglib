@@ -95,7 +95,7 @@ mod tests {
     use super::*;
     use crate::analysis::valuenumber::ValueNumberInfo;
     use crate::cfg::Cfg;
-    use crate::dataflow::{InstrInfo, Location};
+    use crate::dataflow::InstrInfo;
     use crate::edge::EdgeKind;
     use crate::flow::{FlowControl, FlowEffect};
     use crate::graph::dominator::DominatorTree;
@@ -104,8 +104,8 @@ mod tests {
     #[derive(Debug, Clone)]
     struct PreInst {
         op: u32,
-        uses: Vec<Location>,
-        defs: Vec<Location>,
+        uses: Vec<u16>,
+        defs: Vec<u16>,
     }
     impl FlowControl for PreInst {
         fn flow_effect(&self) -> FlowEffect {
@@ -116,10 +116,12 @@ mod tests {
         }
     }
     impl InstrInfo for PreInst {
-        fn uses(&self) -> &[Location] {
+        type Variable = u16;
+
+        fn uses(&self) -> &[u16] {
             &self.uses
         }
-        fn defs(&self) -> &[Location] {
+        fn defs(&self) -> &[u16] {
             &self.defs
         }
     }
@@ -134,8 +136,8 @@ mod tests {
     fn pi(op: u32, u: &[u16], d: &[u16]) -> PreInst {
         PreInst {
             op,
-            uses: u.iter().map(|&x| Location(x)).collect(),
-            defs: d.iter().map(|&x| Location(x)).collect(),
+            uses: u.to_vec(),
+            defs: d.to_vec(),
         }
     }
 

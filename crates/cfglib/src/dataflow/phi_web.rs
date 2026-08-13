@@ -1,20 +1,17 @@
-//! Phi webs — congruence classes for SSA values.
+//! Phi webs for renamed SSA values.
 //!
-//! Groups SSA locations connected through φ-nodes into equivalence
-//! classes. Two locations in the same phi web must be assigned the
-//! same physical register, enabling register coalescing.
+//! Values connected by phis form congruence classes that are useful for copy
+//! coalescing and register allocation.
 
 extern crate alloc;
-use alloc::collections::BTreeMap;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::dataflow::Location;
-use crate::dataflow::ssa::PhiMap;
+use crate::dataflow::VariableId;
+use crate::dataflow::ssa::{SsaForm, SsaValue};
 
-/// Union-Find for phi web computation.
 #[derive(Debug, Clone)]
 struct UnionFind {
     parent: Vec<usize>,
@@ -22,111 +19,99 @@ struct UnionFind {
 }
 
 impl UnionFind {
-    fn new(n: usize) -> Self {
+    fn new(len: usize) -> Self {
         Self {
-            parent: (0..n).collect(),
-            rank: vec![0; n],
+            parent: (0..len).collect(),
+            rank: vec![0; len],
         }
     }
 
-    fn find(&mut self, mut x: usize) -> usize {
-        while self.parent[x] != x {
-            self.parent[x] = self.parent[self.parent[x]];
-            x = self.parent[x];
+    fn find(&mut self, mut index: usize) -> usize {
+        while self.parent[index] != index {
+            self.parent[index] = self.parent[self.parent[index]];
+            index = self.parent[index];
         }
-        x
+        index
     }
 
-    fn union(&mut self, a: usize, b: usize) {
-        let ra = self.find(a);
-        let rb = self.find(b);
-        if ra == rb {
+    fn union(&mut self, left: usize, right: usize) {
+        let left_root = self.find(left);
+        let right_root = self.find(right);
+        if left_root == right_root {
             return;
         }
-        match self.rank[ra].cmp(&self.rank[rb]) {
-            Ordering::Less => self.parent[ra] = rb,
-            Ordering::Greater => self.parent[rb] = ra,
+
+        match self.rank[left_root].cmp(&self.rank[right_root]) {
+            Ordering::Less => self.parent[left_root] = right_root,
+            Ordering::Greater => self.parent[right_root] = left_root,
             Ordering::Equal => {
-                self.parent[rb] = ra;
-                self.rank[ra] += 1;
+                self.parent[right_root] = left_root;
+                self.rank[left_root] += 1;
             }
         }
     }
 }
 
-/// A phi web: a set of locations that must be coalesced.
+/// A congruence class of SSA values connected by phis.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PhiWeb {
-    /// Locations in this congruence class.
-    pub locations: BTreeSet<Location>,
+pub struct PhiWeb<V> {
+    /// SSA values in this congruence class.
+    pub values: BTreeSet<SsaValue<V>>,
 }
 
-/// Result of phi web computation.
+/// Result of phi-web computation.
 #[derive(Debug, Clone)]
-pub struct PhiWebs {
-    /// All phi webs found.
-    pub webs: Vec<PhiWeb>,
-    /// Map from location to its web index.
-    pub web_of: BTreeMap<Location, usize>,
+pub struct PhiWebs<V> {
+    /// All phi webs found in the SSA form.
+    pub webs: Vec<PhiWeb<V>>,
+    /// Map from an SSA value to its web index.
+    pub web_of: BTreeMap<SsaValue<V>, usize>,
 }
 
-/// Compute phi webs from a phi map.
-///
-/// Locations connected through the same φ-node are placed in the
-/// same congruence class.
+/// Compute phi congruence classes from a renamed SSA form.
 #[must_use]
-pub fn compute_phi_webs(phis: &PhiMap) -> PhiWebs {
-    // Collect all locations mentioned in phis.
-    let mut all_locs: Vec<Location> = Vec::new();
-    let mut loc_to_idx: BTreeMap<Location, usize> = BTreeMap::new();
+pub fn compute_phi_webs<V: VariableId>(ssa: &SsaForm<V>) -> PhiWebs<V> {
+    let mut all_values = Vec::new();
+    let mut value_to_index = BTreeMap::new();
 
-    for (_, phi) in phis.iter() {
-        for loc in core::iter::once(&phi.location).chain(phi.operands.iter().map(|(_, l)| l)) {
-            if !loc_to_idx.contains_key(loc) {
-                let idx = all_locs.len();
-                loc_to_idx.insert(*loc, idx);
-                all_locs.push(*loc);
+    for (_, phi) in ssa.phis() {
+        for value in
+            core::iter::once(&phi.result).chain(phi.operands.iter().map(|(_, value)| value))
+        {
+            if !value_to_index.contains_key(value) {
+                let index = all_values.len();
+                value_to_index.insert(value.clone(), index);
+                all_values.push(value.clone());
             }
         }
     }
 
-    if all_locs.is_empty() {
-        return PhiWebs {
-            webs: Vec::new(),
-            web_of: BTreeMap::new(),
-        };
-    }
-
-    let mut uf = UnionFind::new(all_locs.len());
-
-    // Union phi def with each operand.
-    for (_, phi) in phis.iter() {
-        let def_idx = loc_to_idx[&phi.location];
-        for (_, loc) in &phi.operands {
-            let op_idx = loc_to_idx[loc];
-            uf.union(def_idx, op_idx);
+    let mut union_find = UnionFind::new(all_values.len());
+    for (_, phi) in ssa.phis() {
+        let result_index = value_to_index[&phi.result];
+        for (_, operand) in &phi.operands {
+            union_find.union(result_index, value_to_index[operand]);
         }
     }
 
-    // Build webs from union-find.
-    let mut root_to_web: BTreeMap<usize, usize> = BTreeMap::new();
-    let mut webs: Vec<PhiWeb> = Vec::new();
-    let mut web_of: BTreeMap<Location, usize> = BTreeMap::new();
+    let mut root_to_web = BTreeMap::new();
+    let mut webs: Vec<PhiWeb<V>> = Vec::new();
+    let mut web_of = BTreeMap::new();
 
-    for (i, &loc) in all_locs.iter().enumerate() {
-        let root = uf.find(i);
-        let web_idx = if let Some(&idx) = root_to_web.get(&root) {
-            idx
+    for (index, value) in all_values.into_iter().enumerate() {
+        let root = union_find.find(index);
+        let web_index = if let Some(existing) = root_to_web.get(&root) {
+            *existing
         } else {
-            let idx = webs.len();
+            let new_index = webs.len();
             webs.push(PhiWeb {
-                locations: BTreeSet::new(),
+                values: BTreeSet::new(),
             });
-            root_to_web.insert(root, idx);
-            idx
+            root_to_web.insert(root, new_index);
+            new_index
         };
-        webs[web_idx].locations.insert(loc);
-        web_of.insert(loc, web_idx);
+        webs[web_index].values.insert(value.clone());
+        web_of.insert(value, web_index);
     }
 
     PhiWebs { webs, web_of }
@@ -136,45 +121,37 @@ pub fn compute_phi_webs(phis: &PhiMap) -> PhiWebs {
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::ssa::insert_phis;
+    use crate::dataflow::ssa::build_ssa;
     use crate::edge::EdgeKind;
     use crate::graph::dominator::DominatorTree;
-    use crate::test_util::{df_def, df_use};
+    use crate::test_util::{DfInst, df_def, df_use};
 
     #[test]
-    fn empty_phis_empty_webs() {
-        let cfg: Cfg<crate::test_util::DfInst> = Cfg::new();
+    fn empty_ssa_has_no_webs() {
+        let cfg = Cfg::<DfInst>::new();
         let dom = DominatorTree::compute(&cfg);
-        let phis = insert_phis(&cfg, &dom);
-        let webs = compute_phi_webs(&phis);
-        assert!(webs.webs.is_empty());
+        let ssa = build_ssa(&cfg, &dom);
+        assert!(compute_phi_webs(&ssa).webs.is_empty());
     }
 
     #[test]
-    fn diamond_phi_creates_web() {
-        let mut cfg: Cfg<crate::test_util::DfInst> = Cfg::new();
-        let a = cfg.new_block();
-        let b = cfg.new_block();
+    fn diamond_phi_forms_one_web() {
+        let mut cfg = Cfg::<DfInst>::new();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
         let merge = cfg.new_block();
-        cfg.block_mut(a)
-            .instructions_vec_mut()
-            .push(df_def("def_a", 0));
-        cfg.block_mut(b)
-            .instructions_vec_mut()
-            .push(df_def("def_b", 0));
-        cfg.block_mut(merge)
-            .instructions_vec_mut()
-            .push(df_use("use", 0));
-        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
-        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
-        cfg.add_edge(a, merge, EdgeKind::Fallthrough);
-        cfg.add_edge(b, merge, EdgeKind::Fallthrough);
+        cfg.block_mut(left).push(df_def("left", 0));
+        cfg.block_mut(right).push(df_def("right", 0));
+        cfg.block_mut(merge).push(df_use("merged", 0));
+        cfg.add_edge(cfg.entry(), left, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), right, EdgeKind::ConditionalFalse);
+        cfg.add_edge(left, merge, EdgeKind::Fallthrough);
+        cfg.add_edge(right, merge, EdgeKind::Fallthrough);
+
         let dom = DominatorTree::compute(&cfg);
-        let phis = insert_phis(&cfg, &dom);
-        let webs = compute_phi_webs(&phis);
-        // If phis were inserted for loc0, all mentions should be in the same web.
-        if !webs.webs.is_empty() {
-            assert!(webs.webs.iter().any(|w| w.locations.contains(&Location(0))));
-        }
+        let ssa = build_ssa(&cfg, &dom);
+        let webs = compute_phi_webs(&ssa);
+        assert_eq!(webs.webs.len(), 1);
+        assert_eq!(webs.webs[0].values.len(), 3);
     }
 }

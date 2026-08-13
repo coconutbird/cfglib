@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::cfg::Cfg;
-use crate::dataflow::{InstrInfo, Location};
+use crate::dataflow::{InstrInfo, VariableId};
 
 /// A memory access kind for alias analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,40 +23,40 @@ pub enum MemoryOp {
 /// Trait for instructions that access memory.
 pub trait MemoryInfo: InstrInfo {
     /// Memory accesses performed by this instruction.
-    /// Returns `(base_location, op)` pairs.
-    fn memory_ops(&self) -> &[(Location, MemoryOp)];
+    /// Returns `(base_variable, op)` pairs.
+    fn memory_ops(&self) -> &[(Self::Variable, MemoryOp)];
 }
 
 /// Union-Find structure for alias set computation.
 #[derive(Debug, Clone)]
-pub struct AliasSets {
+pub struct AliasSets<V> {
     parent: Vec<usize>,
     rank: Vec<usize>,
-    loc_to_id: BTreeMap<Location, usize>,
-    id_to_loc: Vec<Location>,
+    variable_to_id: BTreeMap<V, usize>,
+    id_to_variable: Vec<V>,
 }
 
-impl AliasSets {
+impl<V: VariableId> AliasSets<V> {
     /// Create empty alias sets.
     #[must_use]
     pub fn new() -> Self {
         Self {
             parent: Vec::new(),
             rank: Vec::new(),
-            loc_to_id: BTreeMap::new(),
-            id_to_loc: Vec::new(),
+            variable_to_id: BTreeMap::new(),
+            id_to_variable: Vec::new(),
         }
     }
 
-    fn get_or_insert(&mut self, loc: Location) -> usize {
-        if let Some(&id) = self.loc_to_id.get(&loc) {
+    fn get_or_insert(&mut self, variable: V) -> usize {
+        if let Some(&id) = self.variable_to_id.get(&variable) {
             return id;
         }
         let id = self.parent.len();
         self.parent.push(id);
         self.rank.push(0);
-        self.loc_to_id.insert(loc, id);
-        self.id_to_loc.push(loc);
+        self.variable_to_id.insert(variable.clone(), id);
+        self.id_to_variable.push(variable);
         id
     }
 
@@ -84,29 +84,29 @@ impl AliasSets {
         }
     }
 
-    /// Check if two locations may alias.
-    pub fn may_alias(&mut self, a: Location, b: Location) -> bool {
-        let Some(&ia) = self.loc_to_id.get(&a) else {
+    /// Check if two variables may alias.
+    pub fn may_alias(&mut self, left: &V, right: &V) -> bool {
+        let Some(&left_id) = self.variable_to_id.get(left) else {
             return false;
         };
-        let Some(&ib) = self.loc_to_id.get(&b) else {
+        let Some(&right_id) = self.variable_to_id.get(right) else {
             return false;
         };
-        self.find(ia) == self.find(ib)
+        self.find(left_id) == self.find(right_id)
     }
 
-    /// Get the alias set (representative) for a location.
-    pub fn alias_set(&mut self, loc: Location) -> Option<Location> {
-        let &id = self.loc_to_id.get(&loc)?;
-        let rep = self.find(id);
-        Some(self.id_to_loc[rep])
+    /// Get the alias-set representative for a variable.
+    pub fn alias_set(&mut self, variable: &V) -> Option<&V> {
+        let &id = self.variable_to_id.get(variable)?;
+        let representative = self.find(id);
+        self.id_to_variable.get(representative)
     }
 
-    /// Merge two locations into the same alias set.
-    pub fn merge(&mut self, a: Location, b: Location) {
-        let ia = self.get_or_insert(a);
-        let ib = self.get_or_insert(b);
-        self.union(ia, ib);
+    /// Merge two variables into the same alias set.
+    pub fn merge(&mut self, left: V, right: V) {
+        let left_id = self.get_or_insert(left);
+        let right_id = self.get_or_insert(right);
+        self.union(left_id, right_id);
     }
 
     /// Number of distinct alias sets.
@@ -120,7 +120,7 @@ impl AliasSets {
     }
 }
 
-impl Default for AliasSets {
+impl<V: VariableId> Default for AliasSets<V> {
     fn default() -> Self {
         Self::new()
     }
@@ -131,17 +131,17 @@ impl Default for AliasSets {
 /// Unifies locations that are stored to/loaded from the same base.
 /// This is a flow-insensitive, context-insensitive analysis.
 #[must_use]
-pub fn alias_analysis<I: MemoryInfo>(cfg: &Cfg<I>) -> AliasSets {
+pub fn alias_analysis<I: MemoryInfo>(cfg: &Cfg<I>) -> AliasSets<I::Variable> {
     let mut sets = AliasSets::new();
 
     // Register all locations.
     for block in cfg.blocks() {
         for inst in block.instructions() {
             for d in inst.defs() {
-                sets.get_or_insert(*d);
+                sets.get_or_insert(d.clone());
             }
             for u in inst.uses() {
-                sets.get_or_insert(*u);
+                sets.get_or_insert(u.clone());
             }
         }
     }
@@ -151,16 +151,16 @@ pub fn alias_analysis<I: MemoryInfo>(cfg: &Cfg<I>) -> AliasSets {
         for inst in block.instructions() {
             let ops = inst.memory_ops();
             if ops.len() >= 2 {
-                let first = ops[0].0;
-                for &(loc, _) in &ops[1..] {
-                    sets.merge(first, loc);
+                let first = &ops[0].0;
+                for (variable, _) in &ops[1..] {
+                    sets.merge(first.clone(), variable.clone());
                 }
             }
             // Also unify defs with store targets.
-            for &(mem_loc, op) in ops {
-                if op == MemoryOp::Store {
+            for (memory_variable, op) in ops {
+                if *op == MemoryOp::Store {
                     for d in inst.defs() {
-                        sets.merge(mem_loc, *d);
+                        sets.merge(memory_variable.clone(), d.clone());
                     }
                 }
             }
@@ -177,36 +177,36 @@ mod tests {
     #[test]
     fn merge_creates_alias() {
         let mut sets = AliasSets::new();
-        let a = Location(0);
-        let b = Location(1);
+        let a = 0_u16;
+        let b = 1_u16;
         sets.merge(a, b);
-        assert!(sets.may_alias(a, b));
+        assert!(sets.may_alias(&a, &b));
     }
 
     #[test]
     fn unrelated_not_aliased() {
         let mut sets = AliasSets::new();
-        sets.get_or_insert(Location(0));
-        sets.get_or_insert(Location(1));
-        assert!(!sets.may_alias(Location(0), Location(1)));
+        sets.get_or_insert(0_u16);
+        sets.get_or_insert(1_u16);
+        assert!(!sets.may_alias(&0, &1));
     }
 
     #[test]
     fn transitive_alias() {
         let mut sets = AliasSets::new();
-        sets.merge(Location(0), Location(1));
-        sets.merge(Location(1), Location(2));
-        assert!(sets.may_alias(Location(0), Location(2)));
+        sets.merge(0_u16, 1);
+        sets.merge(1, 2);
+        assert!(sets.may_alias(&0, &2));
     }
 
     #[test]
     fn num_sets_correct() {
         let mut sets = AliasSets::new();
-        sets.get_or_insert(Location(0));
-        sets.get_or_insert(Location(1));
-        sets.get_or_insert(Location(2));
+        sets.get_or_insert(0_u16);
+        sets.get_or_insert(1_u16);
+        sets.get_or_insert(2_u16);
         assert_eq!(sets.num_sets(), 3);
-        sets.merge(Location(0), Location(1));
+        sets.merge(0, 1);
         assert_eq!(sets.num_sets(), 2);
     }
 }

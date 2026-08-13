@@ -1,219 +1,193 @@
 //! Sparse Conditional Constant Propagation (SCCP).
 //!
-//! An SSA-aware constant propagation that uses the SSA def-use graph
-//! and marks CFG edges as executable/non-executable, yielding strictly
-//! better results than the dataflow-based constant propagation in
-//! [`constprop`](super::constprop).
+//! SCCP operates on the generic renamed values in [`SsaForm`] while asking
+//! the source instruction adapter to fold native instructions.
 
 extern crate alloc;
-use alloc::collections::BTreeMap;
-use alloc::collections::BTreeSet;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dataflow::Location;
+use crate::dataflow::VariableId;
 use crate::dataflow::constprop::{ConstValue, ConstantFolder};
-use crate::dataflow::ssa::PhiMap;
+use crate::dataflow::ssa::{SsaForm, SsaValue};
 
 /// Result of SCCP analysis.
 #[derive(Debug, Clone)]
-pub struct SccpResult {
-    /// Lattice value for each location.
-    pub values: BTreeMap<Location, ConstValue>,
-    /// Edges proved executable.
+pub struct SccpResult<V> {
+    /// Lattice value computed for each renamed SSA value.
+    pub values: BTreeMap<SsaValue<V>, ConstValue>,
+    /// CFG edges proven executable.
     pub executable_edges: BTreeSet<(BlockId, BlockId)>,
-    /// Blocks proved reachable.
+    /// CFG blocks proven reachable.
     pub reachable_blocks: BTreeSet<BlockId>,
 }
 
-/// Run sparse conditional constant propagation.
-///
-/// Requires SSA form (phi map). Uses a two-worklist algorithm:
-/// - **CFG worklist**: edges to mark executable
-/// - **SSA worklist**: locations whose lattice value changed
-#[must_use]
-pub fn sccp<I: ConstantFolder>(cfg: &Cfg<I>, phis: &PhiMap) -> SccpResult {
-    let mut values: BTreeMap<Location, ConstValue> = BTreeMap::new();
-    let mut exec_edges: BTreeSet<(BlockId, BlockId)> = BTreeSet::new();
-    let mut reachable: BTreeSet<BlockId> = BTreeSet::new();
-    let mut cfg_worklist: Vec<(BlockId, BlockId)> = Vec::new();
-    let mut ssa_worklist: Vec<Location> = Vec::new();
-
-    // Seed: entry block is reachable.
-    reachable.insert(cfg.entry());
-    for &eid in cfg.successor_edges(cfg.entry()) {
-        let tgt = cfg.edge(eid).target();
-        cfg_worklist.push((cfg.entry(), tgt));
+fn update_value<V: VariableId>(
+    values: &mut BTreeMap<SsaValue<V>, ConstValue>,
+    worklist: &mut Vec<SsaValue<V>>,
+    value: &SsaValue<V>,
+    candidate: ConstValue,
+) {
+    let previous = values.get(value).copied().unwrap_or(ConstValue::Top);
+    let next = previous.meet(candidate);
+    if next != previous {
+        values.insert(value.clone(), next);
+        worklist.push(value.clone());
     }
+}
 
-    // Process entry block.
-    eval_block(cfg, cfg.entry(), &mut values, &mut ssa_worklist);
+fn evaluate_block<I: ConstantFolder>(
+    cfg: &Cfg<I>,
+    ssa: &SsaForm<I::Variable>,
+    block: BlockId,
+    values: &mut BTreeMap<SsaValue<I::Variable>, ConstValue>,
+    worklist: &mut Vec<SsaValue<I::Variable>>,
+) {
+    for (instruction, annotation) in cfg
+        .block(block)
+        .instructions()
+        .iter()
+        .zip(&ssa.block(block).instructions)
+    {
+        let known: BTreeMap<I::Variable, i64> = annotation
+            .uses
+            .iter()
+            .filter_map(|value| {
+                values
+                    .get(value)
+                    .copied()
+                    .and_then(ConstValue::as_const)
+                    .map(|constant| (value.variable.clone(), constant))
+            })
+            .collect();
 
-    let mut iteration = 0usize;
-    let max_iter = cfg.num_blocks().saturating_mul(20).max(200);
+        if let Some((variable, constant)) = instruction.fold_constant(&known) {
+            if let Some(definition) = annotation
+                .defs
+                .iter()
+                .find(|definition| definition.variable == variable)
+            {
+                update_value(values, worklist, definition, ConstValue::Const(constant));
+            }
+        } else {
+            for definition in &annotation.defs {
+                update_value(values, worklist, definition, ConstValue::Bottom);
+            }
+        }
+    }
+}
 
-    while (!cfg_worklist.is_empty() || !ssa_worklist.is_empty()) && iteration < max_iter {
-        iteration += 1;
+/// Run sparse conditional constant propagation over a renamed SSA form.
+///
+/// `ssa` must have been built from `cfg`. The current control-flow adapter
+/// exposes reachability but not branch predicates, so SCCP conservatively marks
+/// every successor of a reachable block executable.
+#[must_use]
+pub fn sccp<I: ConstantFolder>(
+    cfg: &Cfg<I>,
+    ssa: &SsaForm<I::Variable>,
+) -> SccpResult<I::Variable> {
+    let mut values = BTreeMap::new();
+    let mut executable_edges = BTreeSet::new();
+    let mut reachable_blocks = BTreeSet::new();
+    let mut cfg_worklist = Vec::new();
+    let mut ssa_worklist = Vec::new();
 
-        // Process CFG worklist.
-        while let Some((src, tgt)) = cfg_worklist.pop() {
-            if !exec_edges.insert((src, tgt)) {
+    reachable_blocks.insert(cfg.entry());
+    cfg_worklist.extend(
+        cfg.successors(cfg.entry())
+            .map(|target| (cfg.entry(), target)),
+    );
+    evaluate_block(cfg, ssa, cfg.entry(), &mut values, &mut ssa_worklist);
+
+    while !cfg_worklist.is_empty() || !ssa_worklist.is_empty() {
+        while let Some((source, target)) = cfg_worklist.pop() {
+            if !executable_edges.insert((source, target)) {
                 continue;
             }
-            let newly_reachable = reachable.insert(tgt);
 
-            // Evaluate phis at tgt.
-            for phi in phis.phis_at(tgt) {
-                let mut val = ConstValue::Top;
-                for &(pred, loc) in &phi.operands {
-                    if exec_edges.iter().any(|&(s, t)| s == pred && t == tgt) {
-                        let op_val = values.get(&loc).copied().unwrap_or(ConstValue::Top);
-                        val = val.meet(op_val);
+            let newly_reachable = reachable_blocks.insert(target);
+            for phi in &ssa.block(target).phis {
+                let mut candidate = ConstValue::Top;
+                for (predecessor, operand) in &phi.operands {
+                    if executable_edges.contains(&(*predecessor, target)) {
+                        candidate =
+                            candidate.meet(values.get(operand).copied().unwrap_or(ConstValue::Top));
                     }
                 }
-                let old = values
-                    .get(&phi.location)
-                    .copied()
-                    .unwrap_or(ConstValue::Top);
-                let new = old.meet(val);
-                if new != old {
-                    values.insert(phi.location, new);
-                    ssa_worklist.push(phi.location);
-                }
+                update_value(&mut values, &mut ssa_worklist, &phi.result, candidate);
             }
 
             if newly_reachable {
-                eval_block(cfg, tgt, &mut values, &mut ssa_worklist);
-                for &eid in cfg.successor_edges(tgt) {
-                    let next = cfg.edge(eid).target();
-                    cfg_worklist.push((tgt, next));
-                }
+                evaluate_block(cfg, ssa, target, &mut values, &mut ssa_worklist);
+                cfg_worklist.extend(cfg.successors(target).map(|next| (target, next)));
             }
         }
 
-        // Process SSA worklist: re-evaluate blocks that use changed locations.
-        while let Some(_loc) = ssa_worklist.pop() {
-            // In a full SSA implementation we'd walk the use-chain.
-            // Here we re-evaluate all reachable blocks (conservative).
-            for &bid in &reachable {
-                eval_block(cfg, bid, &mut values, &mut ssa_worklist);
+        while ssa_worklist.pop().is_some() {
+            for &block in &reachable_blocks {
+                evaluate_block(cfg, ssa, block, &mut values, &mut ssa_worklist);
             }
         }
     }
 
     SccpResult {
         values,
-        executable_edges: exec_edges,
-        reachable_blocks: reachable,
-    }
-}
-
-/// Evaluate all instructions in a block, updating the lattice.
-fn eval_block<I: ConstantFolder>(
-    cfg: &Cfg<I>,
-    bid: BlockId,
-    values: &mut BTreeMap<Location, ConstValue>,
-    worklist: &mut Vec<Location>,
-) {
-    // Build a map of known constants for the ConstantFolder trait.
-    let known: BTreeMap<Location, i64> = values
-        .iter()
-        .filter_map(|(&loc, &cv)| cv.as_const().map(|v| (loc, v)))
-        .collect();
-    for inst in cfg.block(bid).instructions() {
-        if let Some((loc, val)) = inst.fold_constant(&known) {
-            let old = values.get(&loc).copied().unwrap_or(ConstValue::Top);
-            let new = old.meet(ConstValue::Const(val));
-            if new != old {
-                values.insert(loc, new);
-                worklist.push(loc);
-            }
-        } else {
-            for &d in inst.defs() {
-                let old = values.get(&d).copied().unwrap_or(ConstValue::Top);
-                if old != ConstValue::Bottom {
-                    values.insert(d, ConstValue::Bottom);
-                    worklist.push(d);
-                }
-            }
-        }
+        executable_edges,
+        reachable_blocks,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cfg::Cfg;
-    use crate::dataflow::ssa::insert_phis;
+    use crate::dataflow::ssa::build_ssa;
     use crate::edge::EdgeKind;
     use crate::graph::dominator::DominatorTree;
-    use crate::test_util::{DfInst, df_def, df_use};
+    use crate::test_util::{DfInst, df_const, df_def, df_use};
 
-    #[test]
-    fn entry_reachable() {
-        let cfg: Cfg<DfInst> = Cfg::new();
-        let dom = DominatorTree::compute(&cfg);
-        let phis = insert_phis(&cfg, &dom);
-        let result = sccp(&cfg, &phis);
-        assert!(result.reachable_blocks.contains(&cfg.entry()));
+    fn analyse(cfg: &Cfg<DfInst>) -> SccpResult<u16> {
+        let dom = DominatorTree::compute(cfg);
+        let ssa = build_ssa(cfg, &dom);
+        sccp(cfg, &ssa)
     }
 
     #[test]
-    fn linear_cfg_all_reachable() {
-        let mut cfg: Cfg<DfInst> = Cfg::new();
-        let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(df_def("a", 0));
-        cfg.block_mut(b).instructions_vec_mut().push(df_use("b", 0));
-        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
-        let dom = DominatorTree::compute(&cfg);
-        let phis = insert_phis(&cfg, &dom);
-        let result = sccp(&cfg, &phis);
-        assert!(result.reachable_blocks.contains(&cfg.entry()));
-        assert!(result.reachable_blocks.contains(&b));
+    fn entry_is_reachable() {
+        let cfg = Cfg::<DfInst>::new();
+        assert!(analyse(&cfg).reachable_blocks.contains(&cfg.entry()));
     }
 
     #[test]
-    fn diamond_all_reachable() {
-        let mut cfg: Cfg<DfInst> = Cfg::new();
-        let a = cfg.new_block();
-        let b = cfg.new_block();
-        let merge = cfg.new_block();
-        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
-        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
-        cfg.add_edge(a, merge, EdgeKind::Fallthrough);
-        cfg.add_edge(b, merge, EdgeKind::Fallthrough);
-        cfg.block_mut(a).push(df_def("da", 0));
-        cfg.block_mut(b).push(df_def("db", 0));
-        cfg.block_mut(merge).push(df_use("use", 0));
-        let dom = DominatorTree::compute(&cfg);
-        let phis = insert_phis(&cfg, &dom);
-        let result = sccp(&cfg, &phis);
-        assert!(result.reachable_blocks.contains(&merge));
+    fn linear_cfg_is_reachable() {
+        let mut cfg = Cfg::<DfInst>::new();
+        let next = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(df_def("def", 0));
+        cfg.block_mut(next).push(df_use("use", 0));
+        cfg.add_edge(cfg.entry(), next, EdgeKind::Fallthrough);
+        assert!(analyse(&cfg).reachable_blocks.contains(&next));
     }
 
     #[test]
-    fn self_loop_reachable() {
-        let mut cfg: Cfg<DfInst> = Cfg::new();
-        cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
+    fn constants_are_keyed_by_ssa_value() {
+        let mut cfg = Cfg::<DfInst>::new();
+        cfg.block_mut(cfg.entry()).push(df_const("constant", 0, 42));
         let dom = DominatorTree::compute(&cfg);
-        let phis = insert_phis(&cfg, &dom);
-        let result = sccp(&cfg, &phis);
-        assert!(result.reachable_blocks.contains(&cfg.entry()));
+        let ssa = build_ssa(&cfg, &dom);
+        let definition = ssa.block(cfg.entry()).instructions[0].defs[0].clone();
+        let result = sccp(&cfg, &ssa);
+        assert_eq!(result.values[&definition], ConstValue::Const(42));
     }
 
     #[test]
-    fn unreachable_block_excluded() {
-        let mut cfg: Cfg<DfInst> = Cfg::new();
+    fn unreachable_block_is_excluded() {
+        let mut cfg = Cfg::<DfInst>::new();
         let reachable = cfg.new_block();
         let unreachable = cfg.new_block();
         cfg.add_edge(cfg.entry(), reachable, EdgeKind::Fallthrough);
-        // unreachable has no incoming edges from entry
-        let dom = DominatorTree::compute(&cfg);
-        let phis = insert_phis(&cfg, &dom);
-        let result = sccp(&cfg, &phis);
+        let result = analyse(&cfg);
         assert!(result.reachable_blocks.contains(&reachable));
         assert!(!result.reachable_blocks.contains(&unreachable));
     }

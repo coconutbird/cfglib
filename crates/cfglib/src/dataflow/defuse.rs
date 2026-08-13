@@ -30,12 +30,13 @@ impl DefUseChains {
     /// # Examples
     ///
     /// ```
-    /// # use cfglib::{Cfg, EdgeKind, Location, InstrInfo};
+    /// # use cfglib::{Cfg, EdgeKind, InstrInfo};
     /// # #[derive(Debug, Clone)]
-    /// # struct Inst { uses: Vec<Location>, defs: Vec<Location> }
+    /// # struct Inst { uses: Vec<u16>, defs: Vec<u16> }
     /// # impl InstrInfo for Inst {
-    /// #     fn uses(&self) -> &[Location] { &self.uses }
-    /// #     fn defs(&self) -> &[Location] { &self.defs }
+    /// #     type Variable = u16;
+    /// #     fn uses(&self) -> &[u16] { &self.uses }
+    /// #     fn defs(&self) -> &[u16] { &self.defs }
     /// # }
     /// use cfglib::dataflow::defuse::DefUseChains;
     ///
@@ -44,7 +45,7 @@ impl DefUseChains {
     /// let b1 = cfg.new_block();
     /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
     ///
-    /// let r0 = Location(0);
+    /// let r0 = 0;
     /// cfg.block_mut(b0).push(Inst { uses: vec![], defs: vec![r0] });
     /// cfg.block_mut(b1).push(Inst { uses: vec![r0], defs: vec![] });
     ///
@@ -65,7 +66,8 @@ impl DefUseChains {
 
             // Track the current reaching defs as we walk forward
             // through the block, so intra-block kills are respected.
-            let mut current_reaching: BTreeSet<ReachingDef> = reaching.reaching_in(block).clone();
+            let mut current_reaching: BTreeSet<ReachingDef<I::Variable>> =
+                reaching.reaching_in(block).clone();
 
             for (idx, inst) in insts.iter().enumerate() {
                 let use_site = UseSite {
@@ -73,12 +75,12 @@ impl DefUseChains {
                     inst_idx: idx,
                 };
 
-                // For each location this instruction uses, find all
-                // reaching defs of that location at this point.
-                for &loc in inst.uses() {
+                // For each variable this instruction uses, find all
+                // reaching defs of that variable at this point.
+                for variable in inst.uses() {
                     let suppliers: BTreeSet<DefSite> = current_reaching
                         .iter()
-                        .filter(|rd| rd.location == loc)
+                        .filter(|rd| &rd.variable == variable)
                         .map(|rd| rd.site)
                         .collect();
 
@@ -95,12 +97,12 @@ impl DefUseChains {
                         block,
                         inst_idx: idx,
                     };
-                    for loc in defs {
-                        current_reaching.retain(|rd| rd.location != *loc);
+                    for variable in defs {
+                        current_reaching.retain(|rd| &rd.variable != variable);
                     }
-                    for &loc in defs {
+                    for variable in defs {
                         current_reaching.insert(ReachingDef {
-                            location: loc,
+                            variable: variable.clone(),
                             site: def_site,
                         });
                     }

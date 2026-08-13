@@ -1,184 +1,160 @@
-//! Strongly Connected Components via Tarjan's algorithm.
+//! Strongly connected components for any [`DirectedGraphView`].
 //!
-//! Computes SCCs in a single DFS pass with O(V + E) complexity.
-//! The result is returned in reverse topological order (leaves first),
-//! which is the natural order for bottom-up analyses.
+//! The iterative Tarjan implementation runs in `O(V + E)` and does not consume
+//! the host call stack for deeply nested code graphs.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::block::BlockId;
-use crate::cfg::Cfg;
+use crate::graph::directed::{DenseNodeId, DirectedGraphView};
 
-/// A strongly connected component — a maximal set of mutually
-/// reachable blocks.
+/// A maximal set of mutually reachable nodes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Scc {
-    /// The blocks in this SCC.
-    pub blocks: BTreeSet<BlockId>,
+pub struct Scc<N> {
+    /// Nodes in this component.
+    pub nodes: BTreeSet<N>,
 }
 
-impl Scc {
-    /// Whether this SCC is trivial (single block, no self-loop).
+impl<N: Copy + Ord> Scc<N> {
+    /// Return whether this component contains one node.
     #[must_use]
-    pub fn is_trivial(&self) -> bool {
-        self.blocks.len() == 1
+    pub fn is_singleton(&self) -> bool {
+        self.nodes.len() == 1
     }
 
-    /// Whether the given block is in this SCC.
+    /// Return whether `node` belongs to this component.
     #[must_use]
-    pub fn contains(&self, block: BlockId) -> bool {
-        self.blocks.contains(&block)
+    pub fn contains(&self, node: N) -> bool {
+        self.nodes.contains(&node)
     }
 }
 
-/// Result of Tarjan's SCC computation.
+/// Result of strongly connected component decomposition.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SccResult {
-    /// SCCs in **reverse topological order** (leaves first).
-    pub sccs: Vec<Scc>,
-    /// Map from block index → SCC index in `sccs`.
-    scc_of: Vec<usize>,
+pub struct SccResult<N> {
+    /// Components in reverse topological order, with leaves first.
+    pub components: Vec<Scc<N>>,
+    component_of: Vec<usize>,
 }
 
-impl SccResult {
-    /// The SCC index for a given block.
+impl<N: DenseNodeId> SccResult<N> {
+    /// Return the component index containing `node`.
     #[must_use]
-    pub fn scc_index(&self, block: BlockId) -> usize {
-        self.scc_of[block.index()]
+    pub fn component_index(&self, node: N) -> usize {
+        self.component_of[node.index()]
     }
 
-    /// The SCC containing a given block.
+    /// Return the component containing `node`.
     #[must_use]
-    pub fn scc_for(&self, block: BlockId) -> &Scc {
-        &self.sccs[self.scc_of[block.index()]]
+    pub fn component(&self, node: N) -> &Scc<N> {
+        &self.components[self.component_index(node)]
     }
 
-    /// Number of SCCs.
+    /// Return the number of components.
     #[must_use]
-    pub fn num_sccs(&self) -> usize {
-        self.sccs.len()
+    pub fn len(&self) -> usize {
+        self.components.len()
     }
 
-    /// Whether the graph is a DAG (every SCC is trivial).
+    /// Return whether the decomposition contains no components.
     #[must_use]
-    pub fn is_dag<I>(&self, cfg: &Cfg<I>) -> bool {
-        self.sccs.iter().all(|scc| {
-            if scc.blocks.len() != 1 {
+    pub fn is_empty(&self) -> bool {
+        self.components.is_empty()
+    }
+
+    /// Return whether `graph` is acyclic.
+    #[must_use]
+    pub fn is_dag<G>(&self, graph: &G) -> bool
+    where
+        G: DirectedGraphView<NodeId = N>,
+    {
+        self.components.iter().all(|component| {
+            if !component.is_singleton() {
                 return false;
             }
-            // Check for self-loop.
-            let Some(&b) = scc.blocks.iter().next() else {
+            let Some(&node) = component.nodes.iter().next() else {
                 return false;
             };
-            !cfg.successors(b).any(|s| s == b)
+            !graph.successors(node).any(|successor| successor == node)
         })
     }
 }
 
-/// Compute strongly connected components using Tarjan's algorithm.
-///
-/// # Examples
-///
-/// ```
-/// use cfglib::{Cfg, EdgeKind, tarjan_scc};
-///
-/// let mut cfg = Cfg::<u32>::new();
-/// let b0 = cfg.entry();
-/// let b1 = cfg.new_block();
-/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
-/// cfg.add_edge(b1, b0, EdgeKind::Back);
-///
-/// let sccs = tarjan_scc(&cfg);
-/// // b0 and b1 form a non-trivial SCC (cycle).
-/// assert!(!sccs.scc_for(b0).is_trivial());
-/// assert!(sccs.scc_for(b0).contains(b1));
-/// ```
+/// Compute strongly connected components with Tarjan's algorithm.
 #[must_use]
-pub fn tarjan_scc<I>(cfg: &Cfg<I>) -> SccResult {
-    let n = cfg.num_blocks();
+pub fn tarjan_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
+    let node_count = graph.node_count();
+    let mut next_index = 0_usize;
+    let mut stack = Vec::new();
+    let mut on_stack = vec![false; node_count];
+    let mut indices = vec![usize::MAX; node_count];
+    let mut lowlinks = vec![0_usize; node_count];
+    let mut component_of = vec![0_usize; node_count];
+    let mut components = Vec::new();
 
-    let mut index_counter = 0usize;
-    let mut stack: Vec<BlockId> = Vec::new();
-    let mut on_stack = vec![false; n];
-    let mut indices = vec![usize::MAX; n];
-    let mut lowlinks = vec![0usize; n];
-    let mut scc_of = vec![0usize; n];
-    let mut sccs: Vec<Scc> = Vec::new();
-
-    // Iterative Tarjan's using an explicit call stack.
-    for block in cfg.blocks() {
-        let start = block.id();
+    for start in graph.node_ids() {
         if indices[start.index()] != usize::MAX {
             continue;
         }
 
-        // (node, successor_iterator_index, is_root_call)
-        let mut call_stack: Vec<(BlockId, Vec<BlockId>, usize)> = Vec::new();
-        // Push initial frame.
-        indices[start.index()] = index_counter;
-        lowlinks[start.index()] = index_counter;
-        index_counter += 1;
+        indices[start.index()] = next_index;
+        lowlinks[start.index()] = next_index;
+        next_index += 1;
         stack.push(start);
         on_stack[start.index()] = true;
-        let successors: Vec<BlockId> = cfg.successors(start).collect();
-        call_stack.push((start, successors, 0));
+        let mut calls = vec![(start, graph.successors(start).collect::<Vec<_>>(), 0_usize)];
 
-        while let Some((v, ref succs_list, si)) = call_stack.last().cloned() {
-            if si < succs_list.len() {
-                let w = succs_list[si];
-                // Advance iterator.
-                let Some(frame) = call_stack.last_mut() else {
+        while let Some((node, successors, successor_index)) = calls.last().cloned() {
+            if successor_index < successors.len() {
+                let successor = successors[successor_index];
+                let Some(frame) = calls.last_mut() else {
                     break;
                 };
-                frame.2 = si + 1;
+                frame.2 += 1;
 
-                if indices[w.index()] == usize::MAX {
-                    // Not yet visited — recurse.
-                    indices[w.index()] = index_counter;
-                    lowlinks[w.index()] = index_counter;
-                    index_counter += 1;
-                    stack.push(w);
-                    on_stack[w.index()] = true;
-                    let w_successors: Vec<BlockId> = cfg.successors(w).collect();
-                    call_stack.push((w, w_successors, 0));
-                } else if on_stack[w.index()] {
-                    let vl = lowlinks[v.index()];
-                    let wi = indices[w.index()];
-                    lowlinks[v.index()] = vl.min(wi);
+                if indices[successor.index()] == usize::MAX {
+                    indices[successor.index()] = next_index;
+                    lowlinks[successor.index()] = next_index;
+                    next_index += 1;
+                    stack.push(successor);
+                    on_stack[successor.index()] = true;
+                    calls.push((successor, graph.successors(successor).collect(), 0));
+                } else if on_stack[successor.index()] {
+                    lowlinks[node.index()] = lowlinks[node.index()].min(indices[successor.index()]);
                 }
-            } else {
-                // Done with v's successors.
-                if lowlinks[v.index()] == indices[v.index()] {
-                    // v is the root of an SCC.
-                    let mut scc_blocks = BTreeSet::new();
-                    while let Some(w) = stack.pop() {
-                        on_stack[w.index()] = false;
-                        scc_blocks.insert(w);
-                        if w == v {
-                            break;
-                        }
+                continue;
+            }
+
+            if lowlinks[node.index()] == indices[node.index()] {
+                let mut nodes = BTreeSet::new();
+                while let Some(member) = stack.pop() {
+                    on_stack[member.index()] = false;
+                    nodes.insert(member);
+                    if member == node {
+                        break;
                     }
-                    let scc_idx = sccs.len();
-                    for &b in &scc_blocks {
-                        scc_of[b.index()] = scc_idx;
-                    }
-                    sccs.push(Scc { blocks: scc_blocks });
                 }
-                call_stack.pop();
-                // Update parent's lowlink.
-                if let Some((parent, _, _)) = call_stack.last() {
-                    let pl = lowlinks[parent.index()];
-                    let vl = lowlinks[v.index()];
-                    lowlinks[parent.index()] = pl.min(vl);
+
+                let component_index = components.len();
+                for member in &nodes {
+                    component_of[member.index()] = component_index;
                 }
+                components.push(Scc { nodes });
+            }
+
+            calls.pop();
+            if let Some((parent, _, _)) = calls.last() {
+                lowlinks[parent.index()] = lowlinks[parent.index()].min(lowlinks[node.index()]);
             }
         }
     }
 
-    SccResult { sccs, scc_of }
+    SccResult {
+        components,
+        component_of,
+    }
 }
 
 #[cfg(test)]
@@ -186,51 +162,44 @@ mod tests {
     use super::*;
     use crate::cfg::Cfg;
     use crate::edge::EdgeKind;
+    use crate::graph::directed::DirectedGraph;
     use crate::test_util::ff;
 
     #[test]
-    fn linear_cfg_has_trivial_sccs() {
+    fn cfg_uses_generic_scc_algorithm() {
         let mut cfg = Cfg::new();
-        let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        let next = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(ff("entry"));
+        cfg.block_mut(next).push(ff("next"));
+        cfg.add_edge(cfg.entry(), next, EdgeKind::Fallthrough);
 
         let result = tarjan_scc(&cfg);
-        assert_eq!(result.num_sccs(), 2);
+        assert_eq!(result.len(), 2);
         assert!(result.is_dag(&cfg));
     }
 
     #[test]
-    fn self_loop_is_not_dag() {
-        let mut cfg = Cfg::new();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("loop"));
-        cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Jump);
+    fn directed_graph_cycle_forms_one_component() {
+        let mut graph = DirectedGraph::<&str, ()>::new();
+        let left = graph.add_node("left");
+        let right = graph.add_node("right");
+        graph.add_edge(left, right, ());
+        graph.add_edge(right, left, ());
 
-        let result = tarjan_scc(&cfg);
-        assert_eq!(result.num_sccs(), 1);
-        assert!(!result.is_dag(&cfg));
+        let result = tarjan_scc(&graph);
+        assert_eq!(result.len(), 1);
+        assert!(result.component(left).contains(right));
+        assert_eq!(result.component_index(left), result.component_index(right));
+        assert!(!result.is_dag(&graph));
     }
 
     #[test]
-    fn two_node_cycle() {
-        let mut cfg = Cfg::new();
-        let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
-        cfg.add_edge(b, cfg.entry(), EdgeKind::Jump);
-
-        let result = tarjan_scc(&cfg);
-        assert_eq!(result.num_sccs(), 1);
-        assert!(result.sccs[0].contains(cfg.entry()));
-        assert!(result.sccs[0].contains(b));
-        assert_eq!(result.scc_index(cfg.entry()), result.scc_index(b));
+    fn self_edge_is_not_a_dag() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let node = graph.add_node(());
+        graph.add_edge(node, node, ());
+        let result = tarjan_scc(&graph);
+        assert!(result.component(node).is_singleton());
+        assert!(!result.is_dag(&graph));
     }
 }

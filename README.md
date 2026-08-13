@@ -1,8 +1,8 @@
 # cfglib
 
-Generic, `no_std` control-flow graph library for binary analysis, decompilation, and compiler infrastructure.
+Generic, `no_std` graph and dataflow framework for code intelligence, program analysis, decompilation, and compiler infrastructure.
 
-`cfglib` provides an ISA-agnostic `Cfg<I>` parameterised over any instruction type `I` that implements a single trait — [`FlowControl`]. On top of that it ships a complete compiler-middle-end toolkit: dominator trees, SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph colouring, and structured AST recovery.
+`cfglib` provides an owned directed multigraph plus a view contract for consumer-owned graph stores. Its `Cfg<I>` layer adds control-flow semantics for instruction types that implement [`FlowControl`], while its dataflow layer is generic over each adapter's native variable identity. x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols therefore do not need to be flattened into a library-owned numbering scheme. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph colouring, and structured AST recovery.
 
 Everything is `no_std + alloc` and the core graph structure uses `SmallVec` adjacency lists with tombstone-based edge removal for cache-friendly, arena-stable IDs.
 
@@ -60,7 +60,26 @@ println!("{}", cfg.to_dot());
 
 ## Feature overview
 
-### Core graph (`Cfg<I>`)
+### Generic graph core
+
+`DirectedGraph<N, E>` is an owned directed multigraph with consumer-defined node and edge payloads, stable IDs, and forward/reverse adjacency. `DirectedGraphView` also lets existing graph stores use the algorithms without first migrating their storage. This layer is suitable for symbol/reference graphs, value-flow graphs, call graphs, type relations, import graphs, and grammar dependencies; it has no instruction or binary-analysis concepts.
+
+```rust
+use cfglib::{DirectedGraph, TraversalDirection, shortest_path};
+
+let mut graph = DirectedGraph::new();
+let source = graph.add_node("definition");
+let target = graph.add_node("call result");
+let edge = graph.add_edge(source, target, ("return", "src/lib.rs", 42));
+
+assert_eq!(graph[edge].payload().0, "return");
+assert_eq!(
+    shortest_path(&graph, source, target, TraversalDirection::Outgoing),
+    Some(vec![source, target]),
+);
+```
+
+### Control-flow graph (`Cfg<I>`)
 
 | Feature | Description |
 |---|---|
@@ -80,13 +99,15 @@ println!("{}", cfg.to_dot());
 
 | Algorithm | Function / Type | Description |
 |---|---|---|
-| DFS / BFS | `dfs_preorder`, `dfs_postorder`, `reverse_postorder`, `bfs` | Standard traversals |
+| DFS / BFS | `depth_first_preorder`, `breadth_first`, CFG convenience methods | Direction-selectable traversals over `DirectedGraphView` |
+| Shortest path | `shortest_path` | Forward or reverse unweighted witness path |
+| Topological sort | `topological_sort` | Stable ordering or cycle detection |
 | Visitor pattern | `walk_dfs`, `walk_bfs`, `CfgVisitor` trait | Callback-driven traversal |
-| Dominator tree | `DominatorTree::compute` | Cooper-Harvey-Kennedy iterative algorithm |
+| Dominator tree | `DominatorTree::compute_from`, `DominatorTree::compute` | Generic rooted graph or CFG convenience entry point |
 | Post-dominator tree | `DominatorTree::compute_post` | On the reverse CFG |
 | Dominance frontiers | `DominanceFrontiers::compute` | For SSA φ-placement |
 | Incremental dominators | `update_after_edge_insert`, `update_after_edge_remove` | Recompute + diff |
-| Strongly connected components | `tarjan_scc` → `SccResult` | Tarjan's algorithm, reverse-topological order |
+| Strongly connected components | `tarjan_scc` → `SccResult<N>` | Generic iterative Tarjan algorithm, reverse-topological order |
 | Back-edge detection | `find_back_edges` | Explicit `Back` edges + dominator-confirmed |
 | Natural loop detection | `detect_loops` → `Vec<NaturalLoop>` | Header, body, latches, nesting depth |
 | Loop nesting tree | `LoopNestingTree::build` | Parent/child loop hierarchy |
@@ -109,7 +130,8 @@ println!("{}", cfg.to_dot());
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
 | Liveness | `Liveness::compute` | Live-in / live-out at each block |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |
-| SSA construction | `insert_phis` | IDF-based φ-function placement |
+| SSA construction | `build_ssa`, `SsaForm<V>` | IDF phi placement plus full dominator-tree renaming |
+| Phi placement | `place_phis`, `PhiPlacements<V>` | Structural IDF phase for consumers that only need placement |
 | SSA deconstruction | `eliminate_phis`, `copies_by_predecessor` | φ-to-copy lowering |
 | Phi webs | `compute_phi_webs` | Congruence classes for register coalescing |
 | Constant propagation | `constant_propagation`, `ConstantFolder` trait | Top/Const/Bottom lattice |
@@ -164,15 +186,18 @@ println!("{}", cfg.to_dot());
 | Label/goto | Fallback for irreducible control flow |
 | Guarded blocks | Predicated execution (ARM IT, GPU wavefront) |
 
-## Trait hierarchy
+## Extension contracts
 
-The only **required** trait is `FlowControl`. Everything else is opt-in depending on which analyses you need:
+The generic graph has no consumer trait requirement when it owns the storage. Implement `DenseNodeId` and `DirectedGraphView` only when adapting an existing graph store. Instruction traits are opt-in according to which CFG and dataflow features an adapter needs:
 
 ```text
-FlowControl              (required — control-flow classification)
+DirectedGraph<N, E>       (owned arbitrary graph; no adapter trait)
+DirectedGraphView         (existing consumer-owned graph storage)
+
+FlowControl               (required only by CfgBuilder)
 ├── SwitchCandidate       (switch table recovery)
 │
-InstrInfo                 (optional — dataflow: defs/uses/effects)
+InstrInfo<Variable = V>   (optional — native IR variables, defs/uses/effects)
 ├── CopySource            (copy propagation)
 ├── ConstantFolder        (constant propagation, SCCP)
 ├── ExprInstr             (expression tree recovery)
@@ -185,17 +210,52 @@ InstrInfo                 (optional — dataflow: defs/uses/effects)
 
 | Crate | Description |
 |---|---|
-| **cfglib** | Core generic CFG library |
-| **cfglib-dxbc** | SM4/SM5 (DirectX) shader bytecode adapter |
+| **cfglib** | Generic graph, CFG, SSA, and dataflow framework |
+| **cfglib-dxbc** | SM4/SM5 CFG and component-granular SSA adapter over `dxbc` |
 
-## Writing an ISA adapter
+## Adapting a language, IR, or existing graph
 
-1. Create a new crate (e.g. `cfglib-spirv`).
-2. Implement `FlowControl` for your instruction type.
-3. Call `CfgBuilder::build()` with your instruction stream.
-4. Optionally implement `InstrInfo` (and its sub-traits) for dataflow analyses.
+For symbol, reference, value-flow, type-relation, import, or grammar graphs, store domain objects directly in `DirectedGraph<N, E>`. Projects that already own adjacency lists can instead implement `DirectedGraphView` for their store, then use traversal, shortest-path, topological-sort, SCC, and dominance algorithms without migrating their data. Dense `u32` and `usize` handles work directly; custom handles implement `DenseNodeId`.
 
-See `cfglib-dxbc` for a complete 138-line example.
+For a control-flow and SSA adapter:
+
+1. Implement `FlowControl` for the instruction or IR operation type.
+2. Call `CfgBuilder::build()` with its instruction stream, or populate a `Cfg` directly.
+3. Optionally implement `InstrInfo` with a native `Variable` identity (and its sub-traits) for dataflow analyses.
+
+The variable type only needs `Clone + Ord`. It can be an architecture enum such as `Register(Rax)` / `Flag(Zero)`, a shader structure such as `(register file, index, component)`, or an existing IR value handle. Adapters decide the atomic aliasing unit; for overlapping resources such as x86 subregisters, expose canonical units or every affected unit.
+
+```rust
+use cfglib::{Cfg, DominatorTree, InstrInfo, build_ssa};
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum X86Variable { Register(u8), Flag(u8), StackSlot(i32) }
+
+struct X86Instruction {
+    uses: Vec<X86Variable>,
+    defs: Vec<X86Variable>,
+}
+
+impl InstrInfo for X86Instruction {
+    type Variable = X86Variable;
+
+    fn uses(&self) -> &[Self::Variable] { &self.uses }
+    fn defs(&self) -> &[Self::Variable] { &self.defs }
+}
+
+let cfg = Cfg::<X86Instruction>::new();
+let dominators = DominatorTree::compute(&cfg);
+let ssa = build_ssa(&cfg, &dominators);
+```
+
+`SsaForm<V>` is a non-mutating view over the source CFG. It stores renamed phi results, operands, instruction uses, and instruction definitions as `SsaValue<V>`, while each `SsaInstruction` keeps a `ProgramPoint` back to the native instruction. Version `0` denotes a live-in or otherwise undefined incoming value.
+
+`cfglib-dxbc` is the concrete shader-bytecode adapter. It derives native
+register-component identities from decoded masks and swizzles, retains relative
+index expressions, classifies multi-result and UAV read-modify-write operations,
+and reports observable shader effects. Its `dxbc` dependency comes directly
+from the `d3dasm` Git repository; `Cargo.lock` records the exact upstream commit
+used by the test suite.
 
 ## License
 
