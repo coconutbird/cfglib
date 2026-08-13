@@ -17,4 +17,4 @@ pub mod scc;
 pub mod structure;
 pub mod traverse;
 pub mod verify;
-pub mod visitor;
+pub mod view;

@@ -25,7 +25,7 @@ use dxbc::shex::Program;
 mod instruction;
 
 pub use instruction::{
-    Sm4Component, Sm4Index, Sm4Instruction, Sm4Register, Sm4RegisterType, Sm4Variable,
+    Sm4Component, Sm4Effect, Sm4Index, Sm4Instruction, Sm4Register, Sm4RegisterType, Sm4Variable,
 };
 
 /// Build a control-flow graph from a decoded shader program.

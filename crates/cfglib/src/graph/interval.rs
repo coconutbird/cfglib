@@ -12,15 +12,15 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
-use crate::cfg::Cfg;
+use crate::graph::view::RootedGraphView;
 
-/// An interval in the derived graph.
+/// An interval in the derived graph, over node identity `N`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Interval {
-    /// The header block — sole entry point of the interval.
-    pub header: BlockId,
-    /// All blocks in the interval (including the header).
-    pub blocks: BTreeSet<BlockId>,
+pub struct Interval<N = BlockId> {
+    /// The header node — sole entry point of the interval.
+    pub header: N,
+    /// All nodes in the interval (including the header).
+    pub blocks: BTreeSet<N>,
 }
 
 /// Result of interval analysis: a sequence of derived graphs.
@@ -30,10 +30,10 @@ pub struct Interval {
 /// and so on. If the sequence reduces to a single interval at
 /// the top level, the CFG is reducible.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct IntervalAnalysis {
+pub struct IntervalAnalysis<N = BlockId> {
     /// Successive derived graphs, each containing intervals.
-    pub levels: Vec<Vec<Interval>>,
-    /// Whether the CFG reduced to a single node (reducible).
+    pub levels: Vec<Vec<Interval<N>>>,
+    /// Whether the graph reduced to a single node (reducible).
     pub is_reducible: bool,
 }
 
@@ -42,15 +42,15 @@ pub struct IntervalAnalysis {
 /// Allen & Cocke interval construction: starting from the entry,
 /// repeatedly absorb successor blocks whose only header-reaching
 /// predecessor is within the current interval.
-fn compute_intervals_from_graph(
-    entry: BlockId,
-    blocks: &BTreeSet<BlockId>,
-    succs: &BTreeMap<BlockId, BTreeSet<BlockId>>,
-    preds: &BTreeMap<BlockId, BTreeSet<BlockId>>,
-) -> Vec<Interval> {
+fn compute_intervals_from_graph<N: Copy + Ord>(
+    entry: N,
+    blocks: &BTreeSet<N>,
+    succs: &BTreeMap<N, BTreeSet<N>>,
+    preds: &BTreeMap<N, BTreeSet<N>>,
+) -> Vec<Interval<N>> {
     let mut intervals = Vec::new();
-    let mut assigned: BTreeSet<BlockId> = BTreeSet::new();
-    let mut headers: Vec<BlockId> = alloc::vec![entry];
+    let mut assigned: BTreeSet<N> = BTreeSet::new();
+    let mut headers: Vec<N> = alloc::vec![entry];
 
     while let Some(h) = headers.pop() {
         if assigned.contains(&h) || !blocks.contains(&h) {
@@ -98,18 +98,18 @@ fn compute_intervals_from_graph(
     intervals
 }
 
-/// Build adjacency maps from the CFG, restricted to `blocks`.
-fn build_adjacency<I>(
-    cfg: &Cfg<I>,
-    blocks: &BTreeSet<BlockId>,
-) -> (
-    BTreeMap<BlockId, BTreeSet<BlockId>>,
-    BTreeMap<BlockId, BTreeSet<BlockId>>,
-) {
-    let mut succs: BTreeMap<BlockId, BTreeSet<BlockId>> = BTreeMap::new();
-    let mut preds: BTreeMap<BlockId, BTreeSet<BlockId>> = BTreeMap::new();
+/// Forward and reverse adjacency, restricted to a node subset.
+type AdjacencyMaps<N> = (BTreeMap<N, BTreeSet<N>>, BTreeMap<N, BTreeSet<N>>);
+
+/// Build adjacency maps from the graph view, restricted to `blocks`.
+fn build_adjacency<G: RootedGraphView>(
+    graph: &G,
+    blocks: &BTreeSet<G::NodeId>,
+) -> AdjacencyMaps<G::NodeId> {
+    let mut succs: BTreeMap<G::NodeId, BTreeSet<G::NodeId>> = BTreeMap::new();
+    let mut preds: BTreeMap<G::NodeId, BTreeSet<G::NodeId>> = BTreeMap::new();
     for &b in blocks {
-        for s in cfg.successors(b) {
+        for s in graph.successors(b) {
             if blocks.contains(&s) {
                 succs.entry(b).or_default().insert(s);
                 preds.entry(s).or_default().insert(b);
@@ -119,7 +119,7 @@ fn build_adjacency<I>(
     (succs, preds)
 }
 
-/// Perform interval analysis on the CFG.
+/// Perform interval analysis on a rooted graph view.
 ///
 /// Iteratively computes derived graphs until either a single interval
 /// remains (reducible) or no further reduction is possible (irreducible).
@@ -137,16 +137,12 @@ fn build_adjacency<I>(
 /// assert!(result.is_reducible);
 /// ```
 #[must_use]
-pub fn interval_analysis<I>(cfg: &Cfg<I>) -> IntervalAnalysis {
-    let all_blocks: BTreeSet<BlockId> = cfg
-        .blocks()
-        .iter()
-        .map(super::super::block::BasicBlock::id)
-        .collect();
-    let (succs, preds) = build_adjacency(cfg, &all_blocks);
+pub fn interval_analysis<G: RootedGraphView>(graph: &G) -> IntervalAnalysis<G::NodeId> {
+    let all_blocks: BTreeSet<G::NodeId> = graph.node_ids().collect();
+    let (succs, preds) = build_adjacency(graph, &all_blocks);
     let mut levels = Vec::new();
 
-    let intervals = compute_intervals_from_graph(cfg.entry(), &all_blocks, &succs, &preds);
+    let intervals = compute_intervals_from_graph(graph.root(), &all_blocks, &succs, &preds);
     let num_intervals = intervals.len();
     levels.push(intervals);
 

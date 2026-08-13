@@ -2,11 +2,12 @@
 //!
 //! A **forward** dataflow analysis that tracks which IR variables hold
 //! known constant values. Uses a simple three-level lattice per
-//! variable: `Top` (unknown/uninitialized) → `Const(i64)` → `Bottom`
+//! variable: `Top` (unknown/uninitialized) → `Const(C)` → `Bottom`
 //! (overdefined / multiple conflicting values).
 //!
-//! This serves as a proof-of-concept for the generic `Problem` trait
-//! and can be extended with IR-specific constant folding.
+//! The constant domain `C` is consumer-typed via
+//! [`ConstantFolder::Const`] — a machine word for a binary adapter, a
+//! literal enum (int/float/string/bool) for a source language.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
@@ -16,18 +17,18 @@ use super::fixpoint::{self, Direction, FixpointResult, Problem};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 
-/// The lattice value for a single variable.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ConstValue {
+/// The lattice value for a single variable, over constant domain `C`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum ConstValue<C> {
     /// Not yet analyzed (top of lattice).
     Top,
     /// Known constant.
-    Const(i64),
+    Const(C),
     /// Overdefined — seen different values on different paths.
     Bottom,
 }
 
-impl ConstValue {
+impl<C: Clone + Eq> ConstValue<C> {
     /// Meet (join) two lattice values.
     ///
     /// - Top ⊓ x = x
@@ -46,13 +47,13 @@ impl ConstValue {
 
     /// Whether this is a known constant.
     #[must_use]
-    pub fn is_const(self) -> bool {
+    pub fn is_const(&self) -> bool {
         matches!(self, ConstValue::Const(_))
     }
 
-    /// Extract the constant value, if any.
+    /// Borrow the constant value, if any.
     #[must_use]
-    pub fn as_const(self) -> Option<i64> {
+    pub fn as_const(&self) -> Option<&C> {
         match self {
             ConstValue::Const(v) => Some(v),
             _ => None,
@@ -66,6 +67,11 @@ impl ConstValue {
 /// to tell the analysis what constant, if any, an instruction
 /// produces given known-constant inputs.
 pub trait ConstantFolder: InstrInfo {
+    /// Consumer constant domain: a machine word, float bits, or a
+    /// source-literal enum. `Eq` rather than `Ord` so float-bits wrappers
+    /// qualify.
+    type Const: Clone + Eq;
+
     /// If this instruction produces a constant for a defined variable
     /// given the current known constants, return `Some((loc, value))`.
     ///
@@ -74,18 +80,20 @@ pub trait ConstantFolder: InstrInfo {
     ///
     /// Return `None` to leave the default behavior (mark all defs as
     /// Bottom).
-    fn fold_constant(&self, known: &BTreeMap<Self::Variable, i64>)
-    -> Option<(Self::Variable, i64)>;
+    fn fold_constant(
+        &self,
+        known: &BTreeMap<Self::Variable, Self::Const>,
+    ) -> Option<(Self::Variable, Self::Const)>;
 }
 
 /// The constant propagation problem.
 pub struct ConstPropProblem;
 
 /// The flow fact: a map from variable to lattice value.
-pub type ConstFact<V> = BTreeMap<V, ConstValue>;
+pub type ConstFact<V, C> = BTreeMap<V, ConstValue<C>>;
 
 impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
-    type Fact = ConstFact<I::Variable>;
+    type Fact = ConstFact<I::Variable, I::Const>;
 
     fn direction(&self) -> Direction {
         Direction::Forward
@@ -101,9 +109,9 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
 
     fn meet(&self, a: &Self::Fact, b: &Self::Fact) -> Self::Fact {
         let mut result = a.clone();
-        for (variable, &value) in b {
+        for (variable, value) in b {
             let entry = result.entry(variable.clone()).or_insert(ConstValue::Top);
-            *entry = entry.meet(value);
+            *entry = entry.clone().meet(value.clone());
         }
         result
     }
@@ -113,12 +121,12 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
 
         for inst in cfg.block(block).instructions() {
             // Build known-constants map for the folder.
-            let known: BTreeMap<I::Variable, i64> = state
+            let known: BTreeMap<I::Variable, I::Const> = state
                 .iter()
-                .filter_map(|(variable, &value)| {
+                .filter_map(|(variable, value)| {
                     value
                         .as_const()
-                        .map(|constant| (variable.clone(), constant))
+                        .map(|constant| (variable.clone(), constant.clone()))
                 })
                 .collect();
 
@@ -141,7 +149,7 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
 #[must_use]
 pub fn constant_propagation<I: ConstantFolder>(
     cfg: &Cfg<I>,
-) -> FixpointResult<ConstFact<I::Variable>> {
+) -> FixpointResult<ConstFact<I::Variable, I::Const>> {
     fixpoint::solve(cfg, &ConstPropProblem)
 }
 
@@ -190,17 +198,20 @@ mod tests {
             ConstValue::Const(5).meet(ConstValue::Bottom),
             ConstValue::Bottom
         );
-        assert_eq!(ConstValue::Bottom.meet(ConstValue::Top), ConstValue::Bottom);
+        assert_eq!(
+            ConstValue::<i64>::Bottom.meet(ConstValue::Top),
+            ConstValue::Bottom
+        );
     }
 
     #[test]
     fn is_const_and_as_const() {
         assert!(ConstValue::Const(1).is_const());
-        assert_eq!(ConstValue::Const(1).as_const(), Some(1));
-        assert!(!ConstValue::Top.is_const());
-        assert_eq!(ConstValue::Top.as_const(), None);
-        assert!(!ConstValue::Bottom.is_const());
-        assert_eq!(ConstValue::Bottom.as_const(), None);
+        assert_eq!(ConstValue::Const(1).as_const(), Some(&1));
+        assert!(!ConstValue::<i64>::Top.is_const());
+        assert_eq!(ConstValue::<i64>::Top.as_const(), None);
+        assert!(!ConstValue::<i64>::Bottom.is_const());
+        assert_eq!(ConstValue::<i64>::Bottom.as_const(), None);
     }
 
     #[test]

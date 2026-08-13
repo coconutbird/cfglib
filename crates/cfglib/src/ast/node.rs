@@ -66,6 +66,8 @@ pub enum AstNode<I> {
 
     /// Return / terminate.
     Return {
+        /// The block this came from in the CFG.
+        id: BlockId,
         /// Instructions in the return block (includes the return itself).
         instructions: Vec<I>,
     },
@@ -96,10 +98,14 @@ pub enum AstNode<I> {
     },
 
     /// A predicated/guarded region — executes only when a condition
-    /// register is set (ARM IT blocks, GPU wave predication, CMOV).
+    /// holds (ARM IT blocks, GPU wave predication, CMOV).
     Guarded {
-        /// Human-readable predicate description (e.g. "p0", "!`cc_z`").
-        predicate: alloc::string::String,
+        /// A witness instruction carrying the guard; its
+        /// [`Predicated::predicate`](crate::Predicated::predicate) names the
+        /// condition variable, and its rendering labels the region.
+        predicate: I,
+        /// Whether the body executes when the predicate is *true*.
+        when_true: bool,
         /// The guarded body.
         body: Vec<AstNode<I>>,
     },
@@ -195,8 +201,13 @@ impl<I> AstNode<I> {
                     .collect(),
                 finally_body: finally_body.into_iter().map(AstNode::simplify).collect(),
             },
-            AstNode::Guarded { predicate, body } => AstNode::Guarded {
+            AstNode::Guarded {
                 predicate,
+                when_true,
+                body,
+            } => AstNode::Guarded {
+                predicate,
+                when_true,
                 body: body.into_iter().map(AstNode::simplify).collect(),
             },
             other => other,
@@ -207,9 +218,9 @@ impl<I> AstNode<I> {
 use alloc::string::String;
 use core::fmt;
 
-use crate::flow::FlowControl;
+use crate::display::DisplayInstr;
 
-impl<I: FlowControl> AstNode<I> {
+impl<I: DisplayInstr> AstNode<I> {
     /// Render this AST as indented pseudocode.
     #[must_use]
     pub fn to_pseudocode(&self) -> String {
@@ -225,9 +236,9 @@ fn write_indent(out: &mut String, depth: usize) {
     }
 }
 
-fn write_insts<I: FlowControl>(out: &mut String, insts: &[I], depth: usize) {
+fn write_insts<I: DisplayInstr>(out: &mut String, insts: &[I], depth: usize) {
     for inst in insts {
-        let m = inst.display_mnemonic();
+        let m = inst.mnemonic();
         if !m.is_empty() {
             write_indent(out, depth);
             out.push_str(&m);
@@ -236,13 +247,13 @@ fn write_insts<I: FlowControl>(out: &mut String, insts: &[I], depth: usize) {
     }
 }
 
-fn write_nodes<I: FlowControl>(out: &mut String, nodes: &[AstNode<I>], depth: usize) {
+fn write_nodes<I: DisplayInstr>(out: &mut String, nodes: &[AstNode<I>], depth: usize) {
     for node in nodes {
         write_node(out, node, depth);
     }
 }
 
-fn write_if_then_else<I: FlowControl>(
+fn write_if_then_else<I: DisplayInstr>(
     out: &mut String,
     condition_instructions: &[I],
     then_body: &[AstNode<I>],
@@ -268,7 +279,7 @@ fn write_if_then_else<I: FlowControl>(
     out.push_str("}\n");
 }
 
-fn write_switch<I: FlowControl>(
+fn write_switch<I: DisplayInstr>(
     out: &mut String,
     condition_instructions: &[I],
     cases: &[SwitchCase<I>],
@@ -295,7 +306,7 @@ fn write_switch<I: FlowControl>(
     out.push_str("}\n");
 }
 
-fn write_try_catch<I: FlowControl>(
+fn write_try_catch<I: DisplayInstr>(
     out: &mut String,
     try_body: &[AstNode<I>],
     handlers: &[CatchHandler<I>],
@@ -319,9 +330,9 @@ fn write_try_catch<I: FlowControl>(
     out.push_str("}\n");
 }
 
-fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize) {
+fn write_node<I: DisplayInstr>(out: &mut String, node: &AstNode<I>, depth: usize) {
     match node {
-        AstNode::Block { instructions, .. } | AstNode::Return { instructions } => {
+        AstNode::Block { instructions, .. } | AstNode::Return { instructions, .. } => {
             write_insts(out, instructions, depth);
         }
         AstNode::Sequence { body } => {
@@ -370,10 +381,17 @@ fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize)
             handlers,
             finally_body,
         } => write_try_catch(out, try_body, handlers, finally_body, depth),
-        AstNode::Guarded { predicate, body } => {
+        AstNode::Guarded {
+            predicate,
+            when_true,
+            body,
+        } => {
             write_indent(out, depth);
             out.push_str("@guarded(");
-            out.push_str(predicate);
+            if !when_true {
+                out.push('!');
+            }
+            out.push_str(&predicate.mnemonic());
             out.push_str(") {\n");
             write_nodes(out, body, depth + 1);
             write_indent(out, depth);
@@ -382,7 +400,7 @@ fn write_node<I: FlowControl>(out: &mut String, node: &AstNode<I>, depth: usize)
     }
 }
 
-impl<I: FlowControl> fmt::Display for AstNode<I> {
+impl<I: DisplayInstr> fmt::Display for AstNode<I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(&self.to_pseudocode())
     }

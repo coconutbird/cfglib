@@ -15,23 +15,23 @@ use crate::dataflow::ssa::{SsaForm, SsaValue};
 
 /// Result of SCCP analysis.
 #[derive(Debug, Clone)]
-pub struct SccpResult<V> {
+pub struct SccpResult<V, C> {
     /// Lattice value computed for each renamed SSA value.
-    pub values: BTreeMap<SsaValue<V>, ConstValue>,
+    pub values: BTreeMap<SsaValue<V>, ConstValue<C>>,
     /// CFG edges proven executable.
     pub executable_edges: BTreeSet<(BlockId, BlockId)>,
     /// CFG blocks proven reachable.
     pub reachable_blocks: BTreeSet<BlockId>,
 }
 
-fn update_value<V: VariableId>(
-    values: &mut BTreeMap<SsaValue<V>, ConstValue>,
+fn update_value<V: VariableId, C: Clone + Eq>(
+    values: &mut BTreeMap<SsaValue<V>, ConstValue<C>>,
     worklist: &mut Vec<SsaValue<V>>,
     value: &SsaValue<V>,
-    candidate: ConstValue,
+    candidate: ConstValue<C>,
 ) {
-    let previous = values.get(value).copied().unwrap_or(ConstValue::Top);
-    let next = previous.meet(candidate);
+    let previous = values.get(value).cloned().unwrap_or(ConstValue::Top);
+    let next = previous.clone().meet(candidate);
     if next != previous {
         values.insert(value.clone(), next);
         worklist.push(value.clone());
@@ -42,7 +42,7 @@ fn evaluate_block<I: ConstantFolder>(
     cfg: &Cfg<I>,
     ssa: &SsaForm<I::Variable>,
     block: BlockId,
-    values: &mut BTreeMap<SsaValue<I::Variable>, ConstValue>,
+    values: &mut BTreeMap<SsaValue<I::Variable>, ConstValue<I::Const>>,
     worklist: &mut Vec<SsaValue<I::Variable>>,
 ) {
     for (instruction, annotation) in cfg
@@ -51,15 +51,14 @@ fn evaluate_block<I: ConstantFolder>(
         .iter()
         .zip(&ssa.block(block).instructions)
     {
-        let known: BTreeMap<I::Variable, i64> = annotation
+        let known: BTreeMap<I::Variable, I::Const> = annotation
             .uses
             .iter()
             .filter_map(|value| {
                 values
                     .get(value)
-                    .copied()
                     .and_then(ConstValue::as_const)
-                    .map(|constant| (value.variable.clone(), constant))
+                    .map(|constant| (value.variable.clone(), constant.clone()))
             })
             .collect();
 
@@ -88,7 +87,7 @@ fn evaluate_block<I: ConstantFolder>(
 pub fn sccp<I: ConstantFolder>(
     cfg: &Cfg<I>,
     ssa: &SsaForm<I::Variable>,
-) -> SccpResult<I::Variable> {
+) -> SccpResult<I::Variable, I::Const> {
     let mut values = BTreeMap::new();
     let mut executable_edges = BTreeSet::new();
     let mut reachable_blocks = BTreeSet::new();
@@ -114,7 +113,7 @@ pub fn sccp<I: ConstantFolder>(
                 for (predecessor, operand) in &phi.operands {
                     if executable_edges.contains(&(*predecessor, target)) {
                         candidate =
-                            candidate.meet(values.get(operand).copied().unwrap_or(ConstValue::Top));
+                            candidate.meet(values.get(operand).cloned().unwrap_or(ConstValue::Top));
                     }
                 }
                 update_value(&mut values, &mut ssa_worklist, &phi.result, candidate);
@@ -148,7 +147,7 @@ mod tests {
     use crate::graph::dominator::DominatorTree;
     use crate::test_util::{DfInst, df_const, df_def, df_use};
 
-    fn analyse(cfg: &Cfg<DfInst>) -> SccpResult<u16> {
+    fn analyse(cfg: &Cfg<DfInst>) -> SccpResult<u16, i64> {
         let dom = DominatorTree::compute(cfg);
         let ssa = build_ssa(cfg, &dom);
         sccp(cfg, &ssa)

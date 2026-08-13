@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::graph::directed::{DenseNodeId, DirectedGraphView};
+use crate::graph::view::{DenseNodeId, DirectedGraphView};
 
 /// Direction in which a graph traversal follows edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

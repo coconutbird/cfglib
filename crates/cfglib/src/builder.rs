@@ -2,13 +2,14 @@
 //! using a scope-stack approach for structured control flow.
 
 extern crate alloc;
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::edge::EdgeKind;
-use crate::flow::{FlowControl, FlowEffect};
+use crate::flow::{FlowControl, FlowEffect, JumpTargets};
 
 /// Error returned when the instruction stream contains mismatched or
 /// unexpected structured control-flow markers.
@@ -441,7 +442,6 @@ impl CfgBuilder {
     /// # Examples
     ///
     /// ```
-    /// use std::borrow::Cow;
     /// use cfglib::{CfgBuilder, FlowControl, FlowEffect};
     ///
     /// #[derive(Debug, Clone)]
@@ -449,7 +449,6 @@ impl CfgBuilder {
     ///
     /// impl FlowControl for Inst {
     ///     fn flow_effect(&self) -> FlowEffect { self.0 }
-    ///     fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed("inst") }
     /// }
     ///
     /// let cfg = CfgBuilder::build(vec![
@@ -490,11 +489,207 @@ impl CfgBuilder {
     }
 }
 
+/// Outcome of [`resolve_jump_edges`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JumpResolution<T> {
+    /// Number of jump edges wired.
+    pub resolved: usize,
+    /// Jumps whose target token matched no label, as `(source block, target)`.
+    pub unresolved: Vec<(BlockId, T)>,
+}
+
+/// Wire the edges described by explicit jump targets after
+/// [`CfgBuilder::build`].
+///
+/// [`CfgBuilder::build`] ends a block at a [`FlowEffect::Jump`] /
+/// [`FlowEffect::ConditionalJump`] instruction but cannot know where the jump
+/// lands. This pass maps every block-leading [`FlowEffect::Label`]
+/// instruction's [`JumpTargets::label`] token to its block, then adds an
+/// [`EdgeKind::Jump`] edge for each unconditional jump and an
+/// [`EdgeKind::ConditionalTrue`] edge for each conditional jump's taken path.
+///
+/// The pass is idempotent: an edge that already exists with the same
+/// endpoints and kind is not duplicated, so re-running it is safe.
+pub fn resolve_jump_edges<I: JumpTargets>(cfg: &mut Cfg<I>) -> JumpResolution<I::Target> {
+    let mut labels: BTreeMap<I::Target, BlockId> = BTreeMap::new();
+    for block in cfg.blocks() {
+        if let Some(first) = block.instructions().first()
+            && first.flow_effect() == FlowEffect::Label
+            && let Some(token) = first.label()
+        {
+            labels.insert(token, block.id());
+        }
+    }
+
+    let mut pending: Vec<(BlockId, BlockId, EdgeKind)> = Vec::new();
+    let mut resolution = JumpResolution {
+        resolved: 0,
+        unresolved: Vec::new(),
+    };
+    for block in cfg.blocks() {
+        let Some(last) = block.instructions().last() else {
+            continue;
+        };
+        let kind = match last.flow_effect() {
+            FlowEffect::Jump => EdgeKind::Jump,
+            FlowEffect::ConditionalJump => EdgeKind::ConditionalTrue,
+            _ => continue,
+        };
+        let Some(token) = last.jump_target() else {
+            continue;
+        };
+        if let Some(&target) = labels.get(&token) {
+            pending.push((block.id(), target, kind));
+        } else {
+            resolution.unresolved.push((block.id(), token));
+        }
+    }
+
+    for (source, target, kind) in pending {
+        let already_wired = cfg
+            .successor_edges(source)
+            .iter()
+            .any(|&edge| cfg.edge(edge).target() == target && cfg.edge(edge).kind() == kind);
+        if !already_wired {
+            cfg.add_edge(source, target, kind);
+            resolution.resolved += 1;
+        }
+    }
+    resolution
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_util::{MockInst, ff};
     use alloc::vec;
+
+    #[derive(Debug, Clone)]
+    struct GotoInst {
+        effect: FlowEffect,
+        target: Option<&'static str>,
+        label: Option<&'static str>,
+    }
+
+    fn gi(effect: FlowEffect) -> GotoInst {
+        GotoInst {
+            effect,
+            target: None,
+            label: None,
+        }
+    }
+
+    fn goto(target: &'static str) -> GotoInst {
+        GotoInst {
+            effect: FlowEffect::Jump,
+            target: Some(target),
+            label: None,
+        }
+    }
+
+    fn label(name: &'static str) -> GotoInst {
+        GotoInst {
+            effect: FlowEffect::Label,
+            target: None,
+            label: Some(name),
+        }
+    }
+
+    impl FlowControl for GotoInst {
+        fn flow_effect(&self) -> FlowEffect {
+            self.effect
+        }
+    }
+
+    impl JumpTargets for GotoInst {
+        type Target = &'static str;
+
+        fn jump_target(&self) -> Option<&'static str> {
+            self.target
+        }
+
+        fn label(&self) -> Option<&'static str> {
+            self.label
+        }
+    }
+
+    #[test]
+    fn resolve_wires_forward_goto() {
+        let mut cfg = CfgBuilder::build(vec![
+            gi(FlowEffect::Fallthrough),
+            goto("exit"),
+            gi(FlowEffect::Fallthrough), // dead code between jump and label
+            label("exit"),
+            gi(FlowEffect::Return),
+        ])
+        .unwrap();
+
+        let resolution = resolve_jump_edges(&mut cfg);
+        assert_eq!(resolution.resolved, 1);
+        assert!(resolution.unresolved.is_empty());
+        let jump_edge = cfg
+            .edges()
+            .find(|edge| edge.kind() == EdgeKind::Jump)
+            .expect("goto edge wired");
+        assert_eq!(jump_edge.source(), cfg.entry());
+        let target_block = cfg.block(jump_edge.target());
+        assert_eq!(target_block.instructions()[0].label, Some("exit"));
+    }
+
+    #[test]
+    fn resolve_wires_backward_goto_and_conditional_taken_edge() {
+        let mut cfg = CfgBuilder::build(vec![
+            label("head"),
+            gi(FlowEffect::Fallthrough),
+            GotoInst {
+                effect: FlowEffect::ConditionalJump,
+                target: Some("head"),
+                label: None,
+            },
+            gi(FlowEffect::Return),
+        ])
+        .unwrap();
+
+        let resolution = resolve_jump_edges(&mut cfg);
+        assert_eq!(resolution.resolved, 1);
+        let taken = cfg
+            .edges()
+            .find(|edge| edge.kind() == EdgeKind::ConditionalTrue)
+            .expect("taken edge wired");
+        assert_eq!(
+            cfg.block(taken.target()).instructions()[0].label,
+            Some("head")
+        );
+        // The builder's fallthrough continuation edge is still present.
+        assert!(
+            cfg.edges()
+                .any(|edge| edge.kind() == EdgeKind::ConditionalFalse)
+        );
+    }
+
+    #[test]
+    fn resolve_reports_unresolved_and_is_idempotent() {
+        let mut cfg = CfgBuilder::build(vec![
+            gi(FlowEffect::Fallthrough),
+            goto("nowhere"),
+            label("here"),
+            GotoInst {
+                effect: FlowEffect::Jump,
+                target: Some("here"),
+                label: None,
+            },
+        ])
+        .unwrap();
+
+        let first = resolve_jump_edges(&mut cfg);
+        assert_eq!(first.resolved, 1);
+        assert_eq!(first.unresolved.len(), 1);
+        assert_eq!(first.unresolved[0].1, "nowhere");
+
+        let second = resolve_jump_edges(&mut cfg);
+        assert_eq!(second.resolved, 0, "already-wired edges are not duplicated");
+        assert_eq!(second.unresolved.len(), 1);
+    }
 
     #[test]
     fn linear_block() {

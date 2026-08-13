@@ -1,16 +1,16 @@
 //! Tail call detection.
 //!
-//! Identifies blocks that end with a call immediately followed by a
-//! return (or where the call edge's [`CallSite`](crate::edge::CallSite) is already marked
-//! `is_tail_call`). These are candidates for tail call optimization.
+//! Identifies blocks that end with a call immediately followed by a return
+//! (heuristic, via [`FlowControl`]), or whose call instructions are already
+//! marked as tail calls (explicit, via [`CallInfo`]). These are candidates
+//! for tail call optimization.
 
 extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::edge::EdgeKind;
-use crate::flow::{FlowControl, FlowEffect};
+use crate::flow::{CallInfo, FlowControl, FlowEffect};
 
 /// A detected tail call site.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -19,20 +19,16 @@ pub struct TailCall {
     pub block: BlockId,
     /// Index of the call instruction within the block (if identifiable).
     pub inst_idx: Option<usize>,
-    /// Whether this was explicitly marked via
-    /// [`CallSite::is_tail_call`](crate::edge::CallSite::is_tail_call).
+    /// Whether this was explicitly marked via [`CallInfo::is_tail_call`].
     pub explicit: bool,
 }
 
-/// Detect potential tail calls in a CFG.
+/// Detect potential tail calls heuristically.
 ///
-/// A block is considered a tail call candidate if:
-/// 1. It has a `Call` or `IndirectCall` outgoing edge whose `CallSite`
-///    has `is_tail_call == true`, OR
-/// 2. Its only successor is an exit block (return) and the block's
-///    last instruction is a call.
-///
-/// Returns all detected tail call sites.
+/// A block is a candidate when its only successor is an exit block (return)
+/// and its last instruction is a call. For instructions that carry explicit
+/// tail-call markers, use [`detect_explicit_tail_calls`] instead (or in
+/// addition).
 #[must_use]
 pub fn detect_tail_calls<I: FlowControl>(cfg: &Cfg<I>) -> Vec<TailCall> {
     let mut results = Vec::new();
@@ -40,68 +36,66 @@ pub fn detect_tail_calls<I: FlowControl>(cfg: &Cfg<I>) -> Vec<TailCall> {
 
     for block in cfg.blocks() {
         let bid = block.id();
-
-        // Check 1: explicit tail call markers on edges.
-        for &eid in cfg.successor_edges(bid) {
-            let edge = cfg.edge(eid);
-            if matches!(edge.kind(), EdgeKind::Call | EdgeKind::IndirectCall)
-                && let Some(cs) = edge.call_site()
-                && cs.is_tail_call
-            {
-                results.push(TailCall {
-                    block: bid,
-                    inst_idx: None,
-                    explicit: true,
-                });
-            }
-        }
-
-        // Check 2: heuristic — block calls then immediately returns.
         let succs: Vec<BlockId> = cfg.successors(bid).collect();
-        if succs.len() == 1 && exit_blocks.contains(&succs[0]) {
-            // Check if last instruction is a call.
-            if let Some(last) = block.instructions().last() {
-                let effect = last.flow_effect();
-                if matches!(effect, FlowEffect::Call | FlowEffect::ConditionalCall) {
-                    // Check not already found via explicit marker.
-                    if !results.iter().any(|tc| tc.block == bid) {
-                        let idx = block.instructions().len().saturating_sub(1);
-                        results.push(TailCall {
-                            block: bid,
-                            inst_idx: Some(idx),
-                            explicit: false,
-                        });
-                    }
-                }
-            }
+        if succs.len() == 1
+            && exit_blocks.contains(&succs[0])
+            && let Some(last) = block.instructions().last()
+            && matches!(
+                last.flow_effect(),
+                FlowEffect::Call | FlowEffect::ConditionalCall
+            )
+        {
+            let idx = block.instructions().len().saturating_sub(1);
+            results.push(TailCall {
+                block: bid,
+                inst_idx: Some(idx),
+                explicit: false,
+            });
         }
     }
 
     results
 }
 
+/// Detect call instructions explicitly marked as tail calls.
+///
+/// Scans every instruction for [`CallInfo::is_tail_call`]. Instructions with
+/// no callee are still reported when marked — an indirect tail call has no
+/// resolved target but is a tail call nonetheless.
+#[must_use]
+pub fn detect_explicit_tail_calls<I: CallInfo>(cfg: &Cfg<I>) -> Vec<TailCall> {
+    let mut results = Vec::new();
+    for block in cfg.blocks() {
+        for (idx, instruction) in block.instructions().iter().enumerate() {
+            if instruction.is_tail_call() {
+                results.push(TailCall {
+                    block: block.id(),
+                    inst_idx: Some(idx),
+                    explicit: true,
+                });
+            }
+        }
+    }
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::edge::CallSite;
-    use crate::test_util::ff;
+    use crate::edge::EdgeKind;
+    use crate::test_util::{df_call, ff};
 
     #[test]
     fn explicit_tail_call_detected() {
         let mut cfg = Cfg::new();
-        let target = cfg.new_block();
         cfg.block_mut(cfg.entry())
             .instructions_vec_mut()
-            .push(ff("call"));
+            .push(df_call("call", "foo", true));
 
-        let eid = cfg.add_edge(cfg.entry(), target, EdgeKind::Call);
-        let mut cs = CallSite::named("foo");
-        cs.is_tail_call = true;
-        cfg.edge_mut(eid).set_call_site(Some(cs));
-
-        let tails = detect_tail_calls(&cfg);
+        let tails = detect_explicit_tail_calls(&cfg);
         assert_eq!(tails.len(), 1);
         assert!(tails[0].explicit);
+        assert_eq!(tails[0].inst_idx, Some(0));
     }
 
     #[test]

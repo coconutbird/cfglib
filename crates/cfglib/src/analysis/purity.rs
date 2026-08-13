@@ -4,42 +4,28 @@
 //! side effects) or **impure** based on the instruction-level side
 //! effect declarations.
 //!
-//! An instruction type implements [`Effect`]-based side-effect declarations to declare whether
-//! it touches memory, I/O, or other global state beyond its explicit
-//! def/use set.
+//! An instruction type declares its side effects through
+//! [`EffectInfo`] in its own effect vocabulary — machine memory/IO for a
+//! binary adapter, allocation/panics/channel sends for a source language.
 
 extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dataflow::InstrInfo;
+use crate::dataflow::EffectInfo;
 
-/// Categories of side effects an instruction may have.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum Effect {
-    /// Reads from memory / global state.
-    MemoryRead,
-    /// Writes to memory / global state.
-    MemoryWrite,
-    /// Performs I/O (texture sample, UAV write, etc.).
-    Io,
-    /// Calls an external / unknown function.
-    Call,
-    /// Any other unclassified side effect.
-    Other,
-}
-
-/// Purity verdict for a block or CFG.
+/// Purity verdict for a block or CFG, over a consumer effect vocabulary `E`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Purity {
+pub enum Purity<E> {
     /// No side effects at all.
     Pure,
-    /// Has side effects — carries the set of observed effect kinds.
-    Impure(Vec<Effect>),
+    /// Has side effects — carries the sorted, deduplicated set of observed
+    /// effect kinds.
+    Impure(Vec<E>),
 }
 
-impl Purity {
+impl<E> Purity<E> {
     /// Returns `true` if pure.
     #[must_use]
     pub fn is_pure(&self) -> bool {
@@ -53,13 +39,7 @@ impl Purity {
     }
 }
 
-/// Analyse purity of a single block.
-#[must_use]
-pub fn block_purity<I: InstrInfo>(cfg: &Cfg<I>, block: BlockId) -> Purity {
-    let mut all = Vec::new();
-    for inst in cfg.block(block).instructions() {
-        all.extend_from_slice(inst.effects());
-    }
+fn collect_effects<E: Clone + Ord>(mut all: Vec<E>) -> Purity<E> {
     if all.is_empty() {
         Purity::Pure
     } else {
@@ -69,27 +49,31 @@ pub fn block_purity<I: InstrInfo>(cfg: &Cfg<I>, block: BlockId) -> Purity {
     }
 }
 
+/// Analyse purity of a single block.
+#[must_use]
+pub fn block_purity<I: EffectInfo>(cfg: &Cfg<I>, block: BlockId) -> Purity<I::Effect> {
+    let mut all = Vec::new();
+    for inst in cfg.block(block).instructions() {
+        all.extend_from_slice(inst.effects());
+    }
+    collect_effects(all)
+}
+
 /// Analyse purity of the entire CFG.
 #[must_use]
-pub fn cfg_purity<I: InstrInfo>(cfg: &Cfg<I>) -> Purity {
+pub fn cfg_purity<I: EffectInfo>(cfg: &Cfg<I>) -> Purity<I::Effect> {
     let mut all = Vec::new();
     for b in cfg.blocks() {
         for inst in b.instructions() {
             all.extend_from_slice(inst.effects());
         }
     }
-    if all.is_empty() {
-        Purity::Pure
-    } else {
-        all.sort();
-        all.dedup();
-        Purity::Impure(all)
-    }
+    collect_effects(all)
 }
 
 /// Collect per-block purity for every block in the CFG.
 #[must_use]
-pub fn all_block_purities<I: InstrInfo>(cfg: &Cfg<I>) -> Vec<(BlockId, Purity)> {
+pub fn all_block_purities<I: EffectInfo>(cfg: &Cfg<I>) -> Vec<(BlockId, Purity<I::Effect>)> {
     cfg.blocks()
         .iter()
         .map(|b| (b.id(), block_purity(cfg, b.id())))
@@ -101,7 +85,7 @@ mod tests {
     use super::*;
     use crate::builder::CfgBuilder;
     use crate::flow::FlowEffect;
-    use crate::test_util::{df_impure as impure, df_pure as pure, df_with_effect};
+    use crate::test_util::{TestEffect, df_impure as impure, df_pure as pure, df_with_effect};
     use alloc::vec;
 
     #[test]
@@ -112,12 +96,15 @@ mod tests {
 
     #[test]
     fn impure_cfg() {
-        let cfg =
-            CfgBuilder::build(vec![pure("add"), impure("store", Effect::MemoryWrite)]).unwrap();
+        let cfg = CfgBuilder::build(vec![
+            impure("load", TestEffect::MemoryRead),
+            impure("store", TestEffect::MemoryWrite),
+        ])
+        .unwrap();
         let p = cfg_purity(&cfg);
         assert!(p.is_impure());
         if let Purity::Impure(effs) = p {
-            assert!(effs.contains(&Effect::MemoryWrite));
+            assert_eq!(effs, vec![TestEffect::MemoryRead, TestEffect::MemoryWrite]);
         }
     }
 
@@ -126,7 +113,7 @@ mod tests {
         let cfg = CfgBuilder::build(vec![
             pure("add"),
             df_with_effect(pure("if"), FlowEffect::ConditionalOpen),
-            impure("store", Effect::MemoryWrite),
+            impure("store", TestEffect::MemoryWrite),
             df_with_effect(pure("else"), FlowEffect::ConditionalAlternate),
             pure("nop"),
             df_with_effect(pure("endif"), FlowEffect::ConditionalClose),

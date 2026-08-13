@@ -9,13 +9,10 @@
 extern crate alloc;
 use alloc::vec::Vec;
 use core::ops::Index;
-use core::slice;
 
 use smallvec::SmallVec;
 
-use crate::block::BlockId;
-use crate::cfg::Cfg;
-use crate::edge::EdgeId;
+use crate::graph::view::{DenseNodeId, DirectedGraphView};
 
 /// Dense identity of a node in a [`DirectedGraph`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -23,7 +20,13 @@ use crate::edge::EdgeId;
 pub struct NodeId(u32);
 
 impl NodeId {
-    fn from_index(index: usize) -> Self {
+    /// Construct an identity from a dense zero-based index.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `index` exceeds `u32::MAX`.
+    #[must_use]
+    pub fn from_index(index: usize) -> Self {
         Self(u32::try_from(index).expect("node index exceeds u32::MAX"))
     }
 
@@ -46,20 +49,6 @@ impl core::fmt::Display for NodeId {
     }
 }
 
-/// A copyable, ordered node identity backed by a dense zero-based index.
-///
-/// Implementations of [`DirectedGraphView`] must yield every index in
-/// `0..node_count()` exactly once. This contract lets graph algorithms use
-/// compact vectors instead of imposing hashing on consumer identities. Dense
-/// `u32` and `usize` handles implement this trait directly.
-pub trait DenseNodeId: Copy + Ord {
-    /// Construct an identity from a valid dense zero-based index.
-    fn from_index(index: usize) -> Self;
-
-    /// Return the identity's dense zero-based index.
-    fn index(self) -> usize;
-}
-
 impl DenseNodeId for NodeId {
     fn from_index(index: usize) -> Self {
         Self::from_index(index)
@@ -70,55 +59,37 @@ impl DenseNodeId for NodeId {
     }
 }
 
-impl DenseNodeId for BlockId {
-    fn from_index(index: usize) -> Self {
-        Self::from_index(index)
-    }
-
-    fn index(self) -> usize {
-        self.index()
-    }
-}
-
-impl DenseNodeId for usize {
-    fn from_index(index: usize) -> Self {
-        index
-    }
-
-    fn index(self) -> usize {
-        self
-    }
-}
-
-impl DenseNodeId for u32 {
-    fn from_index(index: usize) -> Self {
-        Self::try_from(index).expect("node index exceeds u32::MAX")
-    }
-
-    fn index(self) -> usize {
-        usize::try_from(self).expect("u32 node index exceeds usize::MAX")
-    }
-}
-
-/// Read-only directed adjacency consumed by generic graph algorithms.
+/// Opaque identifier for an edge within a graph arena.
 ///
-/// A view may be backed by [`DirectedGraph`], [`Cfg`], or a consumer-owned
-/// structure. Node identities must follow the [`DenseNodeId`] contract.
-pub trait DirectedGraphView {
-    /// Node identity used by this view.
-    type NodeId: DenseNodeId;
+/// Shared by [`DirectedGraph`] and [`Cfg`](crate::Cfg): both arenas mint
+/// dense edge identities that stay stable across tombstoned removals.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EdgeId(pub(crate) u32);
 
-    /// Return the number of nodes in the view.
-    fn node_count(&self) -> usize;
+impl EdgeId {
+    pub(crate) fn from_index(index: usize) -> Self {
+        Self(u32::try_from(index).expect("edge index exceeds u32::MAX"))
+    }
 
-    /// Iterate over every node identity exactly once.
-    fn node_ids(&self) -> impl Iterator<Item = Self::NodeId> + '_;
+    /// Construct an identity from its raw integer representation.
+    #[must_use]
+    pub const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
 
-    /// Iterate over the outgoing neighbors of `node`.
-    fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_;
+    /// Returns the raw index.
+    #[inline]
+    #[must_use]
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
 
-    /// Iterate over the incoming neighbors of `node`.
-    fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_;
+impl core::fmt::Display for EdgeId {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "e{}", self.0)
+    }
 }
 
 /// A directed edge carrying a consumer-defined payload.
@@ -334,20 +305,18 @@ impl<N, E> DirectedGraph<N, E> {
 
     /// Iterate over outgoing neighbor identities, retaining parallel entries.
     #[must_use]
-    pub fn successors(&self, node: NodeId) -> GraphSuccessors<'_, N, E> {
-        GraphSuccessors {
-            graph: self,
-            edges: self.outgoing[node.index()].iter(),
-        }
+    pub fn successors(&self, node: NodeId) -> impl ExactSizeIterator<Item = NodeId> + '_ {
+        self.outgoing[node.index()]
+            .iter()
+            .map(|edge| self.edge(*edge).target)
     }
 
     /// Iterate over incoming neighbor identities, retaining parallel entries.
     #[must_use]
-    pub fn predecessors(&self, node: NodeId) -> GraphPredecessors<'_, N, E> {
-        GraphPredecessors {
-            graph: self,
-            edges: self.incoming[node.index()].iter(),
-        }
+    pub fn predecessors(&self, node: NodeId) -> impl ExactSizeIterator<Item = NodeId> + '_ {
+        self.incoming[node.index()]
+            .iter()
+            .map(|edge| self.edge(*edge).source)
     }
 
     /// Remove an edge while preserving every other identity.
@@ -372,36 +341,12 @@ impl<N, E> DirectedGraphView for DirectedGraph<N, E> {
         self.node_count()
     }
 
-    fn node_ids(&self) -> impl Iterator<Item = Self::NodeId> + '_ {
-        self.node_ids()
-    }
-
     fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
         self.successors(node)
     }
 
     fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
         self.predecessors(node)
-    }
-}
-
-impl<I> DirectedGraphView for Cfg<I> {
-    type NodeId = BlockId;
-
-    fn node_count(&self) -> usize {
-        self.num_blocks()
-    }
-
-    fn node_ids(&self) -> impl Iterator<Item = Self::NodeId> + '_ {
-        self.blocks().iter().map(crate::block::BasicBlock::id)
-    }
-
-    fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
-        Cfg::successors(self, node)
-    }
-
-    fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
-        Cfg::predecessors(self, node)
     }
 }
 
@@ -420,46 +365,6 @@ impl<N, E> Index<EdgeId> for DirectedGraph<N, E> {
         self.edge(edge)
     }
 }
-
-/// Iterator over outgoing neighbor identities.
-pub struct GraphSuccessors<'a, N, E> {
-    graph: &'a DirectedGraph<N, E>,
-    edges: slice::Iter<'a, EdgeId>,
-}
-
-impl<N, E> Iterator for GraphSuccessors<'_, N, E> {
-    type Item = NodeId;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.edges.next().map(|edge| self.graph.edge(*edge).target)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.edges.size_hint()
-    }
-}
-
-impl<N, E> ExactSizeIterator for GraphSuccessors<'_, N, E> {}
-
-/// Iterator over incoming neighbor identities.
-pub struct GraphPredecessors<'a, N, E> {
-    graph: &'a DirectedGraph<N, E>,
-    edges: slice::Iter<'a, EdgeId>,
-}
-
-impl<N, E> Iterator for GraphPredecessors<'_, N, E> {
-    type Item = NodeId;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.edges.next().map(|edge| self.graph.edge(*edge).source)
-    }
-
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        self.edges.size_hint()
-    }
-}
-
-impl<N, E> ExactSizeIterator for GraphPredecessors<'_, N, E> {}
 
 #[cfg(test)]
 mod tests {

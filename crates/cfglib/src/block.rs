@@ -39,22 +39,22 @@ impl core::fmt::Display for BlockId {
     }
 }
 
-/// A predication guard on a basic block.
-///
-/// Represents blocks whose execution is predicated on a condition
-/// register/flag rather than a branch (ARM IT blocks, GPU wave
-/// predication, x86 CMOV sequences, etc.).
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Guard {
-    /// Predicate register or condition name (ISA-specific).
-    pub predicate: String,
-    /// Whether the block executes when the predicate is *true*
-    /// (`false` means the block executes when the predicate is false).
-    pub when_true: bool,
+impl crate::graph::view::DenseNodeId for BlockId {
+    fn from_index(index: usize) -> Self {
+        Self::from_index(index)
+    }
+
+    fn index(self) -> usize {
+        self.index()
+    }
 }
 
 /// A basic block containing a linear sequence of instructions.
+///
+/// Predication (ARM IT blocks, GPU wave predication, CMOV sequences) is not
+/// block state: instructions declare their guards through
+/// [`Predicated`](crate::Predicated), and
+/// [`lift_predicated`](crate::lift_predicated) regionises them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BasicBlock<I> {
@@ -64,9 +64,6 @@ pub struct BasicBlock<I> {
     pub(crate) instructions: Vec<I>,
     /// Optional human-readable label (e.g. from a `label` instruction).
     pub(crate) label: Option<String>,
-    /// Optional predication guard — the block only executes when this
-    /// condition is satisfied. `None` for unconditionally executed blocks.
-    pub(crate) guard: Option<Guard>,
 }
 
 impl<I> BasicBlock<I> {
@@ -124,25 +121,5 @@ impl<I> BasicBlock<I> {
     #[inline]
     pub fn instructions_vec_mut(&mut self) -> &mut Vec<I> {
         &mut self.instructions
-    }
-
-    /// The predication guard, if any.
-    #[inline]
-    #[must_use]
-    pub fn guard(&self) -> Option<&Guard> {
-        self.guard.as_ref()
-    }
-
-    /// Set a predication guard on this block.
-    #[inline]
-    pub fn set_guard(&mut self, guard: Option<Guard>) {
-        self.guard = guard;
-    }
-
-    /// Returns `true` if this block is predicated (guarded).
-    #[inline]
-    #[must_use]
-    pub fn is_guarded(&self) -> bool {
-        self.guard.is_some()
     }
 }

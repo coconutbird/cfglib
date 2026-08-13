@@ -3,8 +3,29 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
-use cfglib::{Effect, FlowControl, FlowEffect, InstrInfo};
+use cfglib::{FlowControl, FlowEffect, InstrInfo};
 use dxbc::shex::{ComponentSelect, Instruction, Opcode, Operand, OperandIndex, RegisterType};
+
+/// SM4/SM5 side-effect vocabulary reported through [`cfglib::EffectInfo`].
+///
+/// Shader-native categories: resource loads/stores, exports observable
+/// outside the invocation (render targets, streams, `discard`), subroutine
+/// calls, and synchronisation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Sm4Effect {
+    /// Reads a resource (texture sample, typed/raw/structured load).
+    ResourceRead,
+    /// Writes a resource (UAV store, atomic).
+    ResourceWrite,
+    /// Observable output: render-target/stream export, emit/cut, discard.
+    Export,
+    /// Calls a subroutine or interface method.
+    Call,
+    /// Synchronisation barrier.
+    Sync,
+    /// Unclassified effect (abort, debug break, unknown opcode).
+    Unknown,
+}
 
 /// Stable, ordered representation of an SM4/SM5 register type.
 ///
@@ -211,7 +232,7 @@ pub struct Sm4Instruction {
     instruction: Instruction,
     uses: Vec<Sm4Variable>,
     defs: Vec<Sm4Variable>,
-    effects: Vec<Effect>,
+    effects: Vec<Sm4Effect>,
 }
 
 impl Sm4Instruction {
@@ -279,8 +300,10 @@ impl FlowControl for Sm4Instruction {
             _ => FlowEffect::Fallthrough,
         }
     }
+}
 
-    fn display_mnemonic(&self) -> alloc::borrow::Cow<'_, str> {
+impl cfglib::DisplayInstr for Sm4Instruction {
+    fn mnemonic(&self) -> alloc::borrow::Cow<'_, str> {
         alloc::borrow::Cow::Borrowed(self.instruction.opcode.name())
     }
 }
@@ -295,9 +318,34 @@ impl InstrInfo for Sm4Instruction {
     fn defs(&self) -> &[Self::Variable] {
         &self.defs
     }
+}
 
-    fn effects(&self) -> &[Effect] {
+impl cfglib::EffectInfo for Sm4Instruction {
+    type Effect = Sm4Effect;
+
+    fn effects(&self) -> &[Sm4Effect] {
         &self.effects
+    }
+}
+
+impl cfglib::CallInfo for Sm4Instruction {
+    type Callee = u32;
+
+    fn callee(&self) -> Option<u32> {
+        if !matches!(
+            self.instruction.opcode,
+            Opcode::Call | Opcode::Callc | Opcode::InterfaceCall
+        ) {
+            return None;
+        }
+        self.instruction
+            .operands()
+            .iter()
+            .find(|operand| operand.reg_type == RegisterType::Label)
+            .and_then(|operand| match operand.indices.first() {
+                Some(&OperandIndex::Imm32(value)) => Some(value),
+                _ => None,
+            })
     }
 }
 
@@ -544,11 +592,11 @@ fn push_unique<T: PartialEq>(values: &mut Vec<T>, value: T) {
     }
 }
 
-fn analyze_effects(instruction: &Instruction, defs: &[Sm4Variable]) -> Vec<Effect> {
+fn analyze_effects(instruction: &Instruction, defs: &[Sm4Variable]) -> Vec<Sm4Effect> {
     let mut effects = Vec::new();
     match instruction.opcode {
         Opcode::Call | Opcode::Callc | Opcode::InterfaceCall => {
-            push_unique(&mut effects, Effect::Call);
+            push_unique(&mut effects, Sm4Effect::Call);
         }
         Opcode::Ld
         | Opcode::LdMs
@@ -584,9 +632,9 @@ fn analyze_effects(instruction: &Instruction, defs: &[Sm4Variable]) -> Vec<Effec
         | Opcode::SampleClampFeedback
         | Opcode::SampleBClampFeedback
         | Opcode::SampleDClampFeedback
-        | Opcode::SampleCClampFeedback => push_unique(&mut effects, Effect::MemoryRead),
+        | Opcode::SampleCClampFeedback => push_unique(&mut effects, Sm4Effect::ResourceRead),
         Opcode::StoreUavTyped | Opcode::StoreRaw | Opcode::StoreStructured => {
-            push_unique(&mut effects, Effect::MemoryWrite);
+            push_unique(&mut effects, Sm4Effect::ResourceWrite);
         }
         Opcode::AtomicAnd
         | Opcode::AtomicOr
@@ -609,8 +657,8 @@ fn analyze_effects(instruction: &Instruction, defs: &[Sm4Variable]) -> Vec<Effec
         | Opcode::ImmAtomicIMin
         | Opcode::ImmAtomicUMax
         | Opcode::ImmAtomicUMin => {
-            push_unique(&mut effects, Effect::MemoryRead);
-            push_unique(&mut effects, Effect::MemoryWrite);
+            push_unique(&mut effects, Sm4Effect::ResourceRead);
+            push_unique(&mut effects, Sm4Effect::ResourceWrite);
         }
         Opcode::Discard
         | Opcode::Cut
@@ -618,9 +666,10 @@ fn analyze_effects(instruction: &Instruction, defs: &[Sm4Variable]) -> Vec<Effec
         | Opcode::EmitThenCut
         | Opcode::EmitStream
         | Opcode::CutStream
-        | Opcode::EmitThenCutStream => push_unique(&mut effects, Effect::Io),
-        Opcode::Sync | Opcode::Abort | Opcode::DebugBreak | Opcode::Unknown(_) => {
-            push_unique(&mut effects, Effect::Other);
+        | Opcode::EmitThenCutStream => push_unique(&mut effects, Sm4Effect::Export),
+        Opcode::Sync => push_unique(&mut effects, Sm4Effect::Sync),
+        Opcode::Abort | Opcode::DebugBreak | Opcode::Unknown(_) => {
+            push_unique(&mut effects, Sm4Effect::Unknown);
         }
         _ => {}
     }
@@ -629,7 +678,7 @@ fn analyze_effects(instruction: &Instruction, defs: &[Sm4Variable]) -> Vec<Effec
         .iter()
         .any(|variable| variable.register.register_type.is_observable_output())
     {
-        push_unique(&mut effects, Effect::Io);
+        push_unique(&mut effects, Sm4Effect::Export);
     }
 
     effects

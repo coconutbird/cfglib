@@ -1,16 +1,15 @@
 //! Re-linearization — serialize a CFG back to a flat instruction stream.
 //!
 //! The [`linearize`] function sorts blocks according to a chosen
-//! [`BlockOrder`], then emits labels, instructions, and explicit
-//! jumps/branches so that the resulting instruction sequence is
+//! [`BlockOrder`], then emits block-start markers, instructions, and
+//! explicit jumps/branches so that the resulting instruction sequence is
 //! semantically equivalent to the graph.
 //!
-//! Because cfglib is ISA-agnostic, the caller must provide an
-//! [`Emitter`] that knows how to create jump/branch/label
-//! instructions for the target ISA.
+//! Because cfglib is target-agnostic, the caller must provide an
+//! [`Emitter`] that knows how to create jump/branch/marker instructions
+//! for the target form.
 
 extern crate alloc;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
@@ -39,35 +38,27 @@ pub struct LinearInst<I> {
     pub index: usize,
 }
 
-/// IR or language adapter for emitting jump, branch, and label instructions.
+/// IR or language adapter for emitting jump, branch, and block-start
+/// instructions.
 ///
-/// cfglib does not know how to create consumer instructions or operations, so
-/// the frontend must implement this trait.
+/// cfglib does not know how to create consumer instructions, so the frontend
+/// implements this trait. Targets are [`BlockId`]s — the emitter derives its
+/// own naming (assembly labels, source constructs, nothing at all); padding
+/// and alignment are applied by the consumer to the returned stream.
 pub trait Emitter<I> {
-    /// Emit an unconditional jump to the given label.
-    fn emit_jump(&self, target: &str) -> I;
+    /// Emit an unconditional branch to `target`.
+    fn emit_jump(&self, target: BlockId) -> I;
 
-    /// Emit a conditional branch to the given label.
+    /// Emit a conditional branch to `target`.
     ///
     /// `condition` is the last instruction of the source block (the
     /// terminating branch instruction). The emitter can inspect it to
     /// determine the condition encoding.
-    fn emit_conditional_branch(&self, condition: &I, target: &str) -> I;
+    fn emit_conditional_branch(&self, condition: &I, target: BlockId) -> I;
 
-    /// Emit a label pseudo-instruction.
-    fn emit_label(&self, label: &str) -> I;
-
-    /// Emit a no-op (optional — used for alignment).
-    fn emit_nop(&self) -> Option<I> {
-        None
-    }
-}
-
-/// Produce a label name for a block.
-fn block_label<I>(cfg: &Cfg<I>, id: BlockId) -> String {
-    cfg.block(id)
-        .label()
-        .map_or_else(|| alloc::format!(".bb{}", id.0), String::from)
+    /// Emit a marker naming `block`, or `None` when the target form needs
+    /// no explicit labels (source code, structured IRs).
+    fn emit_block_start(&self, block: BlockId) -> Option<I>;
 }
 
 /// Linearize a CFG into a flat instruction stream.
@@ -75,7 +66,8 @@ fn block_label<I>(cfg: &Cfg<I>, id: BlockId) -> String {
 /// Blocks are laid out in the specified [`BlockOrder`]. For each
 /// block the function:
 ///
-/// 1. Emits a label instruction (via [`Emitter::emit_label`]).
+/// 1. Emits a block-start marker (via [`Emitter::emit_block_start`]),
+///    when the emitter produces one.
 /// 2. Emits the block's instructions in order.
 /// 3. If the block's layout successor is not its fallthrough target,
 ///    emits an explicit jump or branch.
@@ -100,14 +92,15 @@ pub fn linearize<I: Clone>(
 
     for (pos, &id) in sorted.iter().enumerate() {
         let block = cfg.block(id);
-        let label = block_label(cfg, id);
 
-        // 1. Label.
-        out.push(LinearInst {
-            inst: emitter.emit_label(&label),
-            block: id,
-            index: usize::MAX,
-        });
+        // 1. Optional block-start marker.
+        if let Some(marker) = emitter.emit_block_start(id) {
+            out.push(LinearInst {
+                inst: marker,
+                block: id,
+                index: usize::MAX,
+            });
+        }
 
         // 2. Block instructions.
         for (idx, inst) in block.instructions().iter().enumerate() {
@@ -172,13 +165,12 @@ fn emit_tail_jump<I: Clone>(
     let last_inst = cfg.block(id).instructions().last();
 
     for edge in &branches {
-        let label = block_label(cfg, edge.target());
         match edge.kind() {
             // Conditional edges → emit a conditional branch.
             EdgeKind::ConditionalTrue => {
                 if let Some(cond) = last_inst {
                     out.push(LinearInst {
-                        inst: emitter.emit_conditional_branch(cond, &label),
+                        inst: emitter.emit_conditional_branch(cond, edge.target()),
                         block: id,
                         index: usize::MAX,
                     });
@@ -188,7 +180,7 @@ fn emit_tail_jump<I: Clone>(
             // → emit an unconditional jump.
             _ => {
                 out.push(LinearInst {
-                    inst: emitter.emit_jump(&label),
+                    inst: emitter.emit_jump(edge.target()),
                     block: id,
                     index: usize::MAX,
                 });
@@ -201,9 +193,8 @@ fn emit_tail_jump<I: Clone>(
     if let Some(ft) = fallthrough
         && next_in_layout != Some(ft.target())
     {
-        let label = block_label(cfg, ft.target());
         out.push(LinearInst {
-            inst: emitter.emit_jump(&label),
+            inst: emitter.emit_jump(ft.target()),
             block: id,
             index: usize::MAX,
         });
@@ -222,14 +213,14 @@ mod tests {
     struct TestEmitter;
 
     impl Emitter<MockInst> for TestEmitter {
-        fn emit_jump(&self, _target: &str) -> MockInst {
+        fn emit_jump(&self, _target: BlockId) -> MockInst {
             MockInst(crate::flow::FlowEffect::Fallthrough, "jump")
         }
-        fn emit_conditional_branch(&self, _cond: &MockInst, _target: &str) -> MockInst {
+        fn emit_conditional_branch(&self, _cond: &MockInst, _target: BlockId) -> MockInst {
             MockInst(crate::flow::FlowEffect::Fallthrough, "branch")
         }
-        fn emit_label(&self, _label: &str) -> MockInst {
-            MockInst(crate::flow::FlowEffect::Fallthrough, "label")
+        fn emit_block_start(&self, _block: BlockId) -> Option<MockInst> {
+            Some(MockInst(crate::flow::FlowEffect::Fallthrough, "label"))
         }
     }
 

@@ -141,7 +141,6 @@ mod tests {
     use crate::edge::EdgeKind;
     use crate::flow::{FlowControl, FlowEffect};
     use crate::graph::dominator::DominatorTree;
-    use alloc::borrow::Cow;
 
     #[derive(Debug, Clone)]
     struct MemInst {
@@ -151,9 +150,6 @@ mod tests {
     impl FlowControl for MemInst {
         fn flow_effect(&self) -> FlowEffect {
             FlowEffect::Fallthrough
-        }
-        fn display_mnemonic(&self) -> Cow<'_, str> {
-            Cow::Borrowed("mem")
         }
     }
     impl InstrInfo for MemInst {

@@ -1,25 +1,9 @@
-//! Program Dependence Graph (PDG).
+//! Program-dependence graph construction on [`DirectedGraph`].
 //!
-//! Unifies **control dependence** ([`ControlDependenceGraph`]) and
-//! **data dependence** ([`DefUseChains`]) into a single queryable
-//! structure.  The PDG powers program slicing, clone detection, and
-//! advanced restructuring passes.
-//!
-//! # Construction
-//!
-//! ```ignore
-//! let dom  = DominatorTree::compute(&cfg);
-//! let pdom = DominatorTree::compute_post(&cfg);
-//! let cdg  = ControlDependenceGraph::compute(&cfg, &pdom);
-//! let du   = DefUseChains::compute(&cfg);
-//! let pdg  = ProgramDependenceGraph::new(cdg, du);
-//! ```
-//!
-//! Or use the convenience constructor that does all the work:
-//!
-//! ```ignore
-//! let pdg = ProgramDependenceGraph::compute(&cfg);
-//! ```
+//! The builder combines control dependences and def-use chains into one graph
+//! that can be traversed in either direction for slicing, provenance, clone
+//! detection, and deobfuscation. It deliberately returns the common graph
+//! storage instead of introducing another graph wrapper.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
@@ -28,249 +12,199 @@ use alloc::vec::Vec;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::dataflow::defuse::DefUseChains;
-use crate::dataflow::{DefSite, InstrInfo, UseSite};
-use crate::graph::cdg::ControlDependenceGraph;
+use crate::dataflow::{InstrInfo, ProgramPoint};
+use crate::graph::cdg::control_dependence_graph;
+use crate::graph::directed::{DirectedGraph, NodeId};
 use crate::graph::dominator::DominatorTree;
 
-/// A dependence edge in the PDG.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Dependence {
-    /// Block `dependent` is control-dependent on block `on`.
-    Control {
-        /// The block whose branch decision controls execution.
-        on: BlockId,
-        /// The block whose execution depends on the branch.
-        dependent: BlockId,
-    },
-    /// Instruction at `use_site` reads a value defined at `def_site`.
-    Data {
-        /// Where the value is defined.
-        def_site: DefSite,
-        /// Where the value is used.
-        use_site: UseSite,
-    },
+/// A node in a program-dependence graph.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DependenceNode {
+    /// Synthetic predicate node for a CFG block.
+    ///
+    /// Empty branch blocks still need a node that can carry control
+    /// dependences, so predicates cannot be represented only by instructions.
+    Block(BlockId),
+    /// A concrete instruction in the source CFG.
+    Instruction(ProgramPoint),
 }
 
-/// Combined control + data dependence graph.
+/// Relation carried by a program-dependence edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum DependenceKind {
+    /// The source predicate determines whether the target executes.
+    Control,
+    /// The target reads a value defined by the source instruction.
+    Data,
+}
+
+/// Build a program-dependence graph for `cfg`.
 ///
-/// Wraps a [`ControlDependenceGraph`] and [`DefUseChains`] and
-/// provides unified queries over both dependence kinds.
-#[derive(Debug, Clone)]
-pub struct ProgramDependenceGraph {
-    /// Control dependence component.
-    pub cdg: ControlDependenceGraph,
-    /// Data dependence component.
-    pub def_use: DefUseChains,
-}
+/// Edges point from a cause to its dependent. Reverse traversal therefore
+/// computes a backward slice, while forward traversal computes affected code.
+/// Every CFG block receives a synthetic predicate node, and every instruction
+/// receives an instruction node. For non-empty controlling blocks, the last
+/// instruction feeds the synthetic predicate so a backward slice can continue
+/// through values used by the branch.
+#[must_use]
+pub fn program_dependence_graph<I: InstrInfo>(
+    cfg: &Cfg<I>,
+) -> DirectedGraph<DependenceNode, DependenceKind> {
+    let instruction_count = cfg
+        .blocks()
+        .iter()
+        .map(|block| block.instructions().len())
+        .sum::<usize>();
+    let mut graph = DirectedGraph::with_capacity(
+        cfg.num_blocks().saturating_add(instruction_count),
+        cfg.num_edges().saturating_add(instruction_count),
+    );
 
-impl ProgramDependenceGraph {
-    /// Build from pre-computed components.
-    #[must_use]
-    pub fn new(cdg: ControlDependenceGraph, def_use: DefUseChains) -> Self {
-        Self { cdg, def_use }
-    }
+    let block_nodes: Vec<NodeId> = cfg
+        .blocks()
+        .iter()
+        .map(|block| graph.add_node(DependenceNode::Block(block.id())))
+        .collect();
+    let instruction_nodes: Vec<Vec<NodeId>> = cfg
+        .blocks()
+        .iter()
+        .map(|block| {
+            (0..block.instructions().len())
+                .map(|inst_idx| {
+                    graph.add_node(DependenceNode::Instruction(ProgramPoint {
+                        block: block.id(),
+                        inst_idx,
+                    }))
+                })
+                .collect()
+        })
+        .collect();
 
-    /// Compute the full PDG from a CFG in one step.
-    #[must_use]
-    pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
-        let pdom = DominatorTree::compute_post(cfg);
-        let cdg = ControlDependenceGraph::compute(cfg, &pdom);
-        let def_use = DefUseChains::compute(cfg);
-        Self { cdg, def_use }
-    }
+    let post_dominators = DominatorTree::compute_post(cfg);
+    let control = control_dependence_graph(cfg, &post_dominators);
+    let mut controllers = BTreeSet::new();
+    for edge in control.edges() {
+        let controller = control[edge.source()];
+        let dependent = control[edge.target()];
+        controllers.insert(controller);
 
-    /// All blocks that `block` is control-dependent on.
-    #[must_use]
-    pub fn control_dependences(&self, block: BlockId) -> &BTreeSet<BlockId> {
-        self.cdg.control_dependences(block)
-    }
-
-    /// All blocks whose execution is controlled by `block`.
-    #[must_use]
-    pub fn control_dependents(&self, block: BlockId) -> &BTreeSet<BlockId> {
-        self.cdg.control_dependents(block)
-    }
-
-    /// All use-sites that read the value defined at `def`.
-    #[must_use]
-    pub fn data_dependents(&self, def: DefSite) -> &BTreeSet<UseSite> {
-        self.def_use.uses_of(def)
-    }
-
-    /// All def-sites that reach the use at `use_site`.
-    #[must_use]
-    pub fn data_dependences(&self, use_site: UseSite) -> &BTreeSet<DefSite> {
-        self.def_use.defs_of(use_site)
-    }
-
-    /// Collect **all** dependence edges in the graph.
-    ///
-    /// Useful for serialization, visualization, or whole-graph analysis.
-    #[must_use]
-    pub fn all_dependences(&self, num_blocks: usize) -> Vec<Dependence> {
-        let mut deps = Vec::new();
-
-        // Control dependences.
-        for idx in 0..num_blocks {
-            let block = BlockId::from_index(idx);
-            for &on in self.cdg.control_dependences(block) {
-                deps.push(Dependence::Control {
-                    on,
-                    dependent: block,
-                });
-            }
+        let controller_node = block_nodes[controller.index()];
+        graph.add_edge(
+            controller_node,
+            block_nodes[dependent.index()],
+            DependenceKind::Control,
+        );
+        for &instruction in &instruction_nodes[dependent.index()] {
+            graph.add_edge(controller_node, instruction, DependenceKind::Control);
         }
-
-        // Data dependences.
-        for (def, uses) in &self.def_use.def_use {
-            for use_site in uses {
-                deps.push(Dependence::Data {
-                    def_site: *def,
-                    use_site: *use_site,
-                });
-            }
-        }
-
-        deps
     }
 
-    /// Compute the **backward slice** from a given program point.
-    ///
-    /// Returns all program points (block, instruction index) that
-    /// transitively affect the value or execution of `seed`, following
-    /// both data and control dependences.
-    #[must_use]
-    pub fn backward_slice(&self, seed: UseSite) -> BTreeSet<DefSite> {
-        let mut visited = BTreeSet::new();
-        let mut worklist: Vec<UseSite> = alloc::vec![seed];
-
-        while let Some(point) = worklist.pop() {
-            if !visited.insert(point) {
-                continue;
-            }
-
-            // Follow data dependences: who defined the values I use?
-            for def in self.def_use.defs_of(point) {
-                worklist.push(*def);
-            }
-
-            // Follow control dependences: who controls my block?
-            for &ctrl in self.cdg.control_dependences(point.block) {
-                // Add the last instruction of the controlling block
-                // (the branch) as a dependence.
-                let ctrl_point = DefSite {
-                    block: ctrl,
-                    inst_idx: 0, // representative point
-                };
-                if !visited.contains(&ctrl_point) {
-                    worklist.push(ctrl_point);
-                }
-            }
+    for controller in controllers {
+        if let Some(&predicate) = instruction_nodes[controller.index()].last() {
+            graph.add_edge(
+                predicate,
+                block_nodes[controller.index()],
+                DependenceKind::Control,
+            );
         }
-
-        visited
     }
+
+    let def_use = DefUseChains::compute(cfg);
+    for (definition, uses) in &def_use.def_use {
+        let source = instruction_nodes[definition.block.index()][definition.inst_idx];
+        for use_site in uses {
+            let target = instruction_nodes[use_site.block.index()][use_site.inst_idx];
+            graph.add_edge(source, target, DependenceKind::Data);
+        }
+    }
+
+    graph
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cfg::Cfg;
-    use crate::dataflow::ProgramPoint;
     use crate::edge::EdgeKind;
+    use crate::graph::traverse::{TraversalDirection, depth_first_preorder};
     use crate::test_util::{DfInst, df_def, df_use};
 
+    fn find_node(
+        graph: &DirectedGraph<DependenceNode, DependenceKind>,
+        payload: DependenceNode,
+    ) -> NodeId {
+        graph
+            .node_ids()
+            .find(|&node| graph[node] == payload)
+            .expect("dependence node must exist")
+    }
+
     #[test]
-    fn pdg_compute_on_diamond() {
-        // entry → A (true), entry → B (false), A → merge, B → merge
+    fn diamond_contains_control_and_data_edges() {
         let mut cfg: Cfg<DfInst> = Cfg::new();
-        let a = cfg.new_block();
-        let b = cfg.new_block();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
         let merge = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(df_def("branch", 0));
+        cfg.block_mut(left).push(df_def("def_left", 1));
+        cfg.block_mut(right).push(df_def("def_right", 2));
+        cfg.block_mut(merge).push(df_use("use_left", 1));
+        cfg.add_edge(cfg.entry(), left, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), right, EdgeKind::ConditionalFalse);
+        cfg.add_edge(left, merge, EdgeKind::Fallthrough);
+        cfg.add_edge(right, merge, EdgeKind::Fallthrough);
 
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(df_def("branch", 0));
-        cfg.block_mut(a)
-            .instructions_vec_mut()
-            .push(df_def("def_a", 1));
-        cfg.block_mut(b)
-            .instructions_vec_mut()
-            .push(df_def("def_b", 2));
-        cfg.block_mut(merge)
-            .instructions_vec_mut()
-            .push(df_use("use_1", 1));
-
-        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
-        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
-        cfg.add_edge(a, merge, EdgeKind::Fallthrough);
-        cfg.add_edge(b, merge, EdgeKind::Fallthrough);
-
-        let pdg = ProgramDependenceGraph::compute(&cfg);
-
-        // A and B should be control-dependent on entry.
-        assert!(pdg.cdg.is_dependent(a, cfg.entry()));
-        assert!(pdg.cdg.is_dependent(b, cfg.entry()));
-
-        // Data dependence: use of loc1 in merge should depend on def in A.
-        let def_a = ProgramPoint {
-            block: a,
-            inst_idx: 0,
-        };
-        let uses_of_a = pdg.data_dependents(def_a);
-        assert!(
-            !uses_of_a.is_empty(),
-            "def of loc1 in A should have uses in merge"
+        let graph = program_dependence_graph(&cfg);
+        let controller = find_node(&graph, DependenceNode::Block(cfg.entry()));
+        let left_block = find_node(&graph, DependenceNode::Block(left));
+        let left_definition = find_node(
+            &graph,
+            DependenceNode::Instruction(ProgramPoint {
+                block: left,
+                inst_idx: 0,
+            }),
         );
+        let merge_use = find_node(
+            &graph,
+            DependenceNode::Instruction(ProgramPoint {
+                block: merge,
+                inst_idx: 0,
+            }),
+        );
+
+        assert!(graph.successors(controller).any(|node| node == left_block));
+        assert!(graph.edges().any(|edge| {
+            edge.source() == left_definition
+                && edge.target() == merge_use
+                && *edge.payload() == DependenceKind::Data
+        }));
     }
 
     #[test]
-    fn all_dependences_includes_both_kinds() {
+    fn reverse_traversal_is_a_backward_slice() {
         let mut cfg: Cfg<DfInst> = Cfg::new();
-        let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(df_def("def0", 0));
-        cfg.block_mut(b)
-            .instructions_vec_mut()
-            .push(df_use("use0", 0));
-        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        let use_block = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(df_def("def", 0));
+        cfg.block_mut(use_block).push(df_use("use", 0));
+        cfg.add_edge(cfg.entry(), use_block, EdgeKind::Fallthrough);
 
-        let pdg = ProgramDependenceGraph::compute(&cfg);
-        let deps = pdg.all_dependences(cfg.num_blocks());
+        let graph = program_dependence_graph(&cfg);
+        let definition = find_node(
+            &graph,
+            DependenceNode::Instruction(ProgramPoint {
+                block: cfg.entry(),
+                inst_idx: 0,
+            }),
+        );
+        let seed = find_node(
+            &graph,
+            DependenceNode::Instruction(ProgramPoint {
+                block: use_block,
+                inst_idx: 0,
+            }),
+        );
+        let slice = depth_first_preorder(&graph, seed, TraversalDirection::Incoming);
 
-        let has_data = deps.iter().any(|d| matches!(d, Dependence::Data { .. }));
-        assert!(has_data, "should have data dependences");
-    }
-
-    #[test]
-    fn backward_slice_follows_data_dep() {
-        let mut cfg: Cfg<DfInst> = Cfg::new();
-        let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(df_def("def0", 0));
-        cfg.block_mut(b)
-            .instructions_vec_mut()
-            .push(df_use("use0", 0));
-        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
-
-        let pdg = ProgramDependenceGraph::compute(&cfg);
-        let seed = ProgramPoint {
-            block: b,
-            inst_idx: 0,
-        };
-        let slice = pdg.backward_slice(seed);
-
-        // Should include the seed itself and the def in entry.
         assert!(slice.contains(&seed));
-        let def_point = ProgramPoint {
-            block: cfg.entry(),
-            inst_idx: 0,
-        };
-        assert!(
-            slice.contains(&def_point),
-            "backward slice should include the defining instruction"
-        );
+        assert!(slice.contains(&definition));
     }
 }

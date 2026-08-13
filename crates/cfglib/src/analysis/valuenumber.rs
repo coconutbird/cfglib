@@ -17,14 +17,15 @@ use crate::graph::dominator::DominatorTree;
 /// A value number — opaque identifier for a computed value.
 pub type ValueNumber = u32;
 
-/// An expression key used for hash-consing.
+/// An expression key used for hash-consing, over a consumer operation
+/// identity `Op`.
 ///
 /// Uses `SmallVec` to avoid heap allocation for expressions with ≤ 4
 /// operands (the vast majority of real instructions).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ExprKey {
-    /// Instruction opcode or another IR-specific operation identifier.
-    pub opcode: u32,
+pub struct ExprKey<Op> {
+    /// The operation performed (raw opcode, mnemonic enum, interned symbol).
+    pub operation: Op,
     /// Value numbers of the operands.
     pub operands: SmallVec<[ValueNumber; 4]>,
 }
@@ -48,12 +49,16 @@ pub struct ValueNumbering {
     pub num_values: u32,
 }
 
-/// Trait for instructions to provide an opcode for value numbering.
+/// Trait for instructions to provide an operation identity for value
+/// numbering.
 pub trait ValueNumberInfo: InstrInfo {
-    /// A numeric opcode identifying the operation.
-    /// Two instructions with the same opcode and same operand values
-    /// produce the same result.
-    fn opcode(&self) -> u32;
+    /// Operation identity for hash-consing. Two pure instructions with equal
+    /// operation and operand value numbers compute the same value. `Ord`
+    /// because expression keys live in a `BTreeMap`.
+    type Operation: Clone + Ord;
+
+    /// The operation this instruction performs.
+    fn operation(&self) -> Self::Operation;
 
     /// Whether this instruction is pure (no side effects).
     /// Only pure instructions can be value-numbered.
@@ -69,7 +74,7 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
 ) -> (BlockValueNumbers, ValueNumber) {
     let mut next_vn = start_vn;
     let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
-    let mut expr_to_vn: BTreeMap<ExprKey, ValueNumber> = BTreeMap::new();
+    let mut expr_to_vn: BTreeMap<ExprKey<I::Operation>, ValueNumber> = BTreeMap::new();
     let insts = cfg.block(block).instructions();
     let mut inst_vn = Vec::with_capacity(insts.len());
     let mut redundant = Vec::new();
@@ -94,7 +99,7 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
             .collect();
 
         let key = ExprKey {
-            opcode: inst.opcode(),
+            operation: inst.operation(),
             operands,
         };
 
@@ -133,7 +138,7 @@ pub fn global_value_numbering<I: ValueNumberInfo>(
 ) -> ValueNumbering {
     let mut blocks = BTreeMap::new();
     let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
-    let mut expr_to_vn: BTreeMap<ExprKey, ValueNumber> = BTreeMap::new();
+    let mut expr_to_vn: BTreeMap<ExprKey<I::Operation>, ValueNumber> = BTreeMap::new();
     let mut next_vn: ValueNumber = 0;
 
     gvn_dfs(
@@ -158,13 +163,13 @@ fn gvn_dfs<I: ValueNumberInfo>(
     dom: &DominatorTree,
     bid: BlockId,
     variable_values: &mut BTreeMap<I::Variable, ValueNumber>,
-    expr_to_vn: &mut BTreeMap<ExprKey, ValueNumber>,
+    expr_to_vn: &mut BTreeMap<ExprKey<I::Operation>, ValueNumber>,
     next_vn: &mut ValueNumber,
     blocks: &mut BTreeMap<BlockId, BlockValueNumbers>,
 ) {
     // Snapshot the current scope so we can restore on exit.
     let mut saved_variables: BTreeMap<I::Variable, Option<ValueNumber>> = BTreeMap::new();
-    let mut expr_added: Vec<ExprKey> = Vec::new();
+    let mut expr_added: Vec<ExprKey<I::Operation>> = Vec::new();
 
     // Process instructions in this block.
     let insts = cfg.block(bid).instructions();
@@ -194,7 +199,7 @@ fn gvn_dfs<I: ValueNumberInfo>(
             .collect();
 
         let key = ExprKey {
-            opcode: inst.opcode(),
+            operation: inst.operation(),
             operands,
         };
 
@@ -263,7 +268,6 @@ mod tests {
     use crate::cfg::Cfg;
     use crate::edge::EdgeKind;
     use crate::flow::{FlowControl, FlowEffect};
-    use alloc::borrow::Cow;
 
     #[derive(Debug, Clone)]
     struct VnInst {
@@ -276,9 +280,6 @@ mod tests {
     impl FlowControl for VnInst {
         fn flow_effect(&self) -> FlowEffect {
             FlowEffect::Fallthrough
-        }
-        fn display_mnemonic(&self) -> Cow<'_, str> {
-            Cow::Borrowed("vn")
         }
     }
 
@@ -294,7 +295,9 @@ mod tests {
     }
 
     impl ValueNumberInfo for VnInst {
-        fn opcode(&self) -> u32 {
+        type Operation = u32;
+
+        fn operation(&self) -> u32 {
             self.op
         }
         fn is_pure(&self) -> bool {

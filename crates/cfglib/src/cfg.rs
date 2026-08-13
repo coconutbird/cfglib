@@ -55,7 +55,6 @@ impl<I> Cfg<I> {
                 id: entry,
                 instructions: Vec::new(),
                 label: None,
-                guard: None,
             }],
             edges: Vec::new(),
             succs: alloc::vec![SmallVec::new()],
@@ -298,7 +297,6 @@ impl<I> Cfg<I> {
             id,
             instructions: Vec::new(),
             label: None,
-            guard: None,
         });
 
         self.succs.push(SmallVec::new());
@@ -309,7 +307,7 @@ impl<I> Cfg<I> {
 
     /// Add a directed edge and return its id.
     pub fn add_edge(&mut self, source: BlockId, target: BlockId, kind: EdgeKind) -> EdgeId {
-        self.add_edge_inner(source, target, kind, None, None)
+        self.add_edge_inner(source, target, kind, None)
     }
 
     /// Add a directed edge with a branch weight.
@@ -320,7 +318,7 @@ impl<I> Cfg<I> {
         kind: EdgeKind,
         weight: f64,
     ) -> EdgeId {
-        self.add_edge_inner(source, target, kind, Some(weight), None)
+        self.add_edge_inner(source, target, kind, Some(weight))
     }
 
     fn add_edge_inner(
@@ -329,7 +327,6 @@ impl<I> Cfg<I> {
         target: BlockId,
         kind: EdgeKind,
         weight: Option<f64>,
-        call_site: Option<crate::edge::CallSite>,
     ) -> EdgeId {
         let id = EdgeId::from_index(self.edges.len());
         self.edges.push(Some(Edge {
@@ -338,7 +335,6 @@ impl<I> Cfg<I> {
             target,
             kind,
             weight,
-            call_site,
         }));
 
         self.succs[source.index()].push(id);
@@ -445,6 +441,30 @@ impl<I> Cfg<I> {
 impl<I> Default for Cfg<I> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+// ── Graph view impls ───────────────────────────────────────────────
+
+impl<I> crate::graph::view::DirectedGraphView for Cfg<I> {
+    type NodeId = BlockId;
+
+    fn node_count(&self) -> usize {
+        self.num_blocks()
+    }
+
+    fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+        Cfg::successors(self, node)
+    }
+
+    fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+        Cfg::predecessors(self, node)
+    }
+}
+
+impl<I> crate::graph::view::RootedGraphView for Cfg<I> {
+    fn root(&self) -> Self::NodeId {
+        self.entry()
     }
 }
 
@@ -583,11 +603,6 @@ impl<I: Clone> Cfg<I> {
         if let Some(lbl) = src.label() {
             new_cfg.block_mut(new_cfg.entry()).set_label(lbl);
         }
-        if let Some(g) = src.guard() {
-            new_cfg
-                .block_mut(new_cfg.entry())
-                .set_guard(Some(g.clone()));
-        }
 
         // Create remaining blocks.
         for &bid in &blocks[1..] {
@@ -600,9 +615,6 @@ impl<I: Clone> Cfg<I> {
             if let Some(lbl) = old_block.label() {
                 new_cfg.block_mut(new_id).set_label(lbl);
             }
-            if let Some(g) = old_block.guard() {
-                new_cfg.block_mut(new_id).set_guard(Some(g.clone()));
-            }
         }
 
         // Copy live edges that stay within the subgraph.
@@ -613,9 +625,6 @@ impl<I: Clone> Cfg<I> {
                 let eid = new_cfg.add_edge(ns, nt, edge.kind());
                 if let Some(w) = edge.weight() {
                     new_cfg.edge_mut(eid).set_weight(Some(w));
-                }
-                if let Some(cs) = edge.call_site() {
-                    new_cfg.edge_mut(eid).set_call_site(Some(cs.clone()));
                 }
             }
         }
@@ -628,7 +637,7 @@ impl<I: Clone> Cfg<I> {
 mod tests {
     extern crate alloc;
     use super::*;
-    use crate::edge::{CallSite, EdgeKind};
+    use crate::edge::EdgeKind;
     use crate::test_util::MockInst;
     use alloc::vec;
     use alloc::vec::Vec;
@@ -643,19 +652,6 @@ mod tests {
         // Default edge should have no weight.
         let eid2 = cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
         assert_eq!(cfg.edge(eid2).weight(), None);
-    }
-
-    #[test]
-    fn call_site_on_edge() {
-        let mut cfg = Cfg::<MockInst>::new();
-        let b0 = cfg.entry();
-        let b1 = cfg.new_block();
-        let eid = cfg.add_edge(b0, b1, EdgeKind::Call);
-        cfg.edge_mut(eid)
-            .set_call_site(Some(CallSite::named("printf")));
-        let cs = cfg.edge(eid).call_site().unwrap();
-        assert_eq!(cs.target_name.as_deref(), Some("printf"));
-        assert!(!cs.is_tail_call);
     }
 
     #[test]
@@ -679,21 +675,6 @@ mod tests {
     fn subgraph_empty_input() {
         let sub = Cfg::<MockInst>::new().subgraph(&[]);
         assert_eq!(sub.num_blocks(), 1); // Cfg::new() always has an entry
-    }
-
-    #[test]
-    fn guard_on_block() {
-        let mut cfg = Cfg::<MockInst>::new();
-        let b0 = cfg.entry();
-        assert!(!cfg.block(b0).is_guarded());
-        cfg.block_mut(b0).set_guard(Some(crate::block::Guard {
-            predicate: alloc::string::String::from("p0"),
-            when_true: true,
-        }));
-        assert!(cfg.block(b0).is_guarded());
-        let g = cfg.block(b0).guard().unwrap();
-        assert_eq!(g.predicate, "p0");
-        assert!(g.when_true);
     }
 
     #[test]

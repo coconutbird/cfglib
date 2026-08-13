@@ -1,4 +1,5 @@
-use cfglib::{DominatorTree, Effect, InstrInfo, ProgramPoint, build_ssa};
+use cfglib::{DominatorTree, EffectInfo, InstrInfo, ProgramPoint, build_ssa};
+use cfglib_dxbc::Sm4Effect;
 use cfglib_dxbc::{Sm4Component, Sm4Index, Sm4Instruction, Sm4Register, Sm4Variable, build_cfg};
 use dxbc::shex::{
     ComponentSelect, Immediates, Indices, Instruction, InstructionKind, MinPrecision, Opcode,
@@ -196,7 +197,7 @@ fn decoded_shex_builds_renamed_ssa_across_a_branch() {
         .position(|instruction| instruction.defs().contains(&output))
         .unwrap();
     let native_output = &cfg.block(merge).instructions()[output_index];
-    assert!(native_output.effects().contains(&Effect::Io));
+    assert!(native_output.effects().contains(&Sm4Effect::Export));
     let output_uses = &ssa
         .instruction(ProgramPoint {
             block: merge,
@@ -314,5 +315,5 @@ fn multi_result_and_read_modify_write_roles_are_explicit() {
     ));
     assert!(store.uses().contains(&target));
     assert_eq!(store.defs(), core::slice::from_ref(&target));
-    assert!(store.effects().contains(&Effect::MemoryWrite));
+    assert!(store.effects().contains(&Sm4Effect::ResourceWrite));
 }

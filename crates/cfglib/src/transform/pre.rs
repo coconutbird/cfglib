@@ -99,7 +99,6 @@ mod tests {
     use crate::edge::EdgeKind;
     use crate::flow::{FlowControl, FlowEffect};
     use crate::graph::dominator::DominatorTree;
-    use alloc::borrow::Cow;
 
     #[derive(Debug, Clone)]
     struct PreInst {
@@ -110,9 +109,6 @@ mod tests {
     impl FlowControl for PreInst {
         fn flow_effect(&self) -> FlowEffect {
             FlowEffect::Fallthrough
-        }
-        fn display_mnemonic(&self) -> Cow<'_, str> {
-            Cow::Borrowed("pre")
         }
     }
     impl InstrInfo for PreInst {
@@ -126,7 +122,9 @@ mod tests {
         }
     }
     impl ValueNumberInfo for PreInst {
-        fn opcode(&self) -> u32 {
+        type Operation = u32;
+
+        fn operation(&self) -> u32 {
             self.op
         }
         fn is_pure(&self) -> bool {

@@ -53,9 +53,6 @@ pub fn reverse_cfg<I: Clone>(cfg: &Cfg<I>) -> Cfg<I> {
         if let Some(lbl) = src.label() {
             dst.set_label(lbl);
         }
-        if let Some(g) = src.guard() {
-            dst.set_guard(Some(g.clone()));
-        }
     }
 
     // Reverse all live edges.

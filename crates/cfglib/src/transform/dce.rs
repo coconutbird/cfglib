@@ -3,7 +3,11 @@
 //! Removes instructions whose definitions are never used. Uses
 //! liveness analysis to identify instructions that define variables
 //! which are not live after the instruction. Instructions with side
-//! effects (non-empty `effects()`) are always kept.
+//! effects (non-empty [`EffectInfo::effects`](crate::EffectInfo::effects))
+//! are always kept — requiring [`EffectInfo`](crate::EffectInfo) here is
+//! deliberate: a consumer must state an effect vocabulary before this pass
+//! will delete anything, which prevents silently removing side-effecting
+//! statements.
 
 extern crate alloc;
 use alloc::vec;
@@ -20,13 +24,17 @@ use crate::cfg::Cfg;
 /// # Examples
 ///
 /// ```
-/// # use cfglib::{Cfg, EdgeKind, InstrInfo};
+/// # use cfglib::{Cfg, EdgeKind, EffectInfo, InstrInfo};
 /// # #[derive(Debug, Clone)]
 /// # struct Inst { uses: Vec<u16>, defs: Vec<u16> }
 /// # impl InstrInfo for Inst {
 /// #     type Variable = u16;
 /// #     fn uses(&self) -> &[u16] { &self.uses }
 /// #     fn defs(&self) -> &[u16] { &self.defs }
+/// # }
+/// # impl EffectInfo for Inst {
+/// #     type Effect = &'static str;
+/// #     fn effects(&self) -> &[&'static str] { &[] }
 /// # }
 /// use cfglib::dead_code_elimination;
 ///
@@ -38,7 +46,7 @@ use crate::cfg::Cfg;
 /// let removed = dead_code_elimination(&mut cfg);
 /// assert_eq!(removed, 1);
 /// ```
-pub fn dead_code_elimination<I: crate::dataflow::InstrInfo + Clone>(cfg: &mut Cfg<I>) -> usize {
+pub fn dead_code_elimination<I: crate::dataflow::EffectInfo + Clone>(cfg: &mut Cfg<I>) -> usize {
     use crate::dataflow::fixpoint;
     use crate::dataflow::liveness::LivenessProblem;
 

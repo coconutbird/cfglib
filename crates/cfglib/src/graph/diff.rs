@@ -16,7 +16,6 @@ use alloc::vec::Vec;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::edge::EdgeKind;
-use crate::flow::FlowControl;
 
 /// Per-block structural fingerprint used for matching.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -139,7 +138,7 @@ fn fingerprint<I>(cfg: &Cfg<I>, block: BlockId) -> BlockFingerprint {
 /// }
 /// ```
 #[must_use]
-pub fn cfg_diff<I: FlowControl, J: FlowControl>(left: &Cfg<I>, right: &Cfg<J>) -> CfgDiff {
+pub fn cfg_diff<I, J>(left: &Cfg<I>, right: &Cfg<J>) -> CfgDiff {
     let left_blocks = left.dfs_preorder();
     let right_blocks = right.dfs_preorder();
 

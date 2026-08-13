@@ -1,24 +1,25 @@
-//! Whole-program call graphs built on the generic directed-graph substrate.
+//! Whole-program call-graph construction on [`DirectedGraph`].
+//!
+//! A call graph does not need its own storage abstraction. Functions are node
+//! payloads, call details are edge payloads, and all traversal, SCC, dominance,
+//! and topological algorithms operate on the returned generic graph directly.
+//! Call targets come from the instructions themselves via
+//! [`CallInfo`] — callee identities are consumer-typed (symbol ids, addresses,
+//! names), never a library-owned string.
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
-use alloc::string::String;
-use alloc::vec::Vec;
 
 use crate::cfg::Cfg;
-use crate::edge::EdgeKind;
-use crate::graph::directed::{DirectedEdge, DirectedGraph, NodeId};
+use crate::flow::CallInfo;
+use crate::graph::directed::{DirectedGraph, NodeId};
 use crate::graph::scc::tarjan_scc;
-use crate::graph::traverse::topological_sort;
 
-/// Identity of a function in a [`CallGraph`].
-pub type FunctionId = NodeId;
-
-/// Payload of a function node.
+/// Payload of a function node in a call graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FunctionNode {
-    /// Symbolic function name or address label.
-    pub name: String,
+pub struct FunctionNode<C> {
+    /// Consumer-defined function identity (symbol id, address, name).
+    pub id: C,
 }
 
 /// Payload attached to a call edge.
@@ -28,208 +29,117 @@ pub struct CallMetadata {
     pub is_tail_call: bool,
 }
 
-/// A directed call edge with stable identity and endpoint accessors.
-pub type CallEdge = DirectedEdge<CallMetadata>;
+/// Build a call graph by scanning the instructions of a set of keyed CFGs.
+///
+/// Nodes are emitted in input order. Every instruction whose
+/// [`CallInfo::callee`] resolves to one of the input keys creates an
+/// inter-procedural edge; calls to unknown targets remain represented in the
+/// source CFG but do not create an edge.
+#[must_use]
+pub fn build_call_graph<I: CallInfo>(
+    functions: &[(I::Callee, &Cfg<I>)],
+) -> DirectedGraph<FunctionNode<I::Callee>, CallMetadata> {
+    let mut graph = DirectedGraph::with_capacity(functions.len(), functions.len());
+    let mut key_to_id = BTreeMap::new();
 
-/// A call graph linking functions through typed call edges.
-#[derive(Debug, Clone)]
-pub struct CallGraph {
-    graph: DirectedGraph<FunctionNode, CallMetadata>,
-    name_to_id: BTreeMap<String, FunctionId>,
-}
-
-impl CallGraph {
-    /// Create an empty call graph.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            graph: DirectedGraph::new(),
-            name_to_id: BTreeMap::new(),
+    for (key, _) in functions {
+        if key_to_id.contains_key(key) {
+            continue;
         }
+        let id = graph.add_node(FunctionNode { id: key.clone() });
+        key_to_id.insert(key.clone(), id);
     }
 
-    /// Add a function, returning the existing identity when its name is known.
-    pub fn add_function(&mut self, name: &str) -> FunctionId {
-        if let Some(&id) = self.name_to_id.get(name) {
-            return id;
-        }
-
-        let owned_name = String::from(name);
-        let id = self.graph.add_node(FunctionNode {
-            name: owned_name.clone(),
-        });
-        self.name_to_id.insert(owned_name, id);
-        id
-    }
-
-    /// Record a call from `source` to `target`.
-    pub fn add_call(&mut self, source: FunctionId, target: FunctionId, is_tail_call: bool) {
-        self.graph
-            .add_edge(source, target, CallMetadata { is_tail_call });
-    }
-
-    /// Iterate over functions called by `function`.
-    pub fn callees(&self, function: FunctionId) -> impl Iterator<Item = FunctionId> + '_ {
-        self.graph.successors(function)
-    }
-
-    /// Iterate over functions that call `function`.
-    pub fn callers(&self, function: FunctionId) -> impl Iterator<Item = FunctionId> + '_ {
-        self.graph.predecessors(function)
-    }
-
-    /// Borrow a function payload by identity.
-    #[must_use]
-    pub fn function(&self, function: FunctionId) -> &FunctionNode {
-        self.graph.node(function)
-    }
-
-    /// Look up a function identity by name.
-    #[must_use]
-    pub fn function_by_name(&self, name: &str) -> Option<FunctionId> {
-        self.name_to_id.get(name).copied()
-    }
-
-    /// Return the number of functions.
-    #[must_use]
-    pub fn num_functions(&self) -> usize {
-        self.graph.node_count()
-    }
-
-    /// Iterate over all call edges.
-    pub fn edges(&self) -> impl Iterator<Item = &CallEdge> {
-        self.graph.edges()
-    }
-
-    /// Return all function payloads in identity order.
-    #[must_use]
-    pub fn functions(&self) -> &[FunctionNode] {
-        self.graph.nodes()
-    }
-
-    /// Borrow the underlying generic graph for shared graph algorithms.
-    #[must_use]
-    pub const fn as_directed_graph(&self) -> &DirectedGraph<FunctionNode, CallMetadata> {
-        &self.graph
-    }
-
-    /// Return functions that call no other function.
-    #[must_use]
-    pub fn leaf_functions(&self) -> Vec<FunctionId> {
-        self.graph
-            .node_ids()
-            .filter(|&function| self.graph.outgoing_edges(function).is_empty())
-            .collect()
-    }
-
-    /// Return functions with no callers.
-    #[must_use]
-    pub fn root_functions(&self) -> Vec<FunctionId> {
-        self.graph
-            .node_ids()
-            .filter(|&function| self.graph.incoming_edges(function).is_empty())
-            .collect()
-    }
-
-    /// Return whether `function` is directly or mutually recursive.
-    #[must_use]
-    pub fn is_recursive(&self, function: FunctionId) -> bool {
-        self.graph
-            .successors(function)
-            .any(|callee| callee == function)
-            || tarjan_scc(&self.graph).component(function).nodes.len() > 1
-    }
-
-    /// Build a call graph by scanning CFG call edges.
-    #[must_use]
-    pub fn build_from_cfgs<I>(cfgs: &[(&str, &Cfg<I>)]) -> Self {
-        let mut call_graph = Self::new();
-        for &(name, _) in cfgs {
-            call_graph.add_function(name);
-        }
-
-        for &(caller_name, cfg) in cfgs {
-            let caller = call_graph.name_to_id[caller_name];
-            for edge in cfg.edges() {
-                if matches!(edge.kind(), EdgeKind::Call | EdgeKind::IndirectCall)
-                    && let Some(call_site) = edge.call_site()
-                    && let Some(target_name) = &call_site.target_name
-                    && let Some(&callee) = call_graph.name_to_id.get(target_name.as_str())
+    for (caller_key, cfg) in functions {
+        let Some(&caller) = key_to_id.get(caller_key) else {
+            continue;
+        };
+        for block in cfg.blocks() {
+            for instruction in block.instructions() {
+                if let Some(callee_key) = instruction.callee()
+                    && let Some(&callee) = key_to_id.get(&callee_key)
                 {
-                    call_graph.add_call(caller, callee, call_site.is_tail_call);
+                    graph.add_edge(
+                        caller,
+                        callee,
+                        CallMetadata {
+                            is_tail_call: instruction.is_tail_call(),
+                        },
+                    );
                 }
             }
         }
-
-        call_graph
     }
 
-    /// Return a topological order, or `None` when calls contain a cycle.
-    #[must_use]
-    pub fn topological_order(&self) -> Option<Vec<FunctionId>> {
-        topological_sort(&self.graph)
-    }
-
-    /// Return strongly connected function groups in reverse topological order.
-    #[must_use]
-    pub fn strongly_connected_components(&self) -> Vec<Vec<FunctionId>> {
-        tarjan_scc(&self.graph)
-            .components
-            .into_iter()
-            .map(|component| component.nodes.into_iter().collect())
-            .collect()
-    }
+    graph
 }
 
-impl Default for CallGraph {
-    fn default() -> Self {
-        Self::new()
-    }
+/// Find a function node by its identity.
+#[must_use]
+pub fn find_function<C: Ord>(
+    graph: &DirectedGraph<FunctionNode<C>, CallMetadata>,
+    id: &C,
+) -> Option<NodeId> {
+    graph.node_ids().find(|&node| graph[node].id == *id)
+}
+
+/// Return whether a function is directly or mutually recursive.
+#[must_use]
+pub fn is_recursive_function<C>(
+    graph: &DirectedGraph<FunctionNode<C>, CallMetadata>,
+    function: NodeId,
+) -> bool {
+    graph.successors(function).any(|callee| callee == function)
+        || tarjan_scc(graph).component(function).nodes.len() > 1
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::edge::CallSite;
-    use crate::test_util::ff;
+    use crate::graph::traverse::topological_sort;
+    use crate::test_util::{DfInst, df_call, df_ff};
     use alloc::vec;
 
     #[test]
     fn build_from_cfgs_resolves_calls() {
-        let mut main_cfg = Cfg::new();
-        let continuation = main_cfg.new_block();
-        main_cfg.block_mut(main_cfg.entry()).push(ff("call"));
-        let edge = main_cfg.add_edge(main_cfg.entry(), continuation, EdgeKind::Call);
+        let mut main_cfg: Cfg<DfInst> = Cfg::new();
         main_cfg
-            .edge_mut(edge)
-            .set_call_site(Some(CallSite::named("helper")));
-        let mut helper_cfg = Cfg::new();
-        helper_cfg.block_mut(helper_cfg.entry()).push(ff("ret"));
+            .block_mut(main_cfg.entry())
+            .push(df_call("call", "helper", false));
+        let mut helper_cfg: Cfg<DfInst> = Cfg::new();
+        helper_cfg.block_mut(helper_cfg.entry()).push(df_ff("ret"));
 
-        let graph = CallGraph::build_from_cfgs(&[("main", &main_cfg), ("helper", &helper_cfg)]);
-        let main = graph.function_by_name("main").unwrap();
-        let helper = graph.function_by_name("helper").unwrap();
-        assert!(graph.callees(main).any(|callee| callee == helper));
+        let graph = build_call_graph(&[("main", &main_cfg), ("helper", &helper_cfg)]);
+        let main = find_function(&graph, &"main").unwrap();
+        let helper = find_function(&graph, &"helper").unwrap();
+        assert!(graph.successors(main).any(|callee| callee == helper));
+        assert!(!graph.edges().next().unwrap().payload().is_tail_call);
     }
 
     #[test]
     fn topology_and_recursion_use_shared_algorithms() {
-        let mut graph = CallGraph::new();
-        let main = graph.add_function("main");
-        let helper = graph.add_function("helper");
-        graph.add_call(main, helper, false);
-        assert_eq!(graph.topological_order(), Some(vec![main, helper]));
-        assert_eq!(graph.leaf_functions(), vec![helper]);
-        assert_eq!(graph.root_functions(), vec![main]);
-
-        graph.add_call(helper, main, false);
-        assert!(graph.topological_order().is_none());
-        assert!(graph.is_recursive(main));
-        assert!(
-            graph
-                .strongly_connected_components()
-                .iter()
-                .any(|component| component.len() == 2)
+        let mut graph = DirectedGraph::new();
+        let main = graph.add_node(FunctionNode { id: "main" });
+        let helper = graph.add_node(FunctionNode { id: "helper" });
+        graph.add_edge(
+            main,
+            helper,
+            CallMetadata {
+                is_tail_call: false,
+            },
         );
+        assert_eq!(topological_sort(&graph), Some(vec![main, helper]));
+        assert_eq!(graph.predecessors(main).count(), 0);
+        assert_eq!(graph.successors(helper).count(), 0);
+
+        graph.add_edge(
+            helper,
+            main,
+            CallMetadata {
+                is_tail_call: false,
+            },
+        );
+        assert!(topological_sort(&graph).is_none());
+        assert!(is_recursive_function(&graph, main));
     }
 }

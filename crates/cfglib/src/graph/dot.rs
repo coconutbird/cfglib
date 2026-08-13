@@ -1,20 +1,80 @@
 //! DOT (Graphviz) export for control-flow graphs.
 
 extern crate alloc;
+use alloc::borrow::Cow;
 use alloc::string::String;
 use core::fmt;
 
 use crate::cfg::Cfg;
+use crate::display::DisplayInstr;
 use crate::edge::EdgeKind;
-use crate::flow::FlowControl;
+use crate::graph::view::{DenseNodeId, DirectedGraphView};
 
-impl<I: FlowControl> Cfg<I> {
-    /// Write the CFG in DOT format to any `fmt::Write` sink.
+/// Escape label text for safe embedding in a double-quoted DOT string.
+///
+/// Backslashes and quotes are escaped, and raw line breaks become DOT `\n`
+/// escape sequences, so labels sourced from real program text (statements,
+/// string literals) cannot break out of the attribute.
+fn escape_label(label: &str) -> String {
+    let mut escaped = String::with_capacity(label.len());
+    for ch in label.chars() {
+        match ch {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            '\n' => escaped.push_str("\\n"),
+            '\r' => {}
+            _ => escaped.push(ch),
+        }
+    }
+    escaped
+}
+
+/// Write any graph view in DOT format with consumer-provided node labels.
+///
+/// Nodes are named `n{index}`; the label callback supplies display text,
+/// which is escaped before embedding. This is the topology-only counterpart
+/// of [`Cfg::write_dot`] for value-flow, call, and type-relation graphs.
+///
+/// # Errors
+///
+/// Returns the sink's formatting error if a write fails.
+pub fn write_view_dot<G: DirectedGraphView>(
+    graph: &G,
+    w: &mut dyn fmt::Write,
+    mut node_label: impl FnMut(G::NodeId) -> String,
+) -> fmt::Result {
+    writeln!(w, "digraph view {{")?;
+    writeln!(
+        w,
+        "    node [shape=box fontname=\"monospace\" fontsize=10];"
+    )?;
+    for node in graph.node_ids() {
+        let label = escape_label(&node_label(node));
+        writeln!(w, "    n{} [label=\"{label}\"];", node.index())?;
+    }
+    for node in graph.node_ids() {
+        for successor in graph.successors(node) {
+            writeln!(w, "    n{} -> n{};", node.index(), successor.index())?;
+        }
+    }
+    writeln!(w, "}}")
+}
+
+impl<I> Cfg<I> {
+    /// Write the CFG in DOT format using a caller-supplied instruction label.
+    ///
+    /// This is the bound-free escape hatch: rendering needs no trait on `I`
+    /// at all. Labels are escaped before embedding, so raw program text is
+    /// safe to return.
     ///
     /// # Errors
     ///
     /// Returns the sink's formatting error if a write fails.
-    pub fn write_dot(&self, w: &mut dyn fmt::Write) -> fmt::Result {
+    pub fn write_dot_with(
+        &self,
+        w: &mut dyn fmt::Write,
+        mut label: impl FnMut(&I) -> Cow<'_, str>,
+    ) -> fmt::Result {
         writeln!(w, "digraph cfg {{")?;
         writeln!(
             w,
@@ -26,18 +86,18 @@ impl<I: FlowControl> Cfg<I> {
             let id = block.id();
             let label_prefix = block
                 .label()
-                .map(|l| alloc::format!("{l}:\\n"))
+                .map(|l| alloc::format!("{}:\\n", escape_label(l)))
                 .unwrap_or_default();
 
             // Build a label with the mnemonic of each instruction.
             let mut body = String::new();
             for inst in block.instructions() {
-                let m = inst.display_mnemonic();
+                let m = label(inst);
                 if !m.is_empty() {
                     if !body.is_empty() {
                         body.push_str("\\l");
                     }
-                    body.push_str(&m);
+                    body.push_str(&escape_label(&m));
                 }
             }
 
@@ -96,6 +156,31 @@ impl<I: FlowControl> Cfg<I> {
         writeln!(w, "}}")
     }
 
+    /// Produce the DOT representation as a [`String`] using a caller-supplied
+    /// instruction label.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if writing to an in-memory [`String`] unexpectedly fails.
+    #[must_use]
+    pub fn to_dot_with(&self, label: impl FnMut(&I) -> Cow<'_, str>) -> String {
+        let mut s = String::new();
+        self.write_dot_with(&mut s, label)
+            .expect("fmt::Write to String cannot fail");
+        s
+    }
+}
+
+impl<I: DisplayInstr> Cfg<I> {
+    /// Write the CFG in DOT format to any `fmt::Write` sink.
+    ///
+    /// # Errors
+    ///
+    /// Returns the sink's formatting error if a write fails.
+    pub fn write_dot(&self, w: &mut dyn fmt::Write) -> fmt::Result {
+        self.write_dot_with(w, DisplayInstr::mnemonic)
+    }
+
     /// Produce the DOT representation as a [`String`].
     ///
     /// # Panics
@@ -106,13 +191,12 @@ impl<I: FlowControl> Cfg<I> {
     ///
     /// ```
     /// use std::borrow::Cow;
-    /// use cfglib::{Cfg, EdgeKind, FlowControl, FlowEffect};
+    /// use cfglib::{Cfg, DisplayInstr, EdgeKind};
     ///
     /// #[derive(Debug, Clone)]
     /// struct Inst(&'static str);
-    /// impl FlowControl for Inst {
-    ///     fn flow_effect(&self) -> FlowEffect { FlowEffect::Fallthrough }
-    ///     fn display_mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.0) }
+    /// impl DisplayInstr for Inst {
+    ///     fn mnemonic(&self) -> Cow<'_, str> { Cow::Borrowed(self.0) }
     /// }
     ///
     /// let mut cfg = Cfg::<Inst>::new();
@@ -132,9 +216,26 @@ impl<I: FlowControl> Cfg<I> {
 
 #[cfg(test)]
 mod tests {
+    use super::{String, write_view_dot};
     use crate::cfg::Cfg;
     use crate::edge::EdgeKind;
+    use crate::graph::directed::DirectedGraph;
     use crate::test_util::{MockInst, ff};
+
+    #[test]
+    fn view_dot_renders_nodes_edges_and_escapes_labels() {
+        let mut graph = DirectedGraph::new();
+        let a = graph.add_node("say \"hi\"\nback\\slash");
+        let b = graph.add_node("plain");
+        graph.add_edge(a, b, ());
+
+        let mut out = String::new();
+        write_view_dot(&graph, &mut out, |node| String::from(*graph.node(node))).unwrap();
+        assert!(out.starts_with("digraph view {"));
+        assert!(out.contains("n0 -> n1;"));
+        assert!(out.contains("say \\\"hi\\\"\\nback\\\\slash"));
+        assert!(out.contains("[label=\"plain\"]"));
+    }
 
     #[test]
     fn to_dot_contains_digraph_wrapper() {

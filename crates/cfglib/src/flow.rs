@@ -3,9 +3,6 @@
 //! Any instruction set that wants to build a [`Cfg`](crate::Cfg) must
 //! implement [`FlowControl`] for its instruction type.
 
-extern crate alloc;
-use alloc::borrow::Cow;
-
 /// Classification of an instruction's effect on control flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FlowEffect {
@@ -70,41 +67,82 @@ pub enum FlowEffect {
     /// Declaration or metadata — skipped by the builder.
     Declaration,
 
-    // ── Unstructured / CPU-ISA effects ────────────────────────────
-    /// Unconditional jump to a named or address-based target.
+    // ── Unstructured control flow ─────────────────────────────────
+    /// Unconditional explicit jump: a source `goto`, a machine `jmp`/`b`.
     ///
-    /// The target is obtained via [`FlowControl::jump_target`].
+    /// The builder ends the block; the target edge is wired afterwards by
+    /// [`resolve_jump_edges`](crate::resolve_jump_edges) when the
+    /// instruction implements [`JumpTargets`].
     Jump,
-    /// Conditional jump — falls through on false, jumps on true.
+    /// Conditional jump — falls through on false, jumps on true. A guarded
+    /// `goto`, a machine `jcc`/`b.cond`.
     ///
-    /// The target is obtained via [`FlowControl::jump_target`].
+    /// The builder wires the fallthrough edge; the taken edge is wired
+    /// afterwards by [`resolve_jump_edges`](crate::resolve_jump_edges)
+    /// when the instruction implements [`JumpTargets`].
     ConditionalJump,
-    /// Computed / indirect jump (target unknown at decode time).
+    /// Computed / indirect jump (target unknown statically): a source
+    /// computed goto or lowered `match` dispatch, a machine table jump.
     IndirectJump,
-    /// Indirect call (target resolved at runtime).
+    /// Indirect call (target resolved at runtime): source dynamic dispatch
+    /// or function-pointer call, a machine `call [vtable]`.
     IndirectCall,
-    /// Instruction that may throw or trap (e.g. `div`, `int 3`).
+    /// Instruction that may throw or trap: a source throwing expression or
+    /// `raise`, a machine trapping `div` / `int 3`.
     MayThrow,
 }
 
-/// Trait that an ISA's instruction type must implement so the CFG builder
-/// can classify each instruction's effect on control flow.
+/// Trait that an instruction type implements so the CFG builder can classify
+/// each instruction's effect on control flow.
+///
+/// Display rendering lives on [`DisplayInstr`](crate::DisplayInstr) and
+/// explicit branch targets on [`JumpTargets`]; this trait is only the flow
+/// classification itself.
 pub trait FlowControl {
     /// Classify this instruction's control-flow effect.
     fn flow_effect(&self) -> FlowEffect;
+}
 
-    /// Optional short label for display in DOT output (e.g. the mnemonic).
-    fn display_mnemonic(&self) -> Cow<'_, str> {
-        Cow::Borrowed("")
+/// Opt-in: instructions that transfer control to a callable.
+///
+/// The instruction performing a call is the authoritative source of its
+/// target — the callee is consumer-typed (a raw address, a symbol id, a
+/// mangled name, a CST node), never a library-imposed string or address
+/// field. Used by
+/// [`build_call_graph`](crate::build_call_graph) and explicit tail-call
+/// detection.
+pub trait CallInfo {
+    /// Consumer-defined callee identity.
+    type Callee: Clone + Ord;
+
+    /// The callee, when statically known. `None` for non-call instructions
+    /// and for unresolved indirect calls.
+    fn callee(&self) -> Option<Self::Callee>;
+
+    /// Whether this call site is a tail call (no return expected).
+    fn is_tail_call(&self) -> bool {
+        false
     }
+}
 
-    /// For [`FlowEffect::Jump`] and [`FlowEffect::ConditionalJump`],
-    /// returns the target label or address as a string.
-    ///
-    /// The default returns `None`. ISA frontends should override this
-    /// for jump instructions so the builder can wire up the target
-    /// edge.
-    fn jump_target(&self) -> Option<Cow<'_, str>> {
+/// Opt-in: instructions with explicit branch targets (gotos and labels).
+///
+/// The target token is consumer-typed — a raw address, a label symbol, a CST
+/// node id — never a string imposed by the library. After
+/// [`CfgBuilder::build`](crate::CfgBuilder::build), run
+/// [`resolve_jump_edges`](crate::resolve_jump_edges) to wire the edges these
+/// targets describe.
+pub trait JumpTargets: FlowControl {
+    /// Branch-target token: address, label symbol, CST node id.
+    type Target: Clone + Ord;
+
+    /// Target of a [`FlowEffect::Jump`] / [`FlowEffect::ConditionalJump`]
+    /// instruction. `None` for every other instruction.
+    fn jump_target(&self) -> Option<Self::Target>;
+
+    /// Target token this instruction *defines* (for [`FlowEffect::Label`]
+    /// instructions). `None` for every other instruction.
+    fn label(&self) -> Option<Self::Target> {
         None
     }
 }

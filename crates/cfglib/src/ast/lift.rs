@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 use super::node::{AstNode, CatchHandler, SwitchCase};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
+use crate::dataflow::Predicated;
 use crate::edge::EdgeKind;
 use crate::graph::dominator::DominatorTree;
 use crate::region::HandlerKind;
@@ -190,6 +191,7 @@ fn lift_region<I: Clone>(
             let insts = cfg.block(block).instructions().to_vec();
             if !insts.is_empty() {
                 result.push(AstNode::Return {
+                    id: block,
                     instructions: insts,
                 });
             }
@@ -212,7 +214,6 @@ fn lift_region<I: Clone>(
             id: block,
             instructions: cfg.block(block).instructions().to_vec(),
         };
-        let block_node = maybe_guard(cfg, block, block_node);
         if needs_label {
             result.push(wrap_label(block, block_node));
         } else {
@@ -227,20 +228,187 @@ fn lift_region<I: Clone>(
     result
 }
 
-/// Wrap a node in a `Guarded` if the block has a predication guard.
-fn maybe_guard<I>(cfg: &Cfg<I>, block: BlockId, node: AstNode<I>) -> AstNode<I> {
-    if let Some(guard) = cfg.block(block).guard() {
-        let pred = if guard.when_true {
-            guard.predicate.clone()
-        } else {
-            alloc::format!("!{}", guard.predicate)
-        };
+/// Lift a [`Cfg`] and regionise predicated instructions into
+/// [`AstNode::Guarded`] nodes.
+///
+/// Runs [`lift`], then wraps every maximal run of instructions sharing the
+/// same [`Predicated::predicate`] into a `Guarded` node whose witness is the
+/// run's first instruction. Unpredicated instructions stay in plain blocks.
+#[must_use]
+pub fn lift_predicated<I: Clone + Predicated>(cfg: &Cfg<I>) -> AstNode<I> {
+    wrap_predicated(lift(cfg)).simplify()
+}
+
+fn wrap_nodes<I: Clone + Predicated>(nodes: Vec<AstNode<I>>) -> Vec<AstNode<I>> {
+    nodes.into_iter().map(wrap_predicated).collect()
+}
+
+/// Split a block's instructions into guarded segments.
+fn wrap_block_runs<I: Clone + Predicated>(id: BlockId, instructions: Vec<I>) -> AstNode<I> {
+    let segments = predicate_runs(instructions)
+        .into_iter()
+        .map(|(predicate, run)| {
+            guard_segment(
+                predicate.as_ref(),
+                AstNode::Block {
+                    id,
+                    instructions: run,
+                },
+            )
+        })
+        .collect();
+    sequence_or_single(segments)
+}
+
+/// Split a return block's instructions into guarded segments; the final run
+/// keeps its `Return` semantics (a predicated final run is a conditional
+/// return, e.g. ARM `bxeq lr`).
+fn wrap_return_runs<I: Clone + Predicated>(id: BlockId, instructions: Vec<I>) -> AstNode<I> {
+    let mut runs = predicate_runs(instructions);
+    let last = runs.pop();
+    let mut segments: Vec<AstNode<I>> = runs
+        .into_iter()
+        .map(|(predicate, run)| {
+            guard_segment(
+                predicate.as_ref(),
+                AstNode::Block {
+                    id,
+                    instructions: run,
+                },
+            )
+        })
+        .collect();
+    if let Some((predicate, run)) = last {
+        segments.push(guard_segment(
+            predicate.as_ref(),
+            AstNode::Return {
+                id,
+                instructions: run,
+            },
+        ));
+    }
+    sequence_or_single(segments)
+}
+
+fn wrap_predicated<I: Clone + Predicated>(node: AstNode<I>) -> AstNode<I> {
+    match node {
+        AstNode::Block { id, instructions } => wrap_block_runs(id, instructions),
+        AstNode::Return { id, instructions } => wrap_return_runs(id, instructions),
+        AstNode::Sequence { body } => AstNode::Sequence {
+            body: wrap_nodes(body),
+        },
+        AstNode::IfThenElse {
+            condition,
+            condition_instructions,
+            then_body,
+            else_body,
+        } => AstNode::IfThenElse {
+            condition,
+            condition_instructions,
+            then_body: wrap_nodes(then_body),
+            else_body: wrap_nodes(else_body),
+        },
+        AstNode::Loop { header, body } => AstNode::Loop {
+            header,
+            body: wrap_nodes(body),
+        },
+        AstNode::Switch {
+            condition,
+            condition_instructions,
+            cases,
+        } => AstNode::Switch {
+            condition,
+            condition_instructions,
+            cases: cases
+                .into_iter()
+                .map(|case| SwitchCase {
+                    id: case.id,
+                    header_instructions: case.header_instructions,
+                    body: wrap_nodes(case.body),
+                })
+                .collect(),
+        },
+        AstNode::Label { name, body } => AstNode::Label {
+            name,
+            body: wrap_nodes(body),
+        },
+        AstNode::TryCatch {
+            try_body,
+            handlers,
+            finally_body,
+        } => AstNode::TryCatch {
+            try_body: wrap_nodes(try_body),
+            handlers: handlers
+                .into_iter()
+                .map(|handler| CatchHandler {
+                    entry: handler.entry,
+                    body: wrap_nodes(handler.body),
+                })
+                .collect(),
+            finally_body: wrap_nodes(finally_body),
+        },
         AstNode::Guarded {
-            predicate: pred,
-            body: alloc::vec![node],
+            predicate,
+            when_true,
+            body,
+        } => AstNode::Guarded {
+            predicate,
+            when_true,
+            body: wrap_nodes(body),
+        },
+        leaf @ (AstNode::Break | AstNode::Continue | AstNode::Goto { .. }) => leaf,
+    }
+}
+
+/// A maximal instruction run sharing one predicate.
+type PredicateRun<I> = (
+    Option<(<I as crate::dataflow::InstrInfo>::Variable, bool)>,
+    Vec<I>,
+);
+
+/// Group instructions into maximal runs sharing one predicate.
+fn predicate_runs<I: Predicated>(instructions: Vec<I>) -> Vec<PredicateRun<I>> {
+    let mut runs: Vec<PredicateRun<I>> = Vec::new();
+    for instruction in instructions {
+        let predicate = instruction.predicate();
+        match runs.last_mut() {
+            Some((run_predicate, run)) if *run_predicate == predicate => run.push(instruction),
+            _ => runs.push((predicate, alloc::vec![instruction])),
         }
+    }
+    runs
+}
+
+/// Wrap a segment in [`AstNode::Guarded`] when its run is predicated.
+fn guard_segment<I: Clone + Predicated>(
+    predicate: Option<&(I::Variable, bool)>,
+    segment: AstNode<I>,
+) -> AstNode<I> {
+    match predicate {
+        Some((_, when_true)) => {
+            let when_true = *when_true;
+            let witness = match &segment {
+                AstNode::Block { instructions, .. } | AstNode::Return { instructions, .. } => {
+                    instructions[0].clone()
+                }
+                _ => unreachable!("guard_segment only wraps Block/Return segments"),
+            };
+            AstNode::Guarded {
+                predicate: witness,
+                when_true,
+                body: alloc::vec![segment],
+            }
+        }
+        None => segment,
+    }
+}
+
+/// Collapse a single-segment vector; wrap several segments in a sequence.
+fn sequence_or_single<I>(mut segments: Vec<AstNode<I>>) -> AstNode<I> {
+    if segments.len() == 1 {
+        segments.pop().expect("single segment")
     } else {
-        node
+        AstNode::Sequence { body: segments }
     }
 }
 
@@ -535,8 +703,29 @@ mod tests {
     use super::*;
     use crate::builder::CfgBuilder;
     use crate::flow::FlowEffect;
-    use crate::test_util::{MockInst, ff};
+    use crate::test_util::{MockInst, df_ff, df_pred, ff};
     use alloc::vec;
+
+    #[test]
+    fn lift_predicated_regionises_same_predicate_runs() {
+        let cfg = CfgBuilder::build(vec![
+            df_ff("plain"),
+            df_pred("guarded_a", 3, true),
+            df_pred("guarded_b", 3, true),
+            df_pred("negated", 3, false),
+            df_ff("after"),
+        ])
+        .unwrap();
+
+        let ast = lift_predicated(&cfg);
+        let pseudo = ast.to_pseudocode();
+        assert!(pseudo.contains("@guarded(guarded_a)"), "{pseudo}");
+        assert!(pseudo.contains("@guarded(!negated)"), "{pseudo}");
+        // Same-predicate instructions share one region.
+        assert_eq!(pseudo.matches("@guarded(").count(), 2, "{pseudo}");
+        // Unpredicated instructions stay outside regions.
+        assert!(pseudo.starts_with("plain\n"), "{pseudo}");
+    }
 
     /// Helper: build CFG then lift, return pseudocode.
     fn lift_pseudo(insts: Vec<MockInst>) -> alloc::string::String {

@@ -1,40 +1,29 @@
 //! Edges connecting basic blocks in a control-flow graph.
 
-extern crate alloc;
-
 use crate::block::BlockId;
 
-/// Opaque identifier for an edge within a graph arena.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct EdgeId(pub(crate) u32);
-
-impl EdgeId {
-    pub(crate) fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("edge index exceeds u32::MAX"))
-    }
-
-    /// Construct an identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Returns the raw index.
-    #[inline]
-    #[must_use]
-    pub fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl core::fmt::Display for EdgeId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "e{}", self.0)
-    }
-}
+pub use crate::graph::directed::EdgeId;
 
 /// The kind of a control-flow edge.
+///
+/// The vocabulary is universal, not machine-specific: every variant has both
+/// a source-language and a machine reading (e.g. [`Jump`](Self::Jump) is a
+/// `goto` or a `jmp`).
+///
+/// # Which kinds algorithms interpret
+///
+/// Dominance, loop detection, SCC, and traversals are purely structural —
+/// they never read kinds, so consumers may choose kinds freely for their own
+/// purposes. The kind-sensitive surfaces are: AST lifting (block
+/// classification via [`Back`](Self::Back),
+/// [`ConditionalTrue`](Self::ConditionalTrue) /
+/// [`ConditionalFalse`](Self::ConditionalFalse),
+/// [`SwitchCase`](Self::SwitchCase), [`Jump`](Self::Jump)), the `_tagged`
+/// loop detectors ([`Back`](Self::Back)), linearization (fallthrough-like
+/// kinds vs branches), switch recovery
+/// ([`IndirectJump`](Self::IndirectJump) removal), the exception model
+/// (the `Exception*` kinds), diffing (kind discriminants in fingerprints),
+/// and DOT styling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EdgeKind {
@@ -55,12 +44,18 @@ pub enum EdgeKind {
     /// Edge for a switch/case arm.
     SwitchCase,
 
-    // ── Unstructured / CPU-ISA edges ──────────────────────────────
-    /// Direct jump (goto / `jmp` / `b`).
+    // ── Unstructured control flow ─────────────────────────────────
+    /// Direct explicit jump: a source `goto`, a machine `jmp` / `b`.
+    ///
+    /// Distinct from [`Unconditional`](Self::Unconditional): `Jump` records
+    /// an explicit branch instruction, `Unconditional` a synthesized
+    /// structured transfer (break, switch exit).
     Jump,
-    /// Computed / indirect jump (`jmp [rax]`, jump table).
+    /// Computed / indirect jump: a source computed goto or lowered `match`
+    /// dispatch, a machine `jmp [rax]` through a jump table.
     IndirectJump,
-    /// Indirect call (`call [vtable]`).
+    /// Indirect call: source dynamic dispatch or a function-pointer call, a
+    /// machine `call [vtable]`.
     IndirectCall,
     /// Edge into an exception-handler entry block.
     ExceptionHandler,
@@ -111,8 +106,6 @@ pub struct Edge {
     /// Used by the linearizer for hot-path layout and by DOT output
     /// for visual emphasis.
     pub(crate) weight: Option<f64>,
-    /// Optional call-site metadata for `Call` / `IndirectCall` edges.
-    pub(crate) call_site: Option<CallSite>,
 }
 
 impl PartialEq for Edge {
@@ -122,49 +115,10 @@ impl PartialEq for Edge {
             && self.target == other.target
             && self.kind == other.kind
             && self.weight.map(f64::to_bits) == other.weight.map(f64::to_bits)
-            && self.call_site == other.call_site
     }
 }
 
 impl Eq for Edge {}
-
-/// Metadata attached to a call edge describing the call target.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct CallSite {
-    /// Symbolic name or address of the call target (e.g. function name).
-    pub target_name: Option<alloc::string::String>,
-    /// Raw target address, if known.
-    pub target_address: Option<u64>,
-    /// Calling convention hint (ISA-specific string, e.g. "cdecl", "aapcs").
-    pub calling_convention: Option<alloc::string::String>,
-    /// Whether this is a tail call (no return edge expected).
-    pub is_tail_call: bool,
-}
-
-impl CallSite {
-    /// Create a call site with just a target name.
-    #[must_use]
-    pub fn named(name: &str) -> Self {
-        Self {
-            target_name: Some(alloc::string::String::from(name)),
-            target_address: None,
-            calling_convention: None,
-            is_tail_call: false,
-        }
-    }
-
-    /// Create a call site with a raw address.
-    #[must_use]
-    pub fn at_address(addr: u64) -> Self {
-        Self {
-            target_name: None,
-            target_address: Some(addr),
-            calling_convention: None,
-            is_tail_call: false,
-        }
-    }
-}
 
 impl Edge {
     /// The edge's unique identifier.
@@ -206,18 +160,5 @@ impl Edge {
     #[inline]
     pub fn set_weight(&mut self, w: Option<f64>) {
         self.weight = w;
-    }
-
-    /// The call-site metadata, if this is a call edge.
-    #[inline]
-    #[must_use]
-    pub fn call_site(&self) -> Option<&CallSite> {
-        self.call_site.as_ref()
-    }
-
-    /// Set call-site metadata.
-    #[inline]
-    pub fn set_call_site(&mut self, cs: Option<CallSite>) {
-        self.call_site = cs;
     }
 }

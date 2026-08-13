@@ -15,10 +15,19 @@ use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
 use crate::analysis::expr::ExprInstr;
-use crate::analysis::purity::Effect;
-use crate::dataflow::InstrInfo;
 use crate::dataflow::copyprop::CopySource;
+use crate::dataflow::{EffectInfo, InstrInfo};
+use crate::display::DisplayInstr;
 use crate::flow::{FlowControl, FlowEffect};
+
+/// Test-local side-effect vocabulary (the library imposes none).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TestEffect {
+    /// Reads from memory / global state.
+    MemoryRead,
+    /// Writes to memory / global state.
+    MemoryWrite,
+}
 
 // ── MockInst (flow-only) ────────────────────────────────────────────
 
@@ -30,7 +39,10 @@ impl FlowControl for MockInst {
     fn flow_effect(&self) -> FlowEffect {
         self.0
     }
-    fn display_mnemonic(&self) -> Cow<'_, str> {
+}
+
+impl DisplayInstr for MockInst {
+    fn mnemonic(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.1)
     }
 }
@@ -57,7 +69,7 @@ pub struct DfInst {
     /// Variables written by this instruction.
     pub defs: Vec<u16>,
     /// Side effects (memory, I/O, etc.).
-    pub side_effects: Vec<Effect>,
+    pub side_effects: Vec<TestEffect>,
     /// If `true`, this instruction is a simple copy (`defs[0] := uses[0]`).
     pub is_copy: bool,
     /// Expression operator name (e.g. `"add"`, `"mul"`). `None` for
@@ -65,13 +77,22 @@ pub struct DfInst {
     pub op: Option<&'static str>,
     /// If set, this instruction loads a constant value.
     pub constant: Option<i64>,
+    /// If set, this instruction calls the named function.
+    pub callee: Option<&'static str>,
+    /// Whether this call is a tail call.
+    pub tail: bool,
+    /// If set, this instruction executes only under `(variable, polarity)`.
+    pub pred: Option<(u16, bool)>,
 }
 
 impl FlowControl for DfInst {
     fn flow_effect(&self) -> FlowEffect {
         self.effect
     }
-    fn display_mnemonic(&self) -> Cow<'_, str> {
+}
+
+impl DisplayInstr for DfInst {
+    fn mnemonic(&self) -> Cow<'_, str> {
         Cow::Borrowed(self.name)
     }
 }
@@ -85,7 +106,12 @@ impl InstrInfo for DfInst {
     fn defs(&self) -> &[u16] {
         &self.defs
     }
-    fn effects(&self) -> &[Effect] {
+}
+
+impl EffectInfo for DfInst {
+    type Effect = TestEffect;
+
+    fn effects(&self) -> &[TestEffect] {
         &self.side_effects
     }
 }
@@ -108,7 +134,10 @@ impl CopySource for DfInst {
 }
 
 impl ExprInstr for DfInst {
-    fn as_expr(&self) -> Option<(&str, &[u16])> {
+    type Operator = &'static str;
+    type Const = i64;
+
+    fn as_expr(&self) -> Option<(&'static str, &[u16])> {
         self.op.map(|op| (op, self.uses.as_slice()))
     }
     fn as_const(&self) -> Option<i64> {
@@ -116,7 +145,27 @@ impl ExprInstr for DfInst {
     }
 }
 
+impl crate::dataflow::Predicated for DfInst {
+    fn predicate(&self) -> Option<(u16, bool)> {
+        self.pred
+    }
+}
+
+impl crate::flow::CallInfo for DfInst {
+    type Callee = &'static str;
+
+    fn callee(&self) -> Option<&'static str> {
+        self.callee
+    }
+
+    fn is_tail_call(&self) -> bool {
+        self.tail
+    }
+}
+
 impl crate::dataflow::constprop::ConstantFolder for DfInst {
+    type Const = i64;
+
     fn fold_constant(&self, _known: &alloc::collections::BTreeMap<u16, i64>) -> Option<(u16, i64)> {
         // If this instruction is a constant load, report it.
         if let Some(val) = self.constant
@@ -141,6 +190,17 @@ fn df_base(name: &'static str) -> DfInst {
         is_copy: false,
         op: None,
         constant: None,
+        callee: None,
+        tail: false,
+        pred: None,
+    }
+}
+
+/// Create a [`DfInst`] predicated on `(variable, polarity)`.
+pub fn df_pred(name: &'static str, variable: u16, when_true: bool) -> DfInst {
+    DfInst {
+        pred: Some((variable, when_true)),
+        ..df_base(name)
     }
 }
 
@@ -177,7 +237,7 @@ pub fn df_pure(name: &'static str) -> DfInst {
 }
 
 /// Create an impure [`DfInst`] with a single side effect.
-pub fn df_impure(name: &'static str, e: Effect) -> DfInst {
+pub fn df_impure(name: &'static str, e: TestEffect) -> DfInst {
     DfInst {
         side_effects: alloc::vec![e],
         ..df_base(name)
@@ -209,6 +269,16 @@ pub fn df_const(name: &'static str, dst: u16, val: i64) -> DfInst {
     DfInst {
         defs: alloc::vec![dst],
         constant: Some(val),
+        ..df_base(name)
+    }
+}
+
+/// Create a call instruction targeting `callee`.
+pub fn df_call(name: &'static str, callee: &'static str, tail: bool) -> DfInst {
+    DfInst {
+        effect: FlowEffect::Call,
+        callee: Some(callee),
+        tail,
         ..df_base(name)
     }
 }

@@ -11,13 +11,13 @@ use alloc::vec::Vec;
 use crate::block::BlockId;
 use crate::graph::structure::NaturalLoop;
 
-/// A node in the loop nesting tree.
+/// A node in the loop nesting tree, over node identity `N`.
 #[derive(Debug, Clone)]
-pub struct LoopNestNode {
+pub struct LoopNestNode<N = BlockId> {
     /// Index into the original `NaturalLoop` slice.
     pub loop_index: usize,
-    /// Header block of this loop.
-    pub header: BlockId,
+    /// Header node of this loop.
+    pub header: N,
     /// Parent loop index (None for outermost loops).
     pub parent: Option<usize>,
     /// Indices of directly nested child loops.
@@ -48,23 +48,23 @@ pub struct LoopNestNode {
 /// assert_eq!(tree.innermost_loop(b1), Some(0));
 /// ```
 #[derive(Debug, Clone)]
-pub struct LoopNestingTree {
+pub struct LoopNestingTree<N = BlockId> {
     /// One node per natural loop, indexed by loop index.
-    pub nodes: Vec<LoopNestNode>,
-    /// Block → innermost containing loop index.
-    block_to_loop: BTreeMap<BlockId, usize>,
+    pub nodes: Vec<LoopNestNode<N>>,
+    /// Node → innermost containing loop index.
+    block_to_loop: BTreeMap<N, usize>,
 }
 
-impl LoopNestingTree {
+impl<N: Copy + Ord> LoopNestingTree<N> {
     /// Build the nesting tree from a slice of natural loops.
     ///
     /// Loops are assumed to be sorted by depth (outermost first),
     /// which is the order returned by
     /// [`detect_loops`](crate::graph::structure::detect_loops).
     #[must_use]
-    pub fn build(loops: &[NaturalLoop]) -> Self {
+    pub fn build(loops: &[NaturalLoop<N>]) -> Self {
         let n = loops.len();
-        let mut nodes: Vec<LoopNestNode> = loops
+        let mut nodes: Vec<LoopNestNode<N>> = loops
             .iter()
             .enumerate()
             .map(|(i, lp)| LoopNestNode {
@@ -126,9 +126,9 @@ impl LoopNestingTree {
         }
     }
 
-    /// Get the innermost loop containing a block, if any.
+    /// Get the innermost loop containing a node, if any.
     #[must_use]
-    pub fn innermost_loop(&self, block: BlockId) -> Option<usize> {
+    pub fn innermost_loop(&self, block: N) -> Option<usize> {
         self.block_to_loop.get(&block).copied()
     }
 

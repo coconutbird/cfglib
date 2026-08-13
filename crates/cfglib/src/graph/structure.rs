@@ -1,51 +1,53 @@
 //! Structural detection — natural loops, regions, and reducibility.
 //!
-//! Identifies loop structures and classifies the CFG as reducible or
+//! Identifies loop structures and classifies a graph as reducible or
 //! irreducible, building on the dominator tree and back-edge detection.
+//!
+//! The core detectors are generic over [`DirectedGraphView`] /
+//! [`RootedGraphView`] and use dominance only. [`Cfg`] consumers whose
+//! builders tag explicit [`EdgeKind::Back`] edges (structured `loop` /
+//! `continue` markers, including on irreducible machine CFGs) can use the
+//! `_tagged` variants, which union the tags with dominance-based detection.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use super::dominator::DominatorTree;
+use super::view::{DenseNodeId, DirectedGraphView, RootedGraphView};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::edge::EdgeKind;
 
-/// A natural loop in the CFG.
+/// A natural loop over node identity `N`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NaturalLoop {
-    /// The loop header (entry point, dominates all other blocks).
-    pub header: BlockId,
-    /// All blocks in the loop body (including the header).
-    pub body: BTreeSet<BlockId>,
-    /// Back-edge tail blocks (blocks that jump back to the header).
-    pub latches: BTreeSet<BlockId>,
+pub struct NaturalLoop<N = BlockId> {
+    /// The loop header (entry point, dominates all other nodes).
+    pub header: N,
+    /// All nodes in the loop body (including the header).
+    pub body: BTreeSet<N>,
+    /// Back-edge tail nodes (nodes that jump back to the header).
+    pub latches: BTreeSet<N>,
     /// Nesting depth (0 = outermost).
     pub depth: usize,
 }
 
 /// A back-edge: tail → header where header dominates tail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct BackEdge {
-    /// The block at the tail of the back-edge (the source of the jump).
-    pub tail: BlockId,
-    /// The loop header block (the target of the back-edge).
-    pub header: BlockId,
+pub struct BackEdge<N = BlockId> {
+    /// The node at the tail of the back-edge (the source of the jump).
+    pub tail: N,
+    /// The loop header node (the target of the back-edge).
+    pub header: N,
 }
 
-/// Find all back-edges in the CFG (edges where the target dominates
-/// the source).
+/// Find all back-edges in a graph view (edges whose target dominates
+/// their source).
 ///
-/// An edge is considered a back-edge if **either**:
-/// - The builder already tagged it as [`EdgeKind::Back`] (explicit
-///   structural back-edges from `loop` / `continue`), **or**
-/// - The dominator tree confirms that the target dominates the source
-///   (catching any natural back-edges that the builder did not tag,
-///   e.g. from unstructured goto-style control flow).
-///
-/// The result is deduplicated, so an edge satisfying both conditions
-/// appears only once.
+/// The result is deduplicated: parallel edges between the same pair
+/// appear once. For [`Cfg`]s whose builders also tag explicit
+/// [`EdgeKind::Back`] edges, [`find_back_edges_tagged`] additionally
+/// honours the tags.
 ///
 /// # Examples
 ///
@@ -65,10 +67,37 @@ pub struct BackEdge {
 /// assert_eq!(backs[0].tail, b1);
 /// ```
 #[must_use]
-pub fn find_back_edges<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackEdge> {
+pub fn find_back_edges<G: DirectedGraphView>(
+    graph: &G,
+    dom: &DominatorTree<G::NodeId>,
+) -> Vec<BackEdge<G::NodeId>> {
     let mut backs = Vec::new();
+    for node in graph.node_ids() {
+        for successor in graph.successors(node) {
+            if dom.dominates(successor, node) {
+                backs.push(BackEdge {
+                    tail: node,
+                    header: successor,
+                });
+            }
+        }
+    }
+    backs.sort();
+    backs.dedup();
+    backs
+}
+
+/// Find back-edges in a [`Cfg`], honouring explicit [`EdgeKind::Back`] tags.
+///
+/// The union of [`find_back_edges`]'s dominance-based detection and the
+/// builder's tags. The tags matter on irreducible machine CFGs where a
+/// frontend knows an edge is a loop back-edge even though dominance cannot
+/// prove it.
+#[must_use]
+pub fn find_back_edges_tagged<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackEdge> {
+    let mut backs = find_back_edges(cfg, dom);
     for edge in cfg.edges() {
-        if edge.kind() == EdgeKind::Back || dom.dominates(edge.target(), edge.source()) {
+        if edge.kind() == EdgeKind::Back {
             backs.push(BackEdge {
                 tail: edge.source(),
                 header: edge.target(),
@@ -82,9 +111,13 @@ pub fn find_back_edges<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackEdge> {
 
 /// Compute the natural loop body for a single back-edge.
 ///
-/// The body is the set of blocks that can reach `tail` without
+/// The body is the set of nodes that can reach `tail` without
 /// going through `header`, plus `header` itself.
-fn loop_body_for<I>(cfg: &Cfg<I>, header: BlockId, tail: BlockId) -> BTreeSet<BlockId> {
+fn loop_body_for<G: DirectedGraphView>(
+    graph: &G,
+    header: G::NodeId,
+    tail: G::NodeId,
+) -> BTreeSet<G::NodeId> {
     let mut body = BTreeSet::new();
     body.insert(header);
     if header == tail {
@@ -93,7 +126,7 @@ fn loop_body_for<I>(cfg: &Cfg<I>, header: BlockId, tail: BlockId) -> BTreeSet<Bl
     body.insert(tail);
     let mut stack = alloc::vec![tail];
     while let Some(n) = stack.pop() {
-        for p in cfg.predecessors(n) {
+        for p in graph.predecessors(n) {
             if !body.contains(&p) {
                 body.insert(p);
                 stack.push(p);
@@ -103,10 +136,62 @@ fn loop_body_for<I>(cfg: &Cfg<I>, header: BlockId, tail: BlockId) -> BTreeSet<Bl
     body
 }
 
-/// Detect all natural loops in the CFG.
+/// Build merged, depth-annotated loops from a set of back-edges.
+fn loops_from_backs<G: DirectedGraphView>(
+    graph: &G,
+    backs: &[BackEdge<G::NodeId>],
+) -> Vec<NaturalLoop<G::NodeId>> {
+    if backs.is_empty() {
+        return Vec::new();
+    }
+
+    // Group back-edges by header.
+    let mut header_map: alloc::collections::BTreeMap<G::NodeId, Vec<G::NodeId>> =
+        alloc::collections::BTreeMap::new();
+    for be in backs {
+        header_map.entry(be.header).or_default().push(be.tail);
+    }
+
+    let mut loops: Vec<NaturalLoop<G::NodeId>> = Vec::new();
+    for (header, latches) in &header_map {
+        let mut body = BTreeSet::new();
+        for &tail in latches {
+            body.extend(loop_body_for(graph, *header, tail));
+        }
+        loops.push(NaturalLoop {
+            header: *header,
+            body,
+            latches: latches.iter().copied().collect(),
+            depth: 0, // filled in below
+        });
+    }
+
+    // Compute nesting depth in O(L × max_body) instead of O(L²):
+    // Build a map from node → number of loops containing it, then
+    // each loop's depth = (count of its header) − 1 (itself).
+    {
+        let node_count = graph.node_count();
+        let mut containing: Vec<u32> = alloc::vec![0; node_count];
+        for lp in &loops {
+            for &b in &lp.body {
+                containing[b.index()] += 1;
+            }
+        }
+        for lp in &mut loops {
+            // Every loop's body includes its own header, so subtract 1.
+            lp.depth = (containing[lp.header.index()] - 1) as usize;
+        }
+    }
+
+    // Sort by depth (outermost first), then by header.
+    loops.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.header.cmp(&b.header)));
+    loops
+}
+
+/// Detect all natural loops in a graph view.
 ///
 /// Loops sharing the same header are merged into a single
-/// `NaturalLoop` with multiple latches.
+/// [`NaturalLoop`] with multiple latches.
 ///
 /// # Examples
 ///
@@ -128,81 +213,42 @@ fn loop_body_for<I>(cfg: &Cfg<I>, header: BlockId, tail: BlockId) -> BTreeSet<Bl
 /// assert!(loops[0].body.contains(&b1));
 /// ```
 #[must_use]
-pub fn detect_loops<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
-    let backs = find_back_edges(cfg, dom);
-    if backs.is_empty() {
-        return Vec::new();
-    }
-
-    // Group back-edges by header.
-    let mut header_map: alloc::collections::BTreeMap<BlockId, Vec<BlockId>> =
-        alloc::collections::BTreeMap::new();
-    for be in &backs {
-        header_map.entry(be.header).or_default().push(be.tail);
-    }
-
-    let mut loops: Vec<NaturalLoop> = Vec::new();
-    for (header, latches) in &header_map {
-        let mut body = BTreeSet::new();
-        for &tail in latches {
-            body.extend(loop_body_for(cfg, *header, tail));
-        }
-        loops.push(NaturalLoop {
-            header: *header,
-            body,
-            latches: latches.iter().copied().collect(),
-            depth: 0, // filled in below
-        });
-    }
-
-    // Compute nesting depth in O(L × max_body) instead of O(L²):
-    // Build a map from block → number of loops containing it, then
-    // each loop's depth = (count of its header) − 1 (itself).
-    {
-        let block_count = cfg.num_blocks();
-        let mut containing: Vec<u32> = alloc::vec![0; block_count];
-        for lp in &loops {
-            for &b in &lp.body {
-                containing[b.index()] += 1;
-            }
-        }
-        for lp in &mut loops {
-            // Every loop's body includes its own header, so subtract 1.
-            lp.depth = (containing[lp.header.index()] - 1) as usize;
-        }
-    }
-
-    // Sort by depth (outermost first), then by header.
-    loops.sort_by(|a, b| a.depth.cmp(&b.depth).then(a.header.cmp(&b.header)));
-    loops
+pub fn detect_loops<G: DirectedGraphView>(
+    graph: &G,
+    dom: &DominatorTree<G::NodeId>,
+) -> Vec<NaturalLoop<G::NodeId>> {
+    loops_from_backs(graph, &find_back_edges(graph, dom))
 }
 
-/// Whether the CFG is reducible.
-///
-/// A CFG is **reducible** if and only if every cycle in the graph
-/// contains a node that dominates all other nodes in that cycle.
-/// Equivalently, every retreating edge in a DFS is a back-edge
-/// (target dominates source).
-///
-/// This implementation checks every edge in the CFG: if `target`
-/// dominates `source` the edge is a natural back-edge (fine); any
-/// other edge where `target` was already visited but does **not**
-/// dominate `source` witnesses an irreducible cycle.
+/// Detect natural loops in a [`Cfg`], honouring explicit
+/// [`EdgeKind::Back`] tags (see [`find_back_edges_tagged`]).
 #[must_use]
-pub fn is_reducible<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> bool {
+pub fn detect_loops_tagged<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
+    loops_from_backs(cfg, &find_back_edges_tagged(cfg, dom))
+}
+
+/// Whether the graph is reducible.
+///
+/// A graph is **reducible** if and only if every cycle contains a node
+/// that dominates all other nodes in that cycle. Equivalently, every
+/// retreating edge in a DFS is a back-edge (target dominates source).
+///
+/// The DFS runs from the view's root; any edge to a gray (in-progress)
+/// node whose target does not dominate the source witnesses an
+/// irreducible cycle.
+#[must_use]
+pub fn is_reducible<G: RootedGraphView>(graph: &G, dom: &DominatorTree<G::NodeId>) -> bool {
     const WHITE: u8 = 0;
     const GRAY: u8 = 1;
     const BLACK: u8 = 2;
 
-    // DFS to classify edges. An edge to an ancestor that doesn't
-    // dominate the source is irreducible.
-    let n = cfg.num_blocks();
+    let n = graph.node_count();
     if n == 0 {
         return true;
     }
 
     let mut color = alloc::vec![WHITE; n];
-    let mut stack: Vec<(BlockId, bool)> = alloc::vec![(cfg.entry(), false)];
+    let mut stack: Vec<(G::NodeId, bool)> = alloc::vec![(graph.root(), false)];
 
     while let Some((node, processed)) = stack.pop() {
         if processed {
@@ -215,7 +261,7 @@ pub fn is_reducible<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> bool {
         color[node.index()] = GRAY;
         stack.push((node, true));
 
-        for succ in cfg.successors(node) {
+        for succ in graph.successors(node) {
             match color[succ.index()] {
                 WHITE => stack.push((succ, false)),
                 GRAY
@@ -285,15 +331,18 @@ pub fn insert_preheader<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<
     Some(preheader)
 }
 
-/// Identify exit blocks of a natural loop.
+/// Identify exit nodes of a natural loop.
 ///
-/// An exit block is any block **outside** the loop body that has a
+/// An exit node is any node **outside** the loop body that has a
 /// predecessor inside the loop body.
 #[must_use]
-pub fn loop_exit_blocks<I>(cfg: &Cfg<I>, lp: &NaturalLoop) -> BTreeSet<BlockId> {
+pub fn loop_exit_blocks<G: DirectedGraphView>(
+    graph: &G,
+    lp: &NaturalLoop<G::NodeId>,
+) -> BTreeSet<G::NodeId> {
     let mut exits = BTreeSet::new();
     for &b in &lp.body {
-        for s in cfg.successors(b) {
+        for s in graph.successors(b) {
             if !lp.body.contains(&s) {
                 exits.insert(s);
             }
@@ -303,8 +352,11 @@ pub fn loop_exit_blocks<I>(cfg: &Cfg<I>, lp: &NaturalLoop) -> BTreeSet<BlockId> 
 }
 
 /// Canonicalize all loops: insert preheaders and identify exits.
+///
+/// Uses [`detect_loops_tagged`], so explicit [`EdgeKind::Back`] tags are
+/// honoured.
 pub fn canonicalize_loops<I: Clone>(cfg: &mut Cfg<I>, dom: &DominatorTree) -> Vec<CanonicalLoop> {
-    let loops = detect_loops(cfg, dom);
+    let loops = detect_loops_tagged(cfg, dom);
     let mut result = Vec::new();
 
     for lp in loops {
@@ -393,6 +445,28 @@ mod tests {
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
         assert_eq!(loops.len(), 1);
+    }
+
+    #[test]
+    fn tagged_back_edge_survives_without_dominance() {
+        // Two entries into a tagged cycle: dominance alone cannot prove
+        // b1 → b2 is a loop, but the builder tag says it is.
+        let mut cfg = Cfg::<MockInst>::new();
+        let b1 = cfg.new_block();
+        let b2 = cfg.new_block();
+        cfg.add_edge(cfg.entry(), b1, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), b2, EdgeKind::ConditionalFalse);
+        cfg.add_edge(b1, b2, EdgeKind::Fallthrough);
+        cfg.add_edge(b2, b1, EdgeKind::Back);
+
+        let dom = DominatorTree::compute(&cfg);
+        assert!(find_back_edges(&cfg, &dom).is_empty());
+        let tagged = find_back_edges_tagged(&cfg, &dom);
+        assert_eq!(tagged.len(), 1);
+        assert_eq!(tagged[0].header, b1);
+        let loops = detect_loops_tagged(&cfg, &dom);
+        assert_eq!(loops.len(), 1);
+        assert!(loops[0].body.contains(&b2));
     }
 
     #[test]

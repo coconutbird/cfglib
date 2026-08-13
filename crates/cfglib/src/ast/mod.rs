@@ -3,5 +3,5 @@
 pub mod lift;
 pub mod node;
 
-pub use lift::lift;
+pub use lift::{lift, lift_predicated};
 pub use node::AstNode;

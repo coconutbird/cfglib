@@ -1,12 +1,19 @@
 //! Switch table reconstruction.
 //!
-//! Detects indirect jumps that follow a `base + index * scale` pattern
-//! (x86 jump tables, ARM TBB/TBH, etc.) and recovers structured
-//! [`EdgeKind::SwitchCase`] edges from them.
+//! Detects multi-way dispatch sites and recovers structured
+//! [`EdgeKind::SwitchCase`] edges from them. The branch-target token `T` is
+//! consumer-typed: a raw address for binary jump tables (x86 tables, ARM
+//! TBB/TBH), a CST node or label id for source-level computed gotos and
+//! lowered `match` dispatch.
 //!
-//! The consumer implements [`SwitchCandidate`] for its instruction
-//! type to describe potential indirect jumps, and this module handles
-//! the CFG rewiring.
+//! Two entry points compose:
+//!
+//! - [`detect_switch_tables`] scans block terminators via the opt-in
+//!   [`SwitchSource`] trait, for consumers whose instructions know their own
+//!   target tables.
+//! - [`recover_switch_tables`] rewires the CFG from a list of
+//!   [`JumpTable`]s — hand-built when table discovery needs external context
+//!   (loader state, memory dumps) the instruction cannot see.
 
 extern crate alloc;
 use alloc::vec::Vec;
@@ -14,29 +21,52 @@ use alloc::vec::Vec;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::edge::EdgeKind;
-use crate::flow::FlowControl;
 
-/// Description of a potential switch / jump-table site.
-#[derive(Debug, Clone)]
-pub struct JumpTableInfo {
-    /// The block containing the indirect jump.
+/// A recovered multi-way dispatch site over branch-target tokens `T`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct JumpTable<T> {
+    /// The block containing the dispatch.
     pub block: BlockId,
-    /// Known case target addresses (resolved by the consumer).
-    pub targets: Vec<u64>,
+    /// Known case targets (resolved by the consumer).
+    pub targets: Vec<T>,
     /// Optional default / fallthrough target.
-    pub default_target: Option<u64>,
+    pub default_target: Option<T>,
 }
 
-/// Trait that an instruction type implements to expose potential
-/// indirect-jump sites for switch table recovery.
+/// A dispatch table: the case targets plus an optional default target.
+pub type SwitchTargets<T> = (Vec<T>, Option<T>);
+
+/// Opt-in: instructions that are multi-way indirect branches with a
+/// statically recoverable target table.
+pub trait SwitchSource {
+    /// Consumer branch-target token.
+    type Target: Clone;
+
+    /// The resolved case targets and optional default, when this
+    /// instruction is a table dispatch. `None` for everything else.
+    fn switch_targets(&self) -> Option<SwitchTargets<Self::Target>>;
+}
+
+/// Scan block terminators for switch sources.
 ///
-/// The consumer inspects its instruction stream and returns any
-/// detected jump-table patterns. This keeps the pattern matching
-/// ISA-specific while the CFG rewiring is generic.
-pub trait SwitchCandidate: FlowControl {
-    /// Scan the instructions of `block` and return a `JumpTableInfo`
-    /// if the block ends in an indirect jump that looks like a switch.
-    fn detect_switch_table<I>(cfg: &Cfg<I>, block: BlockId) -> Option<JumpTableInfo>;
+/// Returns one [`JumpTable`] per block whose final instruction reports
+/// targets through [`SwitchSource::switch_targets`].
+#[must_use]
+pub fn detect_switch_tables<I: SwitchSource>(cfg: &Cfg<I>) -> Vec<JumpTable<I::Target>> {
+    let mut tables = Vec::new();
+    for block in cfg.blocks() {
+        if let Some(last) = block.instructions().last()
+            && let Some((targets, default_target)) = last.switch_targets()
+        {
+            tables.push(JumpTable {
+                block: block.id(),
+                targets,
+                default_target,
+            });
+        }
+    }
+    tables
 }
 
 /// Result of switch table reconstruction.
@@ -50,17 +80,17 @@ pub struct SwitchRecovery {
 
 /// Reconstruct switch tables from detected jump-table patterns.
 ///
-/// For each `JumpTableInfo`, removes the existing `IndirectJump`
-/// edge(s) from the block and replaces them with `SwitchCase` edges
-/// to each resolved target.
+/// For each [`JumpTable`], removes the existing `IndirectJump` edge(s) from
+/// the block and replaces them with `SwitchCase` edges to each resolved
+/// target (plus an `Unconditional` edge for the default target).
 ///
-/// The `address_to_block` function maps raw target addresses to
-/// block IDs (the consumer must provide this because address-to-block
-/// mapping is ISA/loader specific).
-pub fn recover_switch_tables<I: FlowControl>(
+/// The `resolve` function maps target tokens to block IDs — the consumer
+/// provides it because token-to-block mapping is frontend-specific (an
+/// address-to-block map for binaries, a CST-node-to-block map for source).
+pub fn recover_switch_tables<I, T>(
     cfg: &mut Cfg<I>,
-    tables: &[JumpTableInfo],
-    address_to_block: impl Fn(u64) -> Option<BlockId>,
+    tables: &[JumpTable<T>],
+    mut resolve: impl FnMut(&T) -> Option<BlockId>,
 ) -> Vec<SwitchRecovery> {
     let mut results = Vec::new();
 
@@ -79,16 +109,16 @@ pub fn recover_switch_tables<I: FlowControl>(
         let mut num_cases = 0;
 
         // Add SwitchCase edges for each resolved target.
-        for &target_addr in &table.targets {
-            if let Some(target_block) = address_to_block(target_addr) {
+        for target in &table.targets {
+            if let Some(target_block) = resolve(target) {
                 cfg.add_edge(table.block, target_block, EdgeKind::SwitchCase);
                 num_cases += 1;
             }
         }
 
         // Add default target if present.
-        if let Some(default_addr) = table.default_target
-            && let Some(default_block) = address_to_block(default_addr)
+        if let Some(default) = &table.default_target
+            && let Some(default_block) = resolve(default)
         {
             cfg.add_edge(table.block, default_block, EdgeKind::Unconditional);
         }
@@ -100,4 +130,92 @@ pub fn recover_switch_tables<I: FlowControl>(
     }
 
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::collections::BTreeMap;
+    use alloc::vec;
+
+    /// A machine-flavoured terminator: an indirect jump through a table of
+    /// raw addresses.
+    struct TableJump {
+        targets: Option<(Vec<u64>, Option<u64>)>,
+    }
+
+    impl SwitchSource for TableJump {
+        type Target = u64;
+
+        fn switch_targets(&self) -> Option<(Vec<u64>, Option<u64>)> {
+            self.targets.clone()
+        }
+    }
+
+    #[test]
+    fn detect_and_recover_address_table() {
+        let mut cfg: Cfg<TableJump> = Cfg::new();
+        let case_a = cfg.new_block();
+        let case_b = cfg.new_block();
+        let default = cfg.new_block();
+        cfg.add_edge(cfg.entry(), case_a, EdgeKind::IndirectJump);
+        cfg.block_mut(cfg.entry()).push(TableJump {
+            targets: Some((vec![0x1000, 0x2000], Some(0x3000))),
+        });
+
+        let tables = detect_switch_tables(&cfg);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(tables[0].targets, vec![0x1000, 0x2000]);
+
+        let address_map: BTreeMap<u64, BlockId> =
+            [(0x1000, case_a), (0x2000, case_b), (0x3000, default)]
+                .into_iter()
+                .collect();
+        let recovered =
+            recover_switch_tables(&mut cfg, &tables, |addr| address_map.get(addr).copied());
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].num_cases, 2);
+        // The IndirectJump edge is gone; SwitchCase + default edges exist.
+        assert!(cfg.edges().all(|e| e.kind() != EdgeKind::IndirectJump));
+        assert_eq!(
+            cfg.edges()
+                .filter(|e| e.kind() == EdgeKind::SwitchCase)
+                .count(),
+            2
+        );
+        assert_eq!(
+            cfg.edges()
+                .filter(|e| e.kind() == EdgeKind::Unconditional)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn source_tokens_resolve_switch_targets() {
+        /// A source-flavoured dispatch whose targets are CST node ids.
+        struct ComputedGoto {
+            case_nodes: Vec<u32>,
+        }
+
+        impl SwitchSource for ComputedGoto {
+            type Target = u32;
+
+            fn switch_targets(&self) -> Option<(Vec<u32>, Option<u32>)> {
+                (!self.case_nodes.is_empty()).then(|| (self.case_nodes.clone(), None))
+            }
+        }
+
+        let mut cfg: Cfg<ComputedGoto> = Cfg::new();
+        let arm = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(ComputedGoto {
+            case_nodes: vec![7],
+        });
+
+        let tables = detect_switch_tables(&cfg);
+        let recovered =
+            recover_switch_tables(&mut cfg, &tables, |node| (*node == 7).then_some(arm));
+        assert_eq!(recovered[0].num_cases, 1);
+        assert!(cfg.edges().any(|e| e.kind() == EdgeKind::SwitchCase));
+    }
 }

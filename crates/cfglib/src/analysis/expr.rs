@@ -16,27 +16,28 @@
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::dataflow::InstrInfo;
 
-/// A node in an expression tree.
+/// A node in an expression tree over variables `V`, operators `Op`, and
+/// constants `C` — all consumer-typed.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ExprNode<V> {
+pub enum ExprNode<V, Op, C> {
     /// A leaf source-IR variable.
     Leaf(V),
-    /// An operation with an operator name and operand sub-expressions.
+    /// An operation with a consumer operator identity and operand
+    /// sub-expressions.
     Op {
-        /// The operator (e.g. "add", "mul", "shl", "load").
-        operator: String,
+        /// The operator (a mnemonic enum, an opcode, an interned symbol).
+        operator: Op,
         /// The operands, each an expression sub-tree.
-        operands: Vec<ExprNode<V>>,
+        operands: Vec<ExprNode<V, Op, C>>,
     },
     /// A constant value.
-    Const(i64),
+    Const(C),
     /// An opaque instruction that couldn't be decomposed further.
     /// Contains the instruction index within the block.
     Opaque {
@@ -47,7 +48,7 @@ pub enum ExprNode<V> {
     },
 }
 
-impl<V> ExprNode<V> {
+impl<V, Op, C> ExprNode<V, Op, C> {
     /// Whether this is a leaf node.
     #[must_use]
     pub fn is_leaf(&self) -> bool {
@@ -88,28 +89,35 @@ impl<V> ExprNode<V> {
 /// The consumer implements this to tell the framework what operator
 /// each instruction represents and what its operands are.
 pub trait ExprInstr: InstrInfo {
+    /// Consumer operator identity (mnemonic enum, opcode, interned symbol).
+    type Operator: Clone + Eq;
+
+    /// Consumer constant domain (may coincide with
+    /// [`ConstantFolder::Const`](crate::ConstantFolder::Const)).
+    type Const: Clone + Eq;
+
     /// If this instruction can be represented as an expression,
-    /// return the operator name and the list of operand variables.
+    /// return the operator and the list of operand variables.
     ///
     /// Return `None` for instructions that can't be decomposed
     /// (side-effecting, control flow, etc.).
-    fn as_expr(&self) -> Option<(&str, &[Self::Variable])>;
+    fn as_expr(&self) -> Option<(Self::Operator, &[Self::Variable])>;
 
     /// If this instruction loads a constant, return the value.
-    fn as_const(&self) -> Option<i64> {
+    fn as_const(&self) -> Option<Self::Const> {
         None
     }
 }
 
 /// Expression trees recovered for a single block.
 #[derive(Debug, Clone)]
-pub struct BlockExprTrees<V> {
+pub struct BlockExprTrees<V, Op, C> {
     /// The block these trees belong to.
     pub block: BlockId,
     /// Expression tree for each "root" definition in the block.
     /// A root def is one whose result is used outside this block
     /// or is a side-effecting instruction's output.
-    pub roots: Vec<(V, ExprNode<V>)>,
+    pub roots: Vec<(V, ExprNode<V, Op, C>)>,
 }
 
 /// Recover expression trees for a single block.
@@ -120,7 +128,7 @@ pub struct BlockExprTrees<V> {
 pub fn recover_block_expressions<I: ExprInstr>(
     cfg: &Cfg<I>,
     block: BlockId,
-) -> BlockExprTrees<I::Variable> {
+) -> BlockExprTrees<I::Variable, I::Operator, I::Const> {
     let insts = cfg.block(block).instructions();
 
     // Map from variable → the expression that defines it (within this block).
@@ -143,7 +151,7 @@ pub fn recover_block_expressions<I: ExprInstr>(
                 variable_expressions.insert(destination.clone(), ExprNode::Const(c));
             }
         } else if let Some((op, _operand_locs)) = inst.as_expr() {
-            let operands: Vec<ExprNode<I::Variable>> = inst
+            let operands: Vec<ExprNode<I::Variable, I::Operator, I::Const>> = inst
                 .uses()
                 .iter()
                 .map(|variable| {
@@ -161,7 +169,7 @@ pub fn recover_block_expressions<I: ExprInstr>(
                 variable_expressions.insert(
                     destination.clone(),
                     ExprNode::Op {
-                        operator: String::from(op),
+                        operator: op,
                         operands,
                     },
                 );
@@ -188,7 +196,9 @@ pub fn recover_block_expressions<I: ExprInstr>(
 
 /// Recover expression trees for all blocks in the CFG.
 #[must_use]
-pub fn recover_expressions<I: ExprInstr>(cfg: &Cfg<I>) -> Vec<BlockExprTrees<I::Variable>> {
+pub fn recover_expressions<I: ExprInstr>(
+    cfg: &Cfg<I>,
+) -> Vec<BlockExprTrees<I::Variable, I::Operator, I::Const>> {
     cfg.blocks()
         .iter()
         .map(|b| recover_block_expressions(cfg, b.id()))
@@ -219,7 +229,7 @@ mod tests {
         // Should be Op("add", [Leaf(r0), Op("mul", [Leaf(r1), Leaf(r2)])])
         match expr {
             ExprNode::Op { operator, operands } => {
-                assert_eq!(operator, "add");
+                assert_eq!(*operator, "add");
                 assert_eq!(operands.len(), 2);
                 assert_eq!(operands[0], ExprNode::Leaf(0));
                 match &operands[1] {
@@ -227,7 +237,7 @@ mod tests {
                         operator: inner_op,
                         operands: inner_ops,
                     } => {
-                        assert_eq!(inner_op, "mul");
+                        assert_eq!(*inner_op, "mul");
                         assert_eq!(inner_ops.len(), 2);
                         assert_eq!(inner_ops[0], ExprNode::Leaf(1));
                         assert_eq!(inner_ops[1], ExprNode::Leaf(2));

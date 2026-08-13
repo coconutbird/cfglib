@@ -8,7 +8,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 
-use crate::graph::directed::{DenseNodeId, DirectedGraphView};
+use crate::graph::view::{DenseNodeId, DirectedGraphView};
 
 /// A maximal set of mutually reachable nodes.
 #[derive(Debug, Clone, PartialEq, Eq)]

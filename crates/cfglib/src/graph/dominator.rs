@@ -7,8 +7,9 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::graph::directed::{DenseNodeId, DirectedGraph, DirectedGraphView};
+use crate::graph::directed::DirectedGraph;
 use crate::graph::traverse::{TraversalDirection, reverse_postorder};
+use crate::graph::view::{DenseNodeId, DirectedGraphView, RootedGraphView};
 
 /// A dominator tree computed from a rooted directed graph.
 ///
@@ -38,6 +39,16 @@ pub struct DominatorTree<N = BlockId> {
 }
 
 impl<N: DenseNodeId> DominatorTree<N> {
+    /// Compute the dominator tree of a rooted graph view using the iterative
+    /// algorithm by Cooper, Harvey, and Kennedy.
+    #[must_use]
+    pub fn compute<G>(graph: &G) -> Self
+    where
+        G: RootedGraphView<NodeId = N>,
+    {
+        Self::compute_from(graph, graph.root())
+    }
+
     /// Compute dominators for any directed graph view from an explicit root.
     #[must_use]
     pub fn compute_from<G>(graph: &G, root: N) -> Self
@@ -182,13 +193,6 @@ impl<N: DenseNodeId> DominatorTree<N> {
 }
 
 impl DominatorTree<BlockId> {
-    /// Compute the dominator tree for the given CFG using the iterative
-    /// algorithm by Cooper, Harvey, and Kennedy.
-    #[must_use]
-    pub fn compute<I>(cfg: &Cfg<I>) -> Self {
-        Self::compute_from(cfg, cfg.entry())
-    }
-
     /// Compute the **post-dominator** tree for the given CFG.
     ///
     /// Post-dominators are computed by introducing a virtual exit node

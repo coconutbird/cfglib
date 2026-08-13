@@ -5,10 +5,12 @@
 //! IDs, and every non-entry reachable block has at least one predecessor.
 
 extern crate alloc;
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
 use crate::cfg::Cfg;
+use crate::graph::view::{DenseNodeId, RootedGraphView};
 
 /// A single verification failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -199,6 +201,91 @@ pub fn verify<I>(cfg: &Cfg<I>) -> VerifyResult {
     VerifyResult { errors }
 }
 
+/// Validate the [`RootedGraphView`] contract on consumer-owned storage.
+///
+/// Checks performed:
+/// 1. The root node's index is within `0..node_count()`.
+/// 2. Forward and reverse adjacency mirror each other with matching
+///    multiplicity (every successor entry has a matching predecessor entry).
+/// 3. Every reachable non-root node has at least one predecessor.
+///
+/// This catches adapter bugs when a consumer implements the view traits over
+/// its own graph store — the counterpart of [`verify`], which checks the
+/// storage invariants of [`Cfg`] itself.
+#[must_use]
+pub fn verify_view<G: RootedGraphView>(graph: &G) -> VerifyResult {
+    let mut errors = Vec::new();
+    let node_count = graph.node_count();
+
+    let root = graph.root();
+    if root.index() >= node_count {
+        errors.push(VerifyError {
+            message: alloc::format!(
+                "root node index {} out of bounds (node_count={node_count})",
+                root.index()
+            ),
+        });
+        return VerifyResult { errors };
+    }
+
+    // Forward and reverse adjacency must agree as multisets of (source, target).
+    let mut forward: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    let mut reverse: BTreeMap<(usize, usize), usize> = BTreeMap::new();
+    for node in graph.node_ids() {
+        for successor in graph.successors(node) {
+            *forward
+                .entry((node.index(), successor.index()))
+                .or_insert(0) += 1;
+        }
+        for predecessor in graph.predecessors(node) {
+            *reverse
+                .entry((predecessor.index(), node.index()))
+                .or_insert(0) += 1;
+        }
+    }
+    for (&(source, target), &count) in &forward {
+        let mirrored = reverse.get(&(source, target)).copied().unwrap_or(0);
+        if mirrored != count {
+            errors.push(VerifyError {
+                message: alloc::format!(
+                    "adjacency mismatch: {count} successor edge(s) {source}->{target} but {mirrored} predecessor entrie(s)"
+                ),
+            });
+        }
+    }
+    for (&(source, target), &count) in &reverse {
+        if !forward.contains_key(&(source, target)) {
+            errors.push(VerifyError {
+                message: alloc::format!(
+                    "adjacency mismatch: {count} predecessor entrie(s) {source}->{target} with no successor edge"
+                ),
+            });
+        }
+    }
+
+    // Every reachable non-root node has a predecessor.
+    let mut visited = alloc::vec![false; node_count];
+    let mut stack = alloc::vec![root];
+    visited[root.index()] = true;
+    while let Some(node) = stack.pop() {
+        for successor in graph.successors(node) {
+            if !visited[successor.index()] {
+                visited[successor.index()] = true;
+                stack.push(successor);
+            }
+        }
+    }
+    for node in graph.node_ids() {
+        if visited[node.index()] && node != root && graph.predecessors(node).next().is_none() {
+            errors.push(VerifyError {
+                message: alloc::format!("reachable node {} has no predecessors", node.index()),
+            });
+        }
+    }
+
+    VerifyResult { errors }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -250,5 +337,57 @@ mod tests {
         let cfg: Cfg<crate::test_util::MockInst> = Cfg::new();
         let result = verify(&cfg);
         assert_eq!(result.error_count(), 0);
+    }
+
+    #[test]
+    fn verify_view_accepts_consistent_consumer_view() {
+        let mut graph = crate::graph::directed::DirectedGraph::new();
+        let root = graph.add_node(());
+        let child = graph.add_node(());
+        graph.add_edge(root, child, ());
+        graph.add_edge(root, child, ());
+
+        let rooted = crate::graph::view::Rooted::new(&graph, root);
+        assert!(verify_view(&rooted).is_ok());
+    }
+
+    #[test]
+    fn verify_view_reports_one_sided_adjacency() {
+        struct Broken;
+        impl crate::graph::view::DirectedGraphView for Broken {
+            type NodeId = usize;
+
+            fn node_count(&self) -> usize {
+                2
+            }
+
+            fn successors(&self, node: usize) -> impl Iterator<Item = usize> + '_ {
+                (node == 0).then_some(1).into_iter()
+            }
+
+            fn predecessors(&self, _node: usize) -> impl Iterator<Item = usize> + '_ {
+                core::iter::empty()
+            }
+        }
+        impl crate::graph::view::RootedGraphView for Broken {
+            fn root(&self) -> usize {
+                0
+            }
+        }
+
+        let result = verify_view(&Broken);
+        assert!(!result.is_ok());
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.message.contains("adjacency mismatch"))
+        );
+        assert!(
+            result
+                .errors
+                .iter()
+                .any(|error| error.message.contains("no predecessors"))
+        );
     }
 }
