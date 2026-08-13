@@ -1,7 +1,13 @@
-//! ISA-agnostic control-flow classification.
+//! Control-flow classification for builder-driven construction.
 //!
-//! Any instruction set that wants to build a [`Cfg`](crate::Cfg) must
-//! implement [`FlowControl`] for its instruction type.
+//! Direct structural construction
+//! ([`Cfg::new_block`](crate::Cfg::new_block) /
+//! [`Cfg::add_edge`](crate::Cfg::add_edge)) needs no trait at all.
+//! [`FlowControl`] exists for the other front door: frontends with a flat,
+//! structured instruction stream implement it so
+//! [`CfgBuilder`](crate::CfgBuilder) can classify each instruction, and
+//! the opt-in companions here ([`JumpTargets`], [`CallInfo`]) type the
+//! branch and call targets those instructions carry.
 
 /// Classification of an instruction's effect on control flow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

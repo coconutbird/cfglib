@@ -49,18 +49,20 @@ pub struct CfgMetrics {
     pub avg_instructions_per_block: f64,
 }
 
-/// Compute topology metrics for any rooted graph view.
-#[must_use]
-pub fn graph_metrics<G: RootedGraphView>(graph: &G) -> GraphMetrics {
+/// Everything except loop nesting, computed in one pass.
+fn topology<G: RootedGraphView>(graph: &G) -> GraphMetrics {
     let n = graph.node_count();
 
-    // Reachability from the root.
+    // Reachability from the root, counting reachable-region edges as we go
+    // (an edge's source being reachable implies its target is too).
     let mut visited = vec![false; n];
     let mut stack = vec![graph.root()];
     visited[graph.root().index()] = true;
     let mut reachable_count = 1;
+    let mut reachable_edges = 0;
     while let Some(node) = stack.pop() {
         for successor in graph.successors(node) {
+            reachable_edges += 1;
             if !visited[successor.index()] {
                 visited[successor.index()] = true;
                 reachable_count += 1;
@@ -74,20 +76,14 @@ pub fn graph_metrics<G: RootedGraphView>(graph: &G) -> GraphMetrics {
         .map(|node| graph.successors(node).count())
         .sum();
 
-    // Cyclomatic complexity: E - N + 2P (P=1).
-    let cyclomatic = if edge_count >= reachable_count {
-        edge_count - reachable_count + 2
+    // Cyclomatic complexity: E - N + 2P (P=1), with BOTH terms scoped to
+    // the region reachable from the root — mixing total edges with
+    // reachable nodes would let disconnected components inflate the
+    // metric arbitrarily.
+    let cyclomatic = if reachable_edges >= reachable_count {
+        reachable_edges - reachable_count + 2
     } else {
         1
-    };
-
-    // Nesting depth from dominance-based loop detection.
-    let max_nesting = if n > 1 {
-        let dom = DominatorTree::compute(graph);
-        let loops = detect_loops(graph, &dom);
-        loops.iter().map(|lp| lp.depth).max().unwrap_or(0)
-    } else {
-        0
     };
 
     let exit_count = graph
@@ -99,11 +95,29 @@ pub fn graph_metrics<G: RootedGraphView>(graph: &G) -> GraphMetrics {
         node_count: n,
         edge_count,
         cyclomatic_complexity: cyclomatic,
-        max_nesting_depth: max_nesting,
+        max_nesting_depth: 0,
         reachable_node_count: reachable_count,
         unreachable_node_count: n.saturating_sub(reachable_count),
         exit_count,
     }
+}
+
+/// Compute topology metrics for any rooted graph view.
+///
+/// # Panics
+///
+/// Panics when the view's root index is outside `0..node_count()` — a
+/// broken [`RootedGraphView`] implementation; validate consumer views with
+/// [`verify_view`](crate::verify_view).
+#[must_use]
+pub fn graph_metrics<G: RootedGraphView>(graph: &G) -> GraphMetrics {
+    let mut metrics = topology(graph);
+    if metrics.node_count > 1 {
+        let dom = DominatorTree::compute(graph);
+        let loops = detect_loops(graph, &dom);
+        metrics.max_nesting_depth = loops.iter().map(|lp| lp.depth).max().unwrap_or(0);
+    }
+    metrics
 }
 
 /// Compute comprehensive metrics for a CFG.
@@ -127,9 +141,10 @@ pub fn graph_metrics<G: RootedGraphView>(graph: &G) -> GraphMetrics {
 /// ```
 #[must_use]
 pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
-    let mut graph = graph_metrics(cfg);
+    let mut graph = topology(cfg);
 
-    // Honour explicit back-edge tags for loop depth on CFGs.
+    // Honour explicit back-edge tags for loop depth on CFGs (one dominator
+    // computation — not graph_metrics' dominance-only pass plus a second).
     if cfg.num_blocks() > 1 {
         let dom = DominatorTree::compute(cfg);
         let loops = detect_loops_tagged(cfg, &dom);
@@ -154,22 +169,36 @@ pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
 /// Compute the nesting depth of each node.
 ///
 /// Returns a vector indexed by dense node index, where each value is the
-/// number of loops containing that node (dominance-based detection).
+/// number of loops containing that node — **dominance-based** detection,
+/// like every view-generic algorithm. [`Cfg`] callers whose builders tag
+/// explicit `Back` edges want [`cfg_block_nesting_depths`], which honours
+/// the tags exactly as [`cfg_metrics`] does.
 #[must_use]
 pub fn block_nesting_depths<G: RootedGraphView>(graph: &G) -> Vec<usize> {
     let n = graph.node_count();
     let dom = DominatorTree::compute(graph);
-    let loops = detect_loops(graph, &dom);
-    let mut depths = vec![0usize; n];
+    depths_of(n, &detect_loops(graph, &dom))
+}
 
-    for lp in &loops {
+/// Compute the nesting depth of each block of a [`Cfg`], honouring
+/// explicit [`EdgeKind::Back`](crate::EdgeKind::Back) tags — the tagged
+/// counterpart of [`block_nesting_depths`], consistent with
+/// [`cfg_metrics`]'s loop depth.
+#[must_use]
+pub fn cfg_block_nesting_depths<I>(cfg: &Cfg<I>) -> Vec<usize> {
+    let dom = DominatorTree::compute(cfg);
+    depths_of(cfg.num_blocks(), &detect_loops_tagged(cfg, &dom))
+}
+
+fn depths_of<N: DenseNodeId>(n: usize, loops: &[crate::NaturalLoop<N>]) -> Vec<usize> {
+    let mut depths = vec![0usize; n];
+    for lp in loops {
         for &node in &lp.body {
             if node.index() < n {
                 depths[node.index()] += 1;
             }
         }
     }
-
     depths
 }
 
@@ -232,6 +261,25 @@ mod tests {
         assert!(depths[header.index()] >= 1);
         assert!(depths[body.index()] >= 1);
         assert_eq!(depths[exit.index()], 0);
+    }
+
+    #[test]
+    fn tagged_nesting_depths_agree_with_cfg_metrics() {
+        // Tagged back-edge without dominance (irreducible shape): the
+        // untagged view walk scores 0, the Cfg-tagged walk sees the loop —
+        // and cfg_metrics' loop depth must agree with the tagged depths.
+        let mut cfg = Cfg::<crate::test_util::MockInst>::new();
+        let b1 = cfg.new_block();
+        let b2 = cfg.new_block();
+        cfg.add_edge(cfg.entry(), b1, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), b2, EdgeKind::ConditionalFalse);
+        cfg.add_edge(b1, b2, EdgeKind::Fallthrough);
+        cfg.add_edge(b2, b1, EdgeKind::Back);
+
+        let untagged = block_nesting_depths(&cfg);
+        let tagged = cfg_block_nesting_depths(&cfg);
+        assert_eq!(untagged[b1.index()], 0, "dominance alone cannot see it");
+        assert!(tagged[b1.index()] >= 1, "the tag makes the loop visible");
     }
 
     #[test]

@@ -56,7 +56,18 @@ pub fn control_dependence_graph<G: DirectedGraphView>(
     let mut dependences = BTreeSet::new();
 
     for controller in source.node_ids() {
+        // Control dependence is defined through post-dominance; a node the
+        // post-dominator computation never reached (it cannot reach any
+        // exit) has NO post-dominance facts, and emitting its edges would
+        // fabricate "A selects whether B executes" claims for straight-line
+        // code in exit-unreachable regions.
+        if !post_dominators.is_reachable(controller) {
+            continue;
+        }
         for target in source.successors(controller) {
+            if !post_dominators.is_reachable(target) {
+                continue;
+            }
             if post_dominators.dominates(target, controller) {
                 continue;
             }
@@ -116,6 +127,21 @@ mod tests {
 
         assert_eq!(controlled, BTreeSet::from([left, right]));
         assert_eq!(graph.predecessors(node(merge)).count(), 0);
+    }
+
+    #[test]
+    fn exit_unreachable_regions_emit_no_dependences() {
+        // With no exits, no node has post-dominance facts; straight-line
+        // edges must not become fabricated control dependences.
+        use crate::graph::directed::DirectedGraph;
+        let mut graph: DirectedGraph<(), ()> = DirectedGraph::new();
+        let a = graph.add_node(());
+        let b = graph.add_node(());
+        graph.add_edge(a, b, ());
+
+        let post = DominatorTree::compute_post_from(&graph, &[]);
+        let cdg = control_dependence_graph(&graph, &post);
+        assert_eq!(cdg.edge_count(), 0);
     }
 
     #[test]

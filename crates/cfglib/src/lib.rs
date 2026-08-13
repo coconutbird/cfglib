@@ -68,8 +68,9 @@
 //! SwitchSource              (optional — switch table recovery, Target)
 //! ```
 //!
-//! Additionally, [`Problem`] is the trait for pluggable dataflow
-//! analyses, and [`Emitter`] is the trait for linearization output.
+//! Additionally, [`Problem`] is the trait for pluggable instruction-level
+//! dataflow analyses, [`NodeProblem`] its node-level counterpart over any
+//! graph view, and [`Emitter`] the trait for linearization output.
 //!
 //! # Contracts
 //!
@@ -193,7 +194,8 @@ pub use analysis::expr::{
     BlockExprTrees, ExprInstr, ExprNode, recover_block_expressions, recover_expressions,
 };
 pub use analysis::metrics::{
-    CfgMetrics, GraphMetrics, block_nesting_depths, cfg_metrics, graph_metrics,
+    CfgMetrics, GraphMetrics, block_nesting_depths, cfg_block_nesting_depths, cfg_metrics,
+    graph_metrics,
 };
 pub use analysis::pattern::{CfgPattern, detect_cfg_patterns, detect_patterns};
 pub use analysis::profile::CfgProfile;

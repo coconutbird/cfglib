@@ -130,8 +130,14 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
                 })
                 .collect();
 
-            // Try constant folding.
+            // Try constant folding. The folder answers for ONE def, but a
+            // multi-def instruction redefined its co-defined variables too:
+            // bottom every def first so no stale constant survives, then
+            // record the folded one.
             if let Some((loc, val)) = inst.fold_constant(&known) {
+                for variable in inst.defs() {
+                    state.insert(variable.clone(), ConstValue::Bottom);
+                }
                 state.insert(loc, ConstValue::Const(val));
             } else {
                 // Default: all defs become Bottom (non-constant).
@@ -230,6 +236,31 @@ mod tests {
         let result = constant_propagation(&cfg);
         let fact_out = result.fact_out(cfg.entry());
         assert_eq!(fact_out.get(&0), Some(&ConstValue::Const(42)));
+    }
+
+    #[test]
+    fn folding_one_def_still_bottoms_its_co_defined_variables() {
+        // var 2 holds Const(5); a multi-def instruction {1, 2} folds only
+        // var 1. Var 2 was still redefined — its stale constant must not
+        // survive (a dxbc udiv writes quotient AND remainder).
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+            df_const("load5", 2, 5),
+            DfInst {
+                defs: alloc::vec![1, 2],
+                constant: Some(9),
+                ..crate::test_util::df_ff("multi_def")
+            },
+        ]);
+
+        let result = constant_propagation(&cfg);
+        let out = result.fact_out(cfg.entry());
+        assert_eq!(out.get(&1), Some(&ConstValue::Const(9)));
+        assert_eq!(
+            out.get(&2),
+            Some(&ConstValue::Bottom),
+            "co-defined variable must not keep its pre-redefinition constant"
+        );
     }
 
     #[test]

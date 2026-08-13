@@ -234,6 +234,13 @@ fn lift_region<I: Clone>(
 /// Runs [`lift`], then wraps every maximal run of instructions sharing the
 /// same [`Predicated::predicate`] into a `Guarded` node whose witness is the
 /// run's first instruction. Unpredicated instructions stay in plain blocks.
+/// Predicated runs that land in a branch/dispatch header
+/// (`IfThenElse`/`Switch` `condition_instructions`) are hoisted into
+/// guarded segments before the node. Two ledgered limits: a predicate on
+/// the branch/dispatch instruction itself stays inline (unrepresentable as
+/// a region), and predicated runs inside a
+/// [`SwitchCase`]'s `header_instructions` are not regionised (the case
+/// structure has no place to hoist them to).
 #[must_use]
 pub fn lift_predicated<I: Clone + Predicated>(cfg: &Cfg<I>) -> AstNode<I> {
     wrap_predicated(lift(cfg)).simplify()
@@ -302,12 +309,18 @@ fn wrap_predicated<I: Clone + Predicated>(node: AstNode<I>) -> AstNode<I> {
             condition_instructions,
             then_body,
             else_body,
-        } => AstNode::IfThenElse {
-            condition,
-            condition_instructions,
-            then_body: wrap_nodes(then_body),
-            else_body: wrap_nodes(else_body),
-        },
+        } => {
+            let (prefix, rest) = split_header_runs(condition, condition_instructions);
+            with_prefix(
+                prefix,
+                AstNode::IfThenElse {
+                    condition,
+                    condition_instructions: rest,
+                    then_body: wrap_nodes(then_body),
+                    else_body: wrap_nodes(else_body),
+                },
+            )
+        }
         AstNode::Loop { header, body } => AstNode::Loop {
             header,
             body: wrap_nodes(body),
@@ -316,18 +329,24 @@ fn wrap_predicated<I: Clone + Predicated>(node: AstNode<I>) -> AstNode<I> {
             condition,
             condition_instructions,
             cases,
-        } => AstNode::Switch {
-            condition,
-            condition_instructions,
-            cases: cases
-                .into_iter()
-                .map(|case| SwitchCase {
-                    id: case.id,
-                    header_instructions: case.header_instructions,
-                    body: wrap_nodes(case.body),
-                })
-                .collect(),
-        },
+        } => {
+            let (prefix, rest) = split_header_runs(condition, condition_instructions);
+            with_prefix(
+                prefix,
+                AstNode::Switch {
+                    condition,
+                    condition_instructions: rest,
+                    cases: cases
+                        .into_iter()
+                        .map(|case| SwitchCase {
+                            id: case.id,
+                            header_instructions: case.header_instructions,
+                            body: wrap_nodes(case.body),
+                        })
+                        .collect(),
+                },
+            )
+        }
         AstNode::Label { name, body } => AstNode::Label {
             name,
             body: wrap_nodes(body),
@@ -410,6 +429,50 @@ fn sequence_or_single<I>(mut segments: Vec<AstNode<I>>) -> AstNode<I> {
     } else {
         AstNode::Sequence { body: segments }
     }
+}
+
+/// Split a branch/dispatch header's predicated PREFIX runs into guarded
+/// segments to hoist before the node. The final run — which contains the
+/// branch/dispatch instruction itself — always stays in place, and headers
+/// with no predicated prefix pass through untouched.
+fn split_header_runs<I: Clone + Predicated>(
+    block: BlockId,
+    instructions: Vec<I>,
+) -> (Vec<AstNode<I>>, Vec<I>) {
+    let mut runs = predicate_runs(instructions);
+    let Some((_, last)) = runs.pop() else {
+        return (Vec::new(), Vec::new());
+    };
+    if runs.iter().all(|(predicate, _)| predicate.is_none()) {
+        // Nothing to regionise: reassemble the original instruction list.
+        let mut rest: Vec<I> = runs.into_iter().flat_map(|(_, run)| run).collect();
+        rest.extend(last);
+        return (Vec::new(), rest);
+    }
+    let prefix = runs
+        .into_iter()
+        .map(|(predicate, run)| {
+            guard_segment(
+                predicate.as_ref(),
+                AstNode::Block {
+                    id: block,
+                    instructions: run,
+                },
+            )
+        })
+        .collect();
+    (prefix, last)
+}
+
+/// Hoist `prefix` segments before `node`, or return `node` unchanged when
+/// there is nothing to hoist.
+fn with_prefix<I>(prefix: Vec<AstNode<I>>, node: AstNode<I>) -> AstNode<I> {
+    if prefix.is_empty() {
+        return node;
+    }
+    let mut body = prefix;
+    body.push(node);
+    AstNode::Sequence { body }
 }
 
 /// Produce a label name for a block (used in Goto/Label nodes).

@@ -393,11 +393,14 @@ impl<I: FlowControl> BuildState<I> {
     }
 
     fn add_label(&mut self, instruction: I) {
+        // The fallthrough edge is unconditional: a label at program start
+        // must stay connected to the entry, and a label after a conditional
+        // jump IS the false-path continuation. When the current block is a
+        // dead-code stub (fresh after a jump/return), the edge just leaves
+        // it a predecessor-less empty trampoline, which is legal.
         let label_block = self.cfg.new_block();
-        if !self.cfg.block(self.current).is_empty() {
-            self.cfg
-                .add_edge(self.current, label_block, EdgeKind::Fallthrough);
-        }
+        self.cfg
+            .add_edge(self.current, label_block, EdgeKind::Fallthrough);
         self.cfg
             .block_mut(label_block)
             .instructions
@@ -510,6 +513,9 @@ pub struct JumpResolution<T> {
 ///
 /// The pass is idempotent: an edge that already exists with the same
 /// endpoints and kind is not duplicated, so re-running it is safe.
+/// Duplicate label tokens resolve to the LAST block declaring them (later
+/// labels shadow earlier ones); frontends with label scoping enforce
+/// uniqueness before building.
 pub fn resolve_jump_edges<I: JumpTargets>(cfg: &mut Cfg<I>) -> JumpResolution<I::Target> {
     let mut labels: BTreeMap<I::Target, BlockId> = BTreeMap::new();
     for block in cfg.blocks() {
@@ -611,6 +617,35 @@ mod tests {
         fn label(&self) -> Option<&'static str> {
             self.label
         }
+    }
+
+    #[test]
+    fn leading_label_and_conditional_continuation_stay_connected() {
+        // A label as the first instruction: the (empty) entry must still
+        // reach it, or the whole function body is unreachable.
+        let cfg = CfgBuilder::build(vec![
+            label("head"),
+            gi(FlowEffect::Fallthrough),
+            gi(FlowEffect::Return),
+        ])
+        .unwrap();
+        let reachable = cfg.dfs_preorder();
+        assert_eq!(reachable.len(), cfg.num_blocks(), "all blocks reachable");
+
+        // A label directly after a conditional jump IS the false-path
+        // continuation; the edge must exist.
+        let cfg = CfgBuilder::build(vec![
+            GotoInst {
+                effect: FlowEffect::ConditionalJump,
+                target: Some("skip"),
+                label: None,
+            },
+            label("skip"),
+            gi(FlowEffect::Return),
+        ])
+        .unwrap();
+        let reachable = cfg.dfs_preorder();
+        assert_eq!(reachable.len(), cfg.num_blocks(), "false path connected");
     }
 
     #[test]

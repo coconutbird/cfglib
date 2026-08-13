@@ -89,6 +89,15 @@ impl<K: Clone + Ord, N, E> KeyedGraph<K, N, E> {
     }
 }
 
+impl<Key: Clone + Ord, E> KeyedGraph<Key, Key, E> {
+    /// The dense node id for `key` in a self-keyed graph (node payload =
+    /// key), minting on first sight — the common case without the
+    /// [`ensure_node`](Self::ensure_node) double-mention of the key.
+    pub fn intern(&mut self, key: &Key) -> NodeId {
+        self.ensure_node(key, || key.clone())
+    }
+}
+
 impl<K: Clone + Ord, N, E> Default for KeyedGraph<K, N, E> {
     fn default() -> Self {
         Self::new()
@@ -117,6 +126,14 @@ mod tests {
     use crate::graph::scc::tarjan_scc;
     use alloc::string::String;
     use alloc::string::ToString;
+
+    #[test]
+    fn self_keyed_interning_is_idempotent() {
+        let mut graph: KeyedGraph<String, String, ()> = KeyedGraph::new();
+        let a = graph.intern(&"pkg::a".to_string());
+        assert_eq!(a, graph.intern(&"pkg::a".to_string()));
+        assert_eq!(graph.graph().node(a), "pkg::a");
+    }
 
     #[test]
     fn interns_sparse_keys_and_runs_algorithms() {

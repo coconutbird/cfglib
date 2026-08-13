@@ -138,12 +138,13 @@ pub fn tarjan_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
         on_stack[start.index()] = true;
         let mut calls = vec![(start, graph.successors(start).collect::<Vec<_>>(), 0_usize)];
 
-        while let Some((node, successors, successor_index)) = calls.last().cloned() {
-            if successor_index < successors.len() {
-                let successor = successors[successor_index];
-                let Some(frame) = calls.last_mut() else {
-                    break;
-                };
+        // Read frames through `last_mut` and copy only the Copy fields —
+        // cloning the whole frame (with its successor Vec) per iteration
+        // would make the walk O(Σ deg²) in time and allocation.
+        while let Some(frame) = calls.last_mut() {
+            let node = frame.0;
+            if frame.2 < frame.1.len() {
+                let successor = frame.1[frame.2];
                 frame.2 += 1;
 
                 if indices[successor.index()] == usize::MAX {

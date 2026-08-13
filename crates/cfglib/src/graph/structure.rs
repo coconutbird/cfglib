@@ -193,6 +193,13 @@ fn loops_from_backs<G: DirectedGraphView>(
 /// Loops sharing the same header are merged into a single
 /// [`NaturalLoop`] with multiple latches.
 ///
+/// **Dominance-based only.** Unlike the pre-substrate function of the same
+/// name, this does NOT honour explicit [`EdgeKind::Back`] tags — a tagged
+/// back-edge whose target does not dominate its source (an irreducible
+/// machine CFG) is invisible here. [`Cfg`] callers wanting tag recall use
+/// [`detect_loops_tagged`], as [`cfg_metrics`](crate::cfg_metrics) and
+/// [`cfg_block_nesting_depths`](crate::cfg_block_nesting_depths) do.
+///
 /// # Examples
 ///
 /// ```

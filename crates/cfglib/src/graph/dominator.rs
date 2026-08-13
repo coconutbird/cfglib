@@ -132,6 +132,15 @@ impl<N: DenseNodeId> DominatorTree<N> {
         self.idom[node.index()]
     }
 
+    /// Whether `node` was reachable from the root this tree was computed
+    /// from. `idom` alone cannot distinguish "is the root" from "was never
+    /// reached" (both `None`) — consumers reasoning about dominance must
+    /// check this before trusting a `None`.
+    #[must_use]
+    pub fn is_reachable(&self, node: N) -> bool {
+        self.reachable[node.index()]
+    }
+
     /// Return whether `dominator` dominates `node`.
     #[must_use]
     pub fn dominates(&self, dominator: N, node: N) -> bool {

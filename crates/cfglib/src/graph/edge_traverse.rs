@@ -29,10 +29,12 @@ pub struct EdgeStep {
 
 /// Breadth-first edge traversal from `start`.
 ///
-/// Every edge incident to the visited region is reported exactly once, in
-/// adjacency order — including parallel edges and edges into
-/// already-visited nodes, which node-only traversal cannot report. Each
-/// node is expanded once, so the walk terminates on cyclic graphs.
+/// Every edge **leaving a reached node** (in the walk direction) is
+/// reported exactly once, in adjacency order — including parallel edges
+/// and edges into already-visited nodes, which node-only traversal cannot
+/// report. Edges entering the reached region from elsewhere are not walked
+/// and not reported. Each node is expanded once, so the walk terminates on
+/// cyclic graphs.
 #[must_use]
 pub fn breadth_first_edges<N, E>(
     graph: &DirectedGraph<N, E>,

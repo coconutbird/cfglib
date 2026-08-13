@@ -108,7 +108,9 @@ impl<V> PhiPlacements<V> {
 /// Place phis for every variable defined in the CFG.
 ///
 /// This is the iterated-dominance-frontier phase of SSA construction. Use
-/// [`build_ssa`] when renamed definitions and operands are also required.
+/// [`build_ssa`] when renamed definitions and operands are also required
+/// (and see its precondition: the entry block must not be a branch
+/// target).
 #[must_use]
 pub fn place_phis<I: InstrInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PhiPlacements<I::Variable> {
     let frontiers = DominanceFrontiers::compute(cfg, dom);
@@ -467,6 +469,17 @@ fn finish_blocks<V: VariableId>(
 /// renaming. It is iterative rather than recursive, so deeply nested control
 /// flow does not consume the host call stack. Variables read before any
 /// dominating definition receive version `0`.
+///
+/// # Precondition
+///
+/// The entry block must not be a branch target. Phi operands come from
+/// predecessor edges, so a phi placed AT the entry (entry doubling as a
+/// loop header) has no operand for the version-`0` live-in value and the
+/// value entering the function is dropped from the web. Every builder in
+/// this workspace guarantees the property; direct constructions that
+/// branch to the entry should canonicalize first
+/// ([`insert_preheader`](crate::insert_preheader) /
+/// [`split_block`](crate::Cfg::split_block)).
 #[must_use]
 pub fn build_ssa<I: InstrInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> SsaForm<I::Variable> {
     let placements = place_phis(cfg, dom);

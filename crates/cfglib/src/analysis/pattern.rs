@@ -108,11 +108,15 @@ pub fn detect_patterns<G: DirectedGraphView>(graph: &G) -> Vec<CfgPattern<G::Nod
             continue;
         }
 
-        // Walk backward to find chain start (skip self-loops).
+        // Walk backward to find chain start. The walked set guards against
+        // isolated cycles (every node one-pred/one-succ), which would
+        // otherwise loop forever; a direct self-loop is the len-1 case.
+        let mut walked = alloc::collections::BTreeSet::new();
+        walked.insert(bid);
         let mut start = bid;
         loop {
             let ps: Vec<G::NodeId> = graph.predecessors(start).collect();
-            if ps.len() != 1 || ps[0] == start {
+            if ps.len() != 1 || !walked.insert(ps[0]) {
                 break;
             }
             let ss: Vec<G::NodeId> = graph.successors(ps[0]).collect();
@@ -221,6 +225,26 @@ mod tests {
             assert_eq!(*first, a, "arms[0] is the ConditionalTrue side");
             assert_eq!(*second, b);
         }
+    }
+
+    #[test]
+    fn isolated_cycle_terminates() {
+        // Every node one-pred/one-succ around a cycle: the backward chain
+        // walk must terminate (it previously looped forever here).
+        use crate::graph::directed::DirectedGraph;
+        let mut graph: DirectedGraph<(), ()> = DirectedGraph::new();
+        let a = graph.add_node(());
+        let b = graph.add_node(());
+        graph.add_edge(a, b, ());
+        graph.add_edge(b, a, ());
+
+        let patterns = detect_patterns(&graph);
+        assert!(
+            patterns
+                .iter()
+                .all(|p| !matches!(p, CfgPattern::SelfLoop { .. })),
+            "a 2-cycle is not a self-loop: {patterns:?}"
+        );
     }
 
     #[test]

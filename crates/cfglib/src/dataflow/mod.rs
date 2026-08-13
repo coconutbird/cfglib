@@ -7,6 +7,12 @@
 //! - **Liveness** — which variables are live at each point
 //! - **Def-use / use-def chains** — linking writers to readers
 //!
+//! The instruction-level machinery is CFG-bound; the
+//! [`node_fixpoint`] module is its graph-shaped counterpart, solving
+//! per-node fact problems over any
+//! [`DirectedGraphView`](crate::DirectedGraphView) (taint or reachability
+//! over a value-flow graph, closure over an import graph).
+//!
 //! # Usage
 //!
 //! Implement [`InstrInfo`] for your instruction type to declare which
@@ -72,6 +78,14 @@ pub trait InstrInfo {
 /// [`lift_predicated`](crate::lift_predicated) regionises maximal runs of
 /// same-predicate instructions into
 /// [`AstNode::Guarded`](crate::ast::node::AstNode::Guarded) nodes.
+///
+/// # Contract
+///
+/// The predicate variable is a READ: it **must also appear in
+/// [`uses`](InstrInfo::uses)**. The dataflow analyses consult only
+/// `uses`/`defs` — an adapter that reports the guard here but omits it
+/// from `uses` will see liveness call the predicate's definition dead and
+/// dead-code elimination delete it while the guard still names it.
 pub trait Predicated: InstrInfo {
     /// The guarding variable and the polarity under which the instruction
     /// executes. `None` for unconditionally executed instructions.

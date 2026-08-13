@@ -81,6 +81,14 @@ pub fn local_value_numbering<I: ValueNumberInfo>(
 
     for (idx, inst) in insts.iter().enumerate() {
         if !inst.is_pure() || inst.defs().is_empty() {
+            // A skipped instruction still REDEFINES its defs: give each a
+            // fresh value number so later expressions over them are not
+            // falsely matched against pre-redefinition keys.
+            for variable in inst.defs() {
+                let vn = next_vn;
+                next_vn += 1;
+                variable_values.insert(variable.clone(), vn);
+            }
             inst_vn.push(None);
             continue;
         }
@@ -178,6 +186,18 @@ fn gvn_dfs<I: ValueNumberInfo>(
 
     for (idx, inst) in insts.iter().enumerate() {
         if !inst.is_pure() || inst.defs().is_empty() {
+            // A skipped instruction still REDEFINES its defs: give each a
+            // fresh value number (scoped, restored on exit) so later
+            // expressions over them are not falsely matched against
+            // pre-redefinition keys.
+            for variable in inst.defs() {
+                saved_variables
+                    .entry(variable.clone())
+                    .or_insert_with(|| variable_values.get(variable).copied());
+                let vn = *next_vn;
+                *next_vn += 1;
+                variable_values.insert(variable.clone(), vn);
+            }
             inst_vn.push(None);
             continue;
         }
@@ -312,6 +332,30 @@ mod tests {
             defs: defs.to_vec(),
             pure_: true,
         }
+    }
+
+    #[test]
+    fn impure_redefinition_invalidates_value_numbers() {
+        // t = add(a, b); z = add2(t, c); t = load (impure, skipped);
+        // y = add2(t, c) — y must NOT match z's key: t was redefined.
+        let mut cfg: Cfg<VnInst> = Cfg::new();
+        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+            vn_inst(1, &[0, 1], &[10]),
+            vn_inst(2, &[10, 2], &[11]),
+            VnInst {
+                op: 99,
+                uses: alloc::vec![],
+                defs: alloc::vec![10],
+                pure_: false,
+            },
+            vn_inst(2, &[10, 2], &[12]),
+        ]);
+
+        let (numbers, _) = local_value_numbering(&cfg, cfg.entry(), 0);
+        assert!(
+            numbers.redundant.is_empty(),
+            "y reads the RELOADED t and is not redundant: {numbers:?}"
+        );
     }
 
     #[test]

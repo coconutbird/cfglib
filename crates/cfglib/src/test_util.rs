@@ -7,7 +7,8 @@
 //!   copy semantics, expression decomposition, and constant values.
 //!
 //! `DfInst` implements **all** instruction traits (`FlowControl`,
-//! `InstrInfo`, `CopySource`, `ExprInstr`, `ConstantFolder`) so test modules don't need
+//! `DisplayInstr`, `InstrInfo`, `EffectInfo`, `Predicated`, `CopySource`,
+//! `ExprInstr`, `ConstantFolder`, `CallInfo`) so test modules don't need
 //! to define their own instruction types.
 
 extern crate alloc;
@@ -196,10 +197,13 @@ fn df_base(name: &'static str) -> DfInst {
     }
 }
 
-/// Create a [`DfInst`] predicated on `(variable, polarity)`.
+/// Create a [`DfInst`] predicated on `(variable, polarity)`. Per the
+/// [`Predicated`](crate::dataflow::Predicated) contract, the predicate
+/// variable is also a use.
 pub fn df_pred(name: &'static str, variable: u16, when_true: bool) -> DfInst {
     DfInst {
         pred: Some((variable, when_true)),
+        uses: alloc::vec![variable],
         ..df_base(name)
     }
 }

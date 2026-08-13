@@ -114,9 +114,14 @@ pub trait ExprInstr: InstrInfo {
 pub struct BlockExprTrees<V, Op, C> {
     /// The block these trees belong to.
     pub block: BlockId,
-    /// Expression tree for each "root" definition in the block.
-    /// A root def is one whose result is used outside this block
-    /// or is a side-effecting instruction's output.
+    /// Expression tree for each root definition: a def NOT inlined into a
+    /// later expression of this block. Inlining is decided by
+    /// **intra-block** use count alone (this is a per-block recovery with
+    /// no cross-block liveness), so a def used once here and again in
+    /// another block is inlined and absent from `roots` — consumers
+    /// needing every cross-block-live def materialised should consult
+    /// [`Liveness`](crate::Liveness) or
+    /// [`DefUseChains`](crate::DefUseChains) alongside.
     pub roots: Vec<(V, ExprNode<V, Op, C>)>,
 }
 

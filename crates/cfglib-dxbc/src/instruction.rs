@@ -23,6 +23,16 @@ pub enum Sm4Effect {
     Call,
     /// Synchronisation barrier.
     Sync,
+    /// A store through a dynamically-indexed indexable temp (`x#[reg]`).
+    ///
+    /// The written slot is statically unknowable, so the store reports NO
+    /// def (a may-def must not kill other slots' reaching definitions) and
+    /// carries this effect instead, keeping it visible to liveness, purity,
+    /// and dead-code elimination. Loads through dynamic indices keep their
+    /// structural identities; cross-slot def/use edges between static and
+    /// dynamic accesses are not modeled (a `MemoryInfo` adapter would be
+    /// the complete story).
+    IndexableWrite,
     /// Unclassified effect (abort, debug break, unknown opcode).
     Unknown,
 }
@@ -239,12 +249,15 @@ impl Sm4Instruction {
     /// Adapt a decoded instruction for CFG and data-flow analysis.
     #[must_use]
     pub fn new(instruction: Instruction) -> Self {
-        let (uses, defs) = analyze_operands(&instruction);
-        let effects = analyze_effects(&instruction, &defs);
+        let analysis = analyze_operands(&instruction);
+        let mut effects = analyze_effects(&instruction, &analysis.defs);
+        if analysis.dynamic_indexable_write {
+            push_unique(&mut effects, Sm4Effect::IndexableWrite);
+        }
         Self {
             instruction,
-            uses,
-            defs,
+            uses: analysis.uses,
+            defs: analysis.defs,
             effects,
         }
     }
@@ -452,10 +465,37 @@ fn operand_layout(opcode: Opcode) -> OperandLayout {
     }
 }
 
-fn analyze_operands(instruction: &Instruction) -> (Vec<Sm4Variable>, Vec<Sm4Variable>) {
+/// The def/use analysis result: the variable sets plus whether the
+/// instruction stores through a dynamically-indexed indexable temp.
+struct OperandAnalysis {
+    uses: Vec<Sm4Variable>,
+    defs: Vec<Sm4Variable>,
+    /// A write through `x#[reg]` hit a statically unknowable slot. Such a
+    /// store is reported as NO def (a may-def must not kill other slots'
+    /// reaching definitions) and instead declares
+    /// [`Sm4Effect::IndexableWrite`] so liveness/DCE can never delete it.
+    dynamic_indexable_write: bool,
+}
+
+/// Whether `operand` addresses an indexable temp (`x#`) through a
+/// register-relative index — a slot no static identity can name.
+fn is_dynamic_indexable(operand: &Operand) -> bool {
+    operand.reg_type == RegisterType::IndexableTemp
+        && operand.indices.iter().any(|index| {
+            matches!(
+                index,
+                OperandIndex::Relative(_)
+                    | OperandIndex::RelativePlusImm(..)
+                    | OperandIndex::RelativePlusImm64(..)
+            )
+        })
+}
+
+fn analyze_operands(instruction: &Instruction) -> OperandAnalysis {
     let operands = instruction.operands();
     let mut uses = Vec::new();
     let mut defs = Vec::new();
+    let mut dynamic_indexable_write = false;
 
     match operand_layout(instruction.opcode) {
         OperandLayout::None => {}
@@ -467,7 +507,7 @@ fn analyze_operands(instruction: &Instruction) -> (Vec<Sm4Variable>, Vec<Sm4Vari
         OperandLayout::Destinations(count) => {
             for (index, operand) in operands.iter().enumerate() {
                 if index < count {
-                    collect_definition(operand, &mut uses, &mut defs);
+                    dynamic_indexable_write |= collect_definition(operand, &mut uses, &mut defs);
                 } else {
                     collect_use(operand, &mut uses);
                 }
@@ -476,7 +516,7 @@ fn analyze_operands(instruction: &Instruction) -> (Vec<Sm4Variable>, Vec<Sm4Vari
         OperandLayout::ReadWrite { target } => {
             for (index, operand) in operands.iter().enumerate() {
                 if index == target {
-                    collect_read_write(operand, &mut uses, &mut defs);
+                    dynamic_indexable_write |= collect_read_write(operand, &mut uses, &mut defs);
                 } else {
                     collect_use(operand, &mut uses);
                 }
@@ -488,9 +528,9 @@ fn analyze_operands(instruction: &Instruction) -> (Vec<Sm4Variable>, Vec<Sm4Vari
         } => {
             for (index, operand) in operands.iter().enumerate() {
                 if index < destinations {
-                    collect_definition(operand, &mut uses, &mut defs);
+                    dynamic_indexable_write |= collect_definition(operand, &mut uses, &mut defs);
                 } else if index == target {
-                    collect_read_write(operand, &mut uses, &mut defs);
+                    dynamic_indexable_write |= collect_read_write(operand, &mut uses, &mut defs);
                 } else {
                     collect_use(operand, &mut uses);
                 }
@@ -498,7 +538,11 @@ fn analyze_operands(instruction: &Instruction) -> (Vec<Sm4Variable>, Vec<Sm4Vari
         }
     }
 
-    (uses, defs)
+    OperandAnalysis {
+        uses,
+        defs,
+        dynamic_indexable_write,
+    }
 }
 
 fn collect_use(operand: &Operand, uses: &mut Vec<Sm4Variable>) {
@@ -506,18 +550,39 @@ fn collect_use(operand: &Operand, uses: &mut Vec<Sm4Variable>) {
     collect_selected_variables(operand, uses);
 }
 
-fn collect_definition(operand: &Operand, uses: &mut Vec<Sm4Variable>, defs: &mut Vec<Sm4Variable>) {
+/// Collect a destination operand. Returns whether it was a dynamic
+/// indexable-temp store (reported as effect, not def — see
+/// [`OperandAnalysis::dynamic_indexable_write`]).
+fn collect_definition(
+    operand: &Operand,
+    uses: &mut Vec<Sm4Variable>,
+    defs: &mut Vec<Sm4Variable>,
+) -> bool {
     collect_index_uses(operand, uses);
+    if is_dynamic_indexable(operand) {
+        return true;
+    }
     collect_selected_variables(operand, defs);
+    false
 }
 
-fn collect_read_write(operand: &Operand, uses: &mut Vec<Sm4Variable>, defs: &mut Vec<Sm4Variable>) {
+/// Collect a read-modify-write operand. Returns whether it was a dynamic
+/// indexable-temp store (its read stays a use; the write becomes an effect).
+fn collect_read_write(
+    operand: &Operand,
+    uses: &mut Vec<Sm4Variable>,
+    defs: &mut Vec<Sm4Variable>,
+) -> bool {
     collect_index_uses(operand, uses);
     let variables = operand_variables(operand);
+    let dynamic = is_dynamic_indexable(operand);
     for variable in variables {
         push_unique(uses, variable.clone());
-        push_unique(defs, variable);
+        if !dynamic {
+            push_unique(defs, variable);
+        }
     }
+    dynamic
 }
 
 fn collect_index_uses(operand: &Operand, uses: &mut Vec<Sm4Variable>) {
