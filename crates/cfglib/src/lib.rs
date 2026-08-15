@@ -140,7 +140,10 @@ pub use cfg::Cfg;
 pub use display::DisplayInstr;
 pub use edge::{Edge, EdgeId, EdgeKind};
 pub use flow::{CallInfo, FlowControl, FlowEffect, JumpTargets};
-pub use region::{Handler, HandlerKind, Region, RegionId};
+pub use region::{
+    Cleanup, CompletionReason, Continuation, Handler, HandlerFilters, HandlerKind, HandlerRef,
+    Region, RegionId,
+};
 
 // ── Re-exports: Dataflow framework & SSA ────────────────────────────
 

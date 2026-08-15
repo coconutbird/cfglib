@@ -100,6 +100,7 @@ impl<I: FlowControl> BuildState<I> {
             preds: Vec::new(),
             entry: BlockId(0),
             regions: Vec::new(),
+            cleanups: Vec::new(),
         };
         let current = cfg.new_block();
         Self {

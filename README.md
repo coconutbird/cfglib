@@ -91,6 +91,8 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Tombstone edges | `remove_edge()` replaces the slot with `None`; existing `EdgeId`s remain stable |
 | Edge metadata | `EdgeKind` (14 variants: fallthrough, conditional, back, call, switch-case, exception, jump) plus optional weights |
 | Regions | Try/catch/finally regions with `Handler` and `HandlerKind` (Catch, CatchAll, Finally, Fault, Filter) |
+| Cleanup continuations | `add_continuation` / `set_cleanup_resume` → `Cleanup` (`Continuation` + `CompletionReason`): which route out of a single shared `finally` block a resume edge belongs to |
+| Handler filters | `HandlerFilters<F>` side table — consumer-typed filter predicates (C# `catch … when`) keyed by `HandlerRef`, with no type parameter on `Cfg` |
 | Subgraph extraction | `subgraph()` with dense O(1) block-id remapping |
 | Block splitting | `split_block()` with automatic edge transfer |
 | `serde` feature | Optional serialisation support |
@@ -122,7 +124,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Reverse CFG | `reverse_cfg` | Flip all edges, swap entry/exits |
 | Call graph | `build_call_graph` + `CallInfo`, `propagate_summaries` (callee-first SCC fixpoint) | Consumer-typed callees; interprocedural summary scaffold |
 | CFG diff | `cfg_diff` | Structural comparison (bindiff-style fingerprinting), no trait bounds |
-| Exception handling model | `build_eh_model` | Landing pads, cleanup blocks, protected-by mapping |
+| Exception handling model | `build_eh_model` | Landing pads, cleanup blocks, protected-by mapping, cleanup continuations by completion reason |
 | Integrity verification | `verify` (CFG storage), `verify_view` (consumer view contract) | |
 | DOT export | `to_dot` (`DisplayInstr`), `to_dot_with` (bound-free), `write_view_dot` (any view) | Graphviz output with escaped labels |
 

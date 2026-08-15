@@ -12,6 +12,7 @@ use alloc::vec::Vec;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::edge::EdgeKind;
+use crate::region::{Cleanup, HandlerRef};
 
 /// Classification of a block's role in exception handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +49,18 @@ pub struct EhModel {
     pub eh_edges: Vec<EhEdge>,
     /// Landing pad → set of blocks it protects.
     pub protected_by: BTreeMap<BlockId, BTreeSet<BlockId>>,
+    /// Cleanup handler entry block → what the cleanup does once its body
+    /// ends, for the handlers whose frontend recorded it
+    /// ([`Cfg::add_continuation`]).
+    ///
+    /// A `finally` lowered as a single shared block is entered by every route
+    /// out of its region and edges to all of their destinations, so the graph
+    /// alone cannot say which edge belongs to which route. The record does:
+    /// [`Cleanup::resumes_for`] answers "where does control go when this
+    /// cleanup was entered by a `return`", and [`Cleanup::resume_from`] names
+    /// the block those edges leave (`None` when the cleanup diverges, in
+    /// which case its recorded routes are unreachable).
+    pub cleanups: BTreeMap<BlockId, Cleanup>,
 }
 
 /// Build an EH model by analysing edge kinds and region metadata.
@@ -55,6 +68,11 @@ pub struct EhModel {
 /// Blocks reachable only via `Exception` edges are classified as
 /// landing pads. Blocks that are targets of the existing `Region`
 /// handlers are also incorporated.
+///
+/// Cleanup records the frontend attached to a handler
+/// ([`Cfg::add_continuation`]) are carried into [`EhModel::cleanups`], keyed
+/// by that handler's entry block, so an analysis reads cleanup-then-continue
+/// structure instead of a fan of indistinguishable out-edges.
 ///
 /// # Examples
 ///
@@ -75,6 +93,7 @@ pub fn build_eh_model<I>(cfg: &Cfg<I>) -> EhModel {
     let mut block_kinds = BTreeMap::new();
     let mut eh_edges = Vec::new();
     let mut protected_by: BTreeMap<BlockId, BTreeSet<BlockId>> = BTreeMap::new();
+    let mut cleanups: BTreeMap<BlockId, Cleanup> = BTreeMap::new();
 
     // Classify from edge kinds.
     for edge in cfg.edges() {
@@ -99,8 +118,11 @@ pub fn build_eh_model<I>(cfg: &Cfg<I>) -> EhModel {
 
     // Classify from region metadata.
     for region in cfg.regions() {
-        for handler in &region.handlers {
+        for (index, handler) in region.handlers.iter().enumerate() {
             let target = handler.entry;
+            if let Some(cleanup) = cfg.cleanup(HandlerRef::new(region.id, index)) {
+                cleanups.insert(target, cleanup.clone());
+            }
             block_kinds.entry(target).or_insert(match handler.kind {
                 crate::region::HandlerKind::Catch | crate::region::HandlerKind::CatchAll => {
                     EhBlockKind::LandingPad
@@ -125,6 +147,7 @@ pub fn build_eh_model<I>(cfg: &Cfg<I>) -> EhModel {
         block_kinds,
         eh_edges,
         protected_by,
+        cleanups,
     }
 }
 
@@ -191,6 +214,82 @@ mod tests {
         assert_eq!(model.eh_edges.len(), 1);
         assert_eq!(model.block_kinds[&handler], EhBlockKind::LandingPad);
         assert!(model.protected_by[&handler].contains(&cfg.entry()));
+    }
+
+    #[test]
+    fn cleanup_continuations_reach_the_model_by_entry_block() {
+        use crate::region::{
+            CompletionReason, Continuation, Handler, HandlerKind, Region, RegionId,
+        };
+
+        let mut cfg = Cfg::new();
+        let cleanup = cfg.new_block();
+        let after = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .push(ff("try"));
+        cfg.block_mut(cleanup)
+            .instructions_vec_mut()
+            .push(ff("finally"));
+        let region = cfg.add_region(Region {
+            id: RegionId::from_raw(0),
+            protected_blocks: [cfg.entry()].into_iter().collect(),
+            handlers: alloc::vec![Handler {
+                entry: cleanup,
+                body: [cleanup].into_iter().collect(),
+                kind: HandlerKind::Finally,
+            }],
+            parent: None,
+        });
+
+        // Without records the model is exactly what it always was.
+        assert!(build_eh_model(&cfg).cleanups.is_empty());
+
+        let handler = HandlerRef::new(region, 0);
+        cfg.set_cleanup_resume(handler, cleanup);
+        cfg.add_continuation(
+            handler,
+            Continuation {
+                reason: CompletionReason::Normal,
+                resume: after,
+            },
+        );
+        cfg.add_continuation(
+            handler,
+            Continuation {
+                reason: CompletionReason::Return,
+                resume: exit,
+            },
+        );
+        // Both routes leave the same block, so the edges alone are opaque.
+        cfg.add_edge(cleanup, after, EdgeKind::Fallthrough);
+        cfg.add_edge(cleanup, exit, EdgeKind::Fallthrough);
+
+        let model = build_eh_model(&cfg);
+        assert_eq!(model.block_kinds[&cleanup], EhBlockKind::Cleanup);
+        let recorded = &model.cleanups[&cleanup];
+        assert_eq!(recorded.handler, handler);
+        assert_eq!(recorded.resume_from, Some(cleanup));
+        assert_eq!(
+            recorded
+                .resumes_for(CompletionReason::Return)
+                .collect::<alloc::vec::Vec<_>>(),
+            alloc::vec![exit],
+            "the reason selects the route the shared edges cannot"
+        );
+        assert_eq!(
+            recorded
+                .resumes_for(CompletionReason::Normal)
+                .collect::<alloc::vec::Vec<_>>(),
+            alloc::vec![after]
+        );
+        assert!(
+            recorded
+                .resumes_for(CompletionReason::Transfer)
+                .next()
+                .is_none()
+        );
     }
 
     #[test]
