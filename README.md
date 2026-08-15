@@ -106,6 +106,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Configurable search | `search` + `SearchConfig` (order, visited policy, direction, depth bound) | First-match, pruning (`Visit::Skip`), early exit (`ControlFlow::Break`), and backtracking as configuration; `VisitedPolicy::Path` un-marks on unwind so every route to a node is reported |
 | Depth-first events | `depth_first_events` → `DfsEvent` | Discover / tree / back / forward-or-cross / finish in a pinned order — tri-color edge classification, cycle diagnostics in traversal order |
 | Open-graph search | `open_search` + `OpenSearchConfig` | The same disciplines over a lazily discovered node space: successors come from a closure, no dense ids (import/re-export chases, ordered emission walks) |
+| Open-graph events | `open_depth_first_events` → `OpenDfsEvent` | The same open space walked for a fold: discover/finish pairs (plus refused re-entries) in a pinned post-order, with `VisitedPolicy::Path` re-folding a shared node once per route — C++ base-class member lookup, where that re-fold *is* the ambiguity |
 | Alias chase | `follow`, `follow_path` | Out-degree ≤ 1 chase with a hop bound and a full-path cycle guard; the chain, or just its end |
 | Shortest path | `shortest_path` (nodes), `shortest_path_edges` (edge witness) | Forward or reverse unweighted witness path |
 | Multi-source reachability | `reachable` | Dense `Vec<bool>` from a seed set, forward or reverse; order-insensitive |

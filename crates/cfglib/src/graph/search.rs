@@ -18,7 +18,10 @@
 //! classification).
 //!
 //! [`open_search`](super::open::open_search) applies the same discipline to a
-//! lazily discovered node space that has no dense identities.
+//! lazily discovered node space that has no dense identities, and
+//! [`open_depth_first_events`](super::open::open_depth_first_events) is this
+//! module's event walk over that space — discover/finish pairs for folds,
+//! with per-path marks that re-fold a shared node once per route.
 
 extern crate alloc;
 use alloc::collections::VecDeque;
