@@ -117,7 +117,8 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Post-dominator tree | `DominatorTree::compute_post` (CFG), `compute_post_from` (any view + explicit exits) | Virtual-exit handling built in |
 | Dominance frontiers | `DominanceFrontiers::compute` | For SSA φ-placement |
 | Incremental dominators | `update_after_edge_insert`, `update_after_edge_remove` | Recompute + diff |
-| Strongly connected components | `tarjan_scc` → `SccResult<N>`, `condensation` → component DAG | Generic iterative Tarjan algorithm, reverse-topological order |
+| Strongly connected components | `tarjan_scc` → `SccResult<N>`, `condensation` → component DAG | Generic iterative Tarjan algorithm, reverse-topological order (leaves first) |
+| SCC in topological order | `kosaraju_scc` → `SccResult<N>` | The same partition numbered sources first (`index(u) < index(v)` across every edge); the classic deterministic two-pass algorithm, for budgeted forward closures over the condensation |
 | Back-edge detection | `find_back_edges` (dominance, any view), `find_back_edges_tagged` (CFG, honours `Back` tags) | |
 | Natural loop detection | `detect_loops` / `detect_loops_tagged` → `Vec<NaturalLoop<N>>` | Header, body, latches, nesting depth |
 | Loop nesting tree | `LoopNestingTree::build` | Parent/child loop hierarchy |

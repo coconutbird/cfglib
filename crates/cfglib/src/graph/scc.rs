@@ -1,7 +1,11 @@
 //! Strongly connected components for any [`DirectedGraphView`].
 //!
-//! The iterative Tarjan implementation runs in `O(V + E)` and does not consume
-//! the host call stack for deeply nested code graphs.
+//! Both implementations are iterative — they do not consume the host call
+//! stack for deeply nested code graphs — and compute the same partition. They
+//! differ in how they **number** it, which is the whole reason to pick one:
+//! [`tarjan_scc`] takes one `O(V + E)` pass and numbers leaves first, while
+//! [`kosaraju_scc`] takes two and numbers sources first, for consumers that
+//! must process a component before everything it reaches.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
@@ -33,9 +37,15 @@ impl<N: Copy + Ord> Scc<N> {
 }
 
 /// Result of strongly connected component decomposition.
+///
+/// The partition is a property of the graph, but the **order** of
+/// [`components`](Self::components) is a property of the algorithm that
+/// produced it: [`tarjan_scc`] numbers them in reverse topological order
+/// (leaves first), [`kosaraju_scc`] in topological order (sources first).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SccResult<N> {
-    /// Components in reverse topological order, with leaves first.
+    /// The components, ordered by the producing algorithm's numbering
+    /// contract — see [`tarjan_scc`] and [`kosaraju_scc`].
     pub components: Vec<Scc<N>>,
     component_of: Vec<usize>,
 }
@@ -114,7 +124,12 @@ pub fn condensation<G: DirectedGraphView>(graph: &G) -> DirectedGraph<Scc<G::Nod
     condensed
 }
 
-/// Compute strongly connected components with Tarjan's algorithm.
+/// Compute strongly connected components with Tarjan's algorithm, numbering
+/// them in **reverse topological order of the condensation — leaves first**.
+///
+/// One pass, `O(V + E)`, and the right default. [`kosaraju_scc`] computes the
+/// same partition with the opposite numbering (sources first) for consumers
+/// that must process a component before its successors.
 #[must_use]
 pub fn tarjan_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
     let node_count = graph.node_count();
@@ -190,6 +205,139 @@ pub fn tarjan_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
     }
 }
 
+/// Compute strongly connected components with Kosaraju's algorithm, numbering
+/// them in **topological order of the condensation — sources first**.
+///
+/// # Numbering contract
+///
+/// The numbering is the reason this exists beside [`tarjan_scc`], which
+/// computes the same partition in one pass instead of two but numbers it
+/// leaves-first. Here, for every edge `u -> v` of the graph:
+///
+/// ```text
+/// component_index(u) <= component_index(v)
+/// ```
+///
+/// with equality exactly when `u` and `v` are in the same component. So
+/// walking [`components`](SccResult::components) in index order visits every
+/// component only after every component that can reach it — the order a
+/// forward closure over the condensation wants, and the order
+/// [`condensation`] does *not* produce (it is built from [`tarjan_scc`], so
+/// its nodes are leaves-first).
+///
+/// # Determinism
+///
+/// The exact sequence, not just its topological property, is part of the
+/// contract: it is the classic two-pass algorithm, deterministic in the
+/// graph's own orders.
+///
+/// 1. An iterative depth-first walk over roots in node-id order, taking each
+///    node's successors in adjacency order, recording nodes by finish time.
+/// 2. A walk of the reverse graph over those roots in reverse finish order,
+///    minting one component per root that is not yet assigned.
+///
+/// A consumer whose work budget is keyed on the component sequence — a
+/// grammar `FIRST`-set fixpoint over a symbol-dependency graph, where
+/// processing a component before its dependents is what makes one pass
+/// enough — depends on that, so it is stated rather than left to the
+/// implementation.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{DirectedGraph, kosaraju_scc, tarjan_scc};
+///
+/// // entry -> (a <-> b) -> exit
+/// let mut graph = DirectedGraph::<&str, ()>::new();
+/// let entry = graph.add_node("entry");
+/// let a = graph.add_node("a");
+/// let b = graph.add_node("b");
+/// let exit = graph.add_node("exit");
+/// graph.add_edge(entry, a, ());
+/// graph.add_edge(a, b, ());
+/// graph.add_edge(b, a, ());
+/// graph.add_edge(b, exit, ());
+///
+/// // Sources first: the entry's component is 0, the cycle 1, the exit 2.
+/// let sources_first = kosaraju_scc(&graph);
+/// assert_eq!(sources_first.component_index(entry), 0);
+/// assert_eq!(sources_first.component_index(a), 1);
+/// assert_eq!(sources_first.component_index(b), 1);
+/// assert_eq!(sources_first.component_index(exit), 2);
+///
+/// // The same partition, numbered the other way round.
+/// let leaves_first = tarjan_scc(&graph);
+/// assert_eq!(leaves_first.component_index(entry), 2);
+/// assert_eq!(leaves_first.component_index(exit), 0);
+/// ```
+#[must_use]
+pub fn kosaraju_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
+    let node_count = graph.node_count();
+    let mut visited = vec![false; node_count];
+    let mut finish_order: Vec<G::NodeId> = Vec::with_capacity(node_count);
+
+    // Pass 1: record nodes by finish time over the forward graph.
+    for start in graph.node_ids() {
+        if visited[start.index()] {
+            continue;
+        }
+        visited[start.index()] = true;
+        let mut calls = vec![(start, graph.successors(start).collect::<Vec<_>>(), 0_usize)];
+
+        // Read frames through `last_mut` and copy only the Copy fields —
+        // cloning the whole frame (with its successor Vec) per iteration
+        // would make the walk O(Σ deg²) in time and allocation.
+        while let Some(frame) = calls.last_mut() {
+            if frame.2 < frame.1.len() {
+                let successor = frame.1[frame.2];
+                frame.2 += 1;
+                if !visited[successor.index()] {
+                    visited[successor.index()] = true;
+                    calls.push((successor, graph.successors(successor).collect(), 0));
+                }
+                continue;
+            }
+
+            finish_order.push(frame.0);
+            calls.pop();
+        }
+    }
+
+    // Pass 2: walk the reverse graph in reverse finish order. The first root
+    // is in a source component of the condensation, and every root after it
+    // is in a source component of what remains — which is what makes the
+    // minting order topological.
+    let mut component_of = vec![usize::MAX; node_count];
+    let mut components: Vec<Scc<G::NodeId>> = Vec::new();
+    let mut stack = Vec::new();
+
+    for root in finish_order.into_iter().rev() {
+        if component_of[root.index()] != usize::MAX {
+            continue;
+        }
+
+        let index = components.len();
+        let mut nodes = BTreeSet::new();
+        component_of[root.index()] = index;
+        stack.push(root);
+        while let Some(node) = stack.pop() {
+            nodes.insert(node);
+            for predecessor in graph.predecessors(node) {
+                if component_of[predecessor.index()] == usize::MAX {
+                    component_of[predecessor.index()] = index;
+                    stack.push(predecessor);
+                }
+            }
+        }
+        components.push(Scc { nodes });
+    }
+
+    SccResult {
+        components,
+        component_of,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +397,127 @@ mod tests {
         assert!(result.component(left).contains(right));
         assert_eq!(result.component_index(left), result.component_index(right));
         assert!(!result.is_dag(&graph));
+    }
+
+    /// Shapes both algorithms must agree on: a chain, a diamond, a cycle with
+    /// a tail, two cycles in series, a self-loop beside a plain node, a
+    /// disconnected pair, and the empty graph.
+    fn fixtures() -> Vec<(&'static str, DirectedGraph<(), ()>)> {
+        fn build(node_count: usize, edges: &[(usize, usize)]) -> DirectedGraph<(), ()> {
+            let mut graph = DirectedGraph::<(), ()>::new();
+            for _ in 0..node_count {
+                graph.add_node(());
+            }
+            for &(from, to) in edges {
+                graph.add_edge(NodeId::from_index(from), NodeId::from_index(to), ());
+            }
+            graph
+        }
+
+        vec![
+            ("chain", build(3, &[(0, 1), (1, 2)])),
+            ("diamond", build(4, &[(0, 1), (0, 2), (1, 3), (2, 3)])),
+            (
+                "cycle with a tail",
+                build(4, &[(0, 1), (1, 2), (2, 1), (2, 3)]),
+            ),
+            (
+                "two cycles in series",
+                build(5, &[(0, 1), (1, 2), (2, 0), (1, 3), (3, 4), (4, 3)]),
+            ),
+            ("self loop", build(2, &[(0, 0)])),
+            ("disconnected", build(4, &[(0, 1), (2, 3)])),
+            ("empty", build(0, &[])),
+        ]
+    }
+
+    fn partition(result: &SccResult<NodeId>) -> BTreeSet<BTreeSet<NodeId>> {
+        result
+            .components
+            .iter()
+            .map(|component| component.nodes.clone())
+            .collect()
+    }
+
+    #[test]
+    fn kosaraju_and_tarjan_agree_on_the_partition() {
+        for (name, graph) in fixtures() {
+            let kosaraju = kosaraju_scc(&graph);
+            let tarjan = tarjan_scc(&graph);
+            assert_eq!(partition(&kosaraju), partition(&tarjan), "{name}");
+            assert_eq!(kosaraju.len(), tarjan.len(), "{name}");
+            assert_eq!(kosaraju.is_dag(&graph), tarjan.is_dag(&graph), "{name}");
+            for node in graph.node_ids() {
+                assert_eq!(
+                    kosaraju.component(node).nodes,
+                    tarjan.component(node).nodes,
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kosaraju_numbers_components_topologically() {
+        for (name, graph) in fixtures() {
+            let kosaraju = kosaraju_scc(&graph);
+            let tarjan = tarjan_scc(&graph);
+            for edge in graph.edges() {
+                let (from, to) = (edge.source(), edge.target());
+                let (source, target) =
+                    (kosaraju.component_index(from), kosaraju.component_index(to));
+                if kosaraju.component(from).contains(to) {
+                    assert_eq!(source, target, "{name}: an intra-component edge");
+                    continue;
+                }
+                // Sources first: an edge always runs from a lower component
+                // index to a higher one.
+                assert!(source < target, "{name}: {source} !< {target}");
+                // Tarjan numbers the very same edge the other way round.
+                assert!(
+                    tarjan.component_index(from) > tarjan.component_index(to),
+                    "{name}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kosaraju_numbering_matches_the_hand_computed_two_pass_order() {
+        // `a <-> b <-> c` is a cycle, `b` enters the `d <-> e` cycle, `f`
+        // enters `a`, and `g` is isolated.
+        let mut graph = DirectedGraph::<&str, ()>::new();
+        let outer_a = graph.add_node("a");
+        let outer_b = graph.add_node("b");
+        let outer_c = graph.add_node("c");
+        let inner_d = graph.add_node("d");
+        let inner_e = graph.add_node("e");
+        let entry_f = graph.add_node("f");
+        let lone_g = graph.add_node("g");
+        graph.add_edge(outer_a, outer_b, ());
+        graph.add_edge(outer_b, outer_c, ());
+        graph.add_edge(outer_c, outer_a, ());
+        graph.add_edge(outer_b, inner_d, ());
+        graph.add_edge(inner_d, inner_e, ());
+        graph.add_edge(inner_e, inner_d, ());
+        graph.add_edge(entry_f, outer_a, ());
+
+        // Pass 1 finishes [c, e, d, b, a, f, g], so pass 2 walks that in
+        // reverse and mints components from the roots g, f, a, d — the
+        // isolated node first because it finished last.
+        let result = kosaraju_scc(&graph);
+        assert_eq!(
+            result
+                .components
+                .iter()
+                .map(|component| component.nodes.iter().map(|&node| graph[node]).collect())
+                .collect::<Vec<Vec<_>>>(),
+            vec![vec!["g"], vec!["f"], vec!["a", "b", "c"], vec!["d", "e"]]
+        );
+        assert_eq!(result.component_index(lone_g), 0);
+        assert_eq!(result.component_index(entry_f), 1);
+        assert_eq!(result.component_index(outer_b), 2);
+        assert_eq!(result.component_index(inner_e), 3);
     }
 
     #[test]
