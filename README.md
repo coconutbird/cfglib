@@ -103,6 +103,8 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 |---|---|---|
 | DFS / BFS | `depth_first_preorder`, `breadth_first`, CFG convenience methods | Direction-selectable traversals over `DirectedGraphView` |
 | Edge-aware traversal | `breadth_first_edges`, `walk_edges` (filtered + depth-bounded) | Every distinct edge once with identity + endpoints; parallel-edge provenance |
+| Configurable search | `search` + `SearchConfig` (order, visited policy, direction, depth bound) | First-match, pruning (`Visit::Skip`), early exit (`ControlFlow::Break`), and backtracking as configuration; `VisitedPolicy::Path` un-marks on unwind so every route to a node is reported |
+| Depth-first events | `depth_first_events` → `DfsEvent` | Discover / tree / back / forward-or-cross / finish in a pinned order — tri-color edge classification, cycle diagnostics in traversal order |
 | Shortest path | `shortest_path` (nodes), `shortest_path_edges` (edge witness) | Forward or reverse unweighted witness path |
 | Multi-source reachability | `reachable` | Dense `Vec<bool>` from a seed set, forward or reverse; order-insensitive |
 | Nearest common ancestor | `nearest_common_ancestor` | Bidirectional BFS meet of two nodes; smallest combined distance, ties by smallest node id |

@@ -18,7 +18,7 @@ pub enum TraversalDirection {
     Incoming,
 }
 
-fn neighbors<G: DirectedGraphView>(
+pub(crate) fn neighbors<G: DirectedGraphView>(
     graph: &G,
     node: G::NodeId,
     direction: TraversalDirection,

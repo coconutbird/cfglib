@@ -17,6 +17,7 @@ pub mod pdg;
 pub mod reducible;
 pub mod reverse;
 pub mod scc;
+pub mod search;
 pub mod structure;
 pub mod traverse;
 pub mod verify;

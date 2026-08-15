@@ -181,6 +181,9 @@ pub use graph::loopnest::{LoopNestNode, LoopNestingTree};
 pub use graph::pdg::{DependenceKind, DependenceNode, program_dependence_graph};
 pub use graph::reverse::reverse_cfg;
 pub use graph::scc::{Scc, SccResult, condensation, tarjan_scc};
+pub use graph::search::{
+    DfsEvent, SearchConfig, SearchOrder, Visit, VisitedPolicy, depth_first_events, search,
+};
 pub use graph::structure::{
     BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, detect_loops_tagged,
     find_back_edges, find_back_edges_tagged, insert_preheader, loop_exit_blocks,
