@@ -270,6 +270,117 @@ pub fn reachable<G: DirectedGraphView>(
     visited
 }
 
+/// Hop counts from `start` to every node reachable by walking `direction`
+/// edges, `None` for the unreachable ones. `start` itself is at distance 0.
+fn breadth_first_distances<G: DirectedGraphView>(
+    graph: &G,
+    start: G::NodeId,
+    direction: TraversalDirection,
+) -> Vec<Option<usize>> {
+    let mut distances = vec![None; graph.node_count()];
+    let mut queue = VecDeque::new();
+    distances[start.index()] = Some(0);
+    queue.push_back((start, 0_usize));
+
+    while let Some((node, depth)) = queue.pop_front() {
+        for adjacent in neighbors(graph, node, direction) {
+            if distances[adjacent.index()].is_none() {
+                distances[adjacent.index()] = Some(depth + 1);
+                queue.push_back((adjacent, depth + 1));
+            }
+        }
+    }
+
+    distances
+}
+
+/// Return the nearest node reachable from both `a` and `b` by walking
+/// `direction` edges — the meeting point of two outward searches.
+///
+/// With [`TraversalDirection::Incoming`] this is the classic *nearest common
+/// ancestor*: the closest node from which both `a` and `b` can be reached
+/// (a shared dominator-like join in a CFG, a shared caller in a call graph, a
+/// shared origin in a value-flow graph). With
+/// [`TraversalDirection::Outgoing`] it is the mirror question — the closest
+/// node both can reach, such as a shared sink or merge point. The graph need
+/// not be a tree or a DAG; cycles terminate the searches like every other
+/// traversal here.
+///
+/// Both endpoints are at distance 0 from themselves, so `b` is the answer
+/// whenever it is reachable from `a` at all, and `a == b` answers `a`.
+/// Returns `None` when no node is reachable from both.
+///
+/// # Determinism
+///
+/// Candidates are ranked by **smallest combined distance first; ties broken
+/// by smallest node id.** The combined distance of a candidate is its hop
+/// count from `a` plus its hop count from `b`. The answer therefore never
+/// depends on adjacency order or on which endpoint was passed first.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{DirectedGraph, TraversalDirection, nearest_common_ancestor};
+///
+/// //   root         `left` and `right` share one predecessor
+/// //   /  \
+/// // left right
+/// let mut graph = DirectedGraph::<&str, ()>::new();
+/// let root = graph.add_node("root");
+/// let left = graph.add_node("left");
+/// let right = graph.add_node("right");
+/// graph.add_edge(root, left, ());
+/// graph.add_edge(root, right, ());
+///
+/// // Walking predecessors from both leaves meets at the root.
+/// assert_eq!(
+///     nearest_common_ancestor(&graph, left, right, TraversalDirection::Incoming),
+///     Some(root)
+/// );
+///
+/// // Forward, `left` is reachable from `root` and from itself, so the meet
+/// // is `left` at a combined distance of 1.
+/// assert_eq!(
+///     nearest_common_ancestor(&graph, root, left, TraversalDirection::Outgoing),
+///     Some(left)
+/// );
+///
+/// // Two leaves have no common successor.
+/// assert_eq!(
+///     nearest_common_ancestor(&graph, left, right, TraversalDirection::Outgoing),
+///     None
+/// );
+/// ```
+///
+/// # Panics
+///
+/// Panics when either endpoint is not a node in `graph`.
+#[must_use]
+pub fn nearest_common_ancestor<G: DirectedGraphView>(
+    graph: &G,
+    a: G::NodeId,
+    b: G::NodeId,
+    direction: TraversalDirection,
+) -> Option<G::NodeId> {
+    assert!(a.index() < graph.node_count(), "node `a` is out of range");
+    assert!(b.index() < graph.node_count(), "node `b` is out of range");
+    let from_a = breadth_first_distances(graph, a, direction);
+    let from_b = breadth_first_distances(graph, b, direction);
+
+    // `min` over `(combined distance, node id)` *is* the documented
+    // tie-break: node ids are dense and ordered, so the tuple ordering
+    // ranks by distance and settles ties on the smaller id.
+    graph
+        .node_ids()
+        .filter_map(|node| {
+            let reached_from_a = from_a[node.index()]?;
+            let reached_from_b = from_b[node.index()]?;
+            Some((reached_from_a + reached_from_b, node))
+        })
+        .min()
+        .map(|(_, node)| node)
+}
+
 /// Return a topological ordering, or `None` when the graph contains a cycle.
 #[must_use]
 pub fn topological_sort<G: DirectedGraphView>(graph: &G) -> Option<Vec<G::NodeId>> {
@@ -449,6 +560,145 @@ mod tests {
         assert_eq!(
             reachable(&graph, [other], TraversalDirection::Outgoing),
             vec![false, true]
+        );
+    }
+
+    /// `root -> mid`, `mid -> left`, `mid -> right`, both legs into `bottom`.
+    /// `root` has the smallest id but is the *farther* common ancestor.
+    fn diamond() -> (DirectedGraph<(), ()>, [NodeId; 5]) {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let root = graph.add_node(());
+        let mid = graph.add_node(());
+        let left = graph.add_node(());
+        let right = graph.add_node(());
+        let bottom = graph.add_node(());
+        graph.add_edge(root, mid, ());
+        graph.add_edge(mid, left, ());
+        graph.add_edge(mid, right, ());
+        graph.add_edge(left, bottom, ());
+        graph.add_edge(right, bottom, ());
+        (graph, [root, mid, left, right, bottom])
+    }
+
+    #[test]
+    fn nearest_common_ancestor_meets_at_the_closest_shared_node() {
+        let (graph, [_root, mid, left, right, bottom]) = diamond();
+        // `mid` (combined 2) beats `root` (combined 4) even though `root`
+        // has the smaller id: distance ranks first.
+        assert_eq!(
+            nearest_common_ancestor(&graph, left, right, TraversalDirection::Incoming),
+            Some(mid)
+        );
+        // Forward, the same two legs merge at the bottom.
+        assert_eq!(
+            nearest_common_ancestor(&graph, left, right, TraversalDirection::Outgoing),
+            Some(bottom)
+        );
+        // The answer does not depend on which endpoint is passed first.
+        assert_eq!(
+            nearest_common_ancestor(&graph, right, left, TraversalDirection::Incoming),
+            Some(mid)
+        );
+        assert_eq!(
+            nearest_common_ancestor(&graph, bottom, mid, TraversalDirection::Incoming),
+            Some(mid)
+        );
+    }
+
+    #[test]
+    fn nearest_common_ancestor_treats_endpoints_as_distance_zero() {
+        let (graph, [root, _, left, _, bottom]) = diamond();
+        // A node is its own meet, in either direction.
+        assert_eq!(
+            nearest_common_ancestor(&graph, root, root, TraversalDirection::Outgoing),
+            Some(root)
+        );
+        assert_eq!(
+            nearest_common_ancestor(&graph, bottom, bottom, TraversalDirection::Incoming),
+            Some(bottom)
+        );
+        // `left` is reachable from `root`, so the meet is `left` itself.
+        assert_eq!(
+            nearest_common_ancestor(&graph, root, left, TraversalDirection::Outgoing),
+            Some(left)
+        );
+        assert_eq!(
+            nearest_common_ancestor(&graph, left, root, TraversalDirection::Outgoing),
+            Some(left)
+        );
+    }
+
+    #[test]
+    fn nearest_common_ancestor_breaks_ties_by_smallest_node_id() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let first_sink = graph.add_node(());
+        let second_sink = graph.add_node(());
+        let left = graph.add_node(());
+        let right = graph.add_node(());
+        // Adjacency deliberately offers the higher-id sink first, so a
+        // discovery-order answer would pick `second_sink`.
+        graph.add_edge(left, second_sink, ());
+        graph.add_edge(left, first_sink, ());
+        graph.add_edge(right, second_sink, ());
+        graph.add_edge(right, first_sink, ());
+
+        // Both sinks sit at combined distance 2; the smaller id wins.
+        assert_eq!(
+            nearest_common_ancestor(&graph, left, right, TraversalDirection::Outgoing),
+            Some(first_sink)
+        );
+        assert_eq!(
+            nearest_common_ancestor(&graph, right, left, TraversalDirection::Outgoing),
+            Some(first_sink)
+        );
+        assert_eq!(
+            nearest_common_ancestor(
+                &graph,
+                first_sink,
+                second_sink,
+                TraversalDirection::Incoming
+            ),
+            Some(left)
+        );
+    }
+
+    #[test]
+    fn nearest_common_ancestor_without_a_shared_node_is_none() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let start = graph.add_node(());
+        let lonely = graph.add_node(());
+        let end = graph.add_node(());
+        graph.add_edge(start, end, ());
+
+        assert_eq!(
+            nearest_common_ancestor(&graph, start, lonely, TraversalDirection::Outgoing),
+            None
+        );
+        assert_eq!(
+            nearest_common_ancestor(&graph, start, lonely, TraversalDirection::Incoming),
+            None
+        );
+        // Two nodes with no shared successor, both inside the connected part.
+        assert_eq!(
+            nearest_common_ancestor(&graph, end, lonely, TraversalDirection::Incoming),
+            None
+        );
+    }
+
+    #[test]
+    fn nearest_common_ancestor_terminates_on_cycles() {
+        let (mut graph, [_, mid, left, right, bottom]) = diamond();
+        graph.add_edge(bottom, mid, ());
+
+        // Every node is now reachable from both legs; `bottom` (1 + 1) is
+        // the closest forward meet and `mid` (1 + 1) the closest backward one.
+        assert_eq!(
+            nearest_common_ancestor(&graph, left, right, TraversalDirection::Outgoing),
+            Some(bottom)
+        );
+        assert_eq!(
+            nearest_common_ancestor(&graph, left, right, TraversalDirection::Incoming),
+            Some(mid)
         );
     }
 

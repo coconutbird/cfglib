@@ -181,8 +181,8 @@ pub use graph::structure::{
     find_back_edges, find_back_edges_tagged, insert_preheader, loop_exit_blocks,
 };
 pub use graph::traverse::{
-    TraversalDirection, breadth_first, depth_first_postorder, depth_first_preorder, reachable,
-    reverse_postorder, shortest_path, topological_sort,
+    TraversalDirection, breadth_first, depth_first_postorder, depth_first_preorder,
+    nearest_common_ancestor, reachable, reverse_postorder, shortest_path, topological_sort,
 };
 pub use graph::verify::{VerifyError, VerifyResult, verify, verify_view};
 pub use graph::view::{DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView};
