@@ -134,6 +134,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 |---|---|---|
 | Generic fixpoint solver | `solve`, `Problem` trait | Forward or backward, any lattice type |
 | Node-level fixpoint | `solve_node_problem`, `NodeProblem` trait | Per-node facts over any graph view (taint, reachability-with-facts) |
+| Seeded node fixpoint | `solve_node_problem_from` | Same solver, worklist seeded from a subset — incremental / dirty-region re-solves |
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
 | Liveness | `Liveness::compute` | Live-in / live-out at each block |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |

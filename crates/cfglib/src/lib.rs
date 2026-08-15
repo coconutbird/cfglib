@@ -150,7 +150,9 @@ pub use region::{
 pub use dataflow::defuse::DefUseChains;
 pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
 pub use dataflow::liveness::Liveness;
-pub use dataflow::node_fixpoint::{NodeFacts, NodeProblem, solve_node_problem};
+pub use dataflow::node_fixpoint::{
+    NodeFacts, NodeProblem, solve_node_problem, solve_node_problem_from,
+};
 pub use dataflow::reaching::{ReachingDef, ReachingDefs};
 pub use dataflow::ssa::{
     DominanceFrontiers, PhiPlacement, PhiPlacements, SsaBlock, SsaForm, SsaInstruction, SsaPhi,
