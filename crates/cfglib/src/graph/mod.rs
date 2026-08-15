@@ -8,6 +8,7 @@ pub mod dominator;
 pub mod dot;
 pub mod edge_traverse;
 pub mod eh;
+pub mod horn;
 pub mod inc_dom;
 pub mod interval;
 pub mod keyed;

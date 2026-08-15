@@ -203,6 +203,73 @@ pub fn shortest_path<G: DirectedGraphView>(
     None
 }
 
+/// Mark every node reachable from `seeds` by walking `direction` edges.
+///
+/// Returns a dense `Vec<bool>` indexed by node id, `true` for every seed and
+/// every node reachable from one. Duplicate seeds are fine. The result is a
+/// set, so it is deterministic and independent of seed order — unlike the
+/// order-yielding traversals above, which answer a single-start question.
+///
+/// Multi-source reachability is the shape most whole-program queries take:
+/// live code from a set of roots, the callees of an entry-point set, the
+/// nodes a set of definitions can flow to, and (with
+/// [`TraversalDirection::Incoming`]) everything that can reach a set of
+/// sinks.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{DirectedGraph, TraversalDirection, reachable};
+///
+/// let mut graph = DirectedGraph::<&str, ()>::new();
+/// let main = graph.add_node("main");
+/// let helper = graph.add_node("helper");
+/// let orphan = graph.add_node("orphan");
+/// graph.add_edge(main, helper, ());
+///
+/// let live = reachable(&graph, [main], TraversalDirection::Outgoing);
+/// assert_eq!(live, vec![true, true, false]);
+///
+/// // Seeding the orphan too covers the whole graph.
+/// let live = reachable(&graph, [main, orphan], TraversalDirection::Outgoing);
+/// assert_eq!(live, vec![true, true, true]);
+/// ```
+///
+/// # Panics
+///
+/// Panics when a seed is not a node in `graph`.
+#[must_use]
+pub fn reachable<G: DirectedGraphView>(
+    graph: &G,
+    seeds: impl IntoIterator<Item = G::NodeId>,
+    direction: TraversalDirection,
+) -> Vec<bool> {
+    let mut visited = vec![false; graph.node_count()];
+    let mut stack = Vec::new();
+
+    for seed in seeds {
+        assert!(
+            seed.index() < graph.node_count(),
+            "seed node is out of range"
+        );
+        if !visited[seed.index()] {
+            visited[seed.index()] = true;
+            stack.push(seed);
+        }
+    }
+
+    while let Some(node) = stack.pop() {
+        for adjacent in neighbors(graph, node, direction) {
+            if !visited[adjacent.index()] {
+                visited[adjacent.index()] = true;
+                stack.push(adjacent);
+            }
+        }
+    }
+
+    visited
+}
+
 /// Return a topological ordering, or `None` when the graph contains a cycle.
 #[must_use]
 pub fn topological_sort<G: DirectedGraphView>(graph: &G) -> Option<Vec<G::NodeId>> {
@@ -261,7 +328,7 @@ impl<I> Cfg<I> {
 mod tests {
     use super::*;
     use crate::edge::EdgeKind;
-    use crate::graph::directed::DirectedGraph;
+    use crate::graph::directed::{DirectedGraph, NodeId};
     use crate::test_util::ff;
     use alloc::vec;
 
@@ -302,6 +369,86 @@ mod tests {
         assert_eq!(
             shortest_path(&graph, first, third, TraversalDirection::Outgoing),
             Some(vec![first, second, third])
+        );
+    }
+
+    /// `a -> b -> c` with a `c -> b` back edge, plus a disconnected `d`.
+    fn reach_fixture() -> (DirectedGraph<(), ()>, [NodeId; 4]) {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let a = graph.add_node(());
+        let b = graph.add_node(());
+        let c = graph.add_node(());
+        let d = graph.add_node(());
+        graph.add_edge(a, b, ());
+        graph.add_edge(b, c, ());
+        graph.add_edge(c, b, ());
+        (graph, [a, b, c, d])
+    }
+
+    #[test]
+    fn reachable_from_no_seeds_marks_nothing() {
+        let (graph, _) = reach_fixture();
+        assert_eq!(
+            reachable(&graph, [], TraversalDirection::Outgoing),
+            vec![false; 4]
+        );
+
+        // An empty graph yields an empty table rather than panicking.
+        let empty = DirectedGraph::<(), ()>::new();
+        assert!(reachable(&empty, [], TraversalDirection::Outgoing).is_empty());
+    }
+
+    #[test]
+    fn reachable_unions_multiple_sources_and_terminates_on_cycles() {
+        let (graph, [a, _, c, d]) = reach_fixture();
+        // The b <-> c cycle terminates; d stays unreached.
+        assert_eq!(
+            reachable(&graph, [a], TraversalDirection::Outgoing),
+            vec![true, true, true, false]
+        );
+        // A second seed unions in, and duplicate seeds change nothing.
+        assert_eq!(
+            reachable(&graph, [a, d, a, d], TraversalDirection::Outgoing),
+            vec![true; 4]
+        );
+        // Order-insensitive: the answer is a set.
+        assert_eq!(
+            reachable(&graph, [d, c], TraversalDirection::Outgoing),
+            reachable(&graph, [c, d], TraversalDirection::Outgoing)
+        );
+        assert_eq!(
+            reachable(&graph, [c], TraversalDirection::Outgoing),
+            vec![false, true, true, false]
+        );
+    }
+
+    #[test]
+    fn reachable_walks_predecessors_in_the_incoming_direction() {
+        let (graph, [a, _, c, _]) = reach_fixture();
+        assert_eq!(
+            reachable(&graph, [c], TraversalDirection::Incoming),
+            vec![true, true, true, false]
+        );
+        assert_eq!(
+            reachable(&graph, [a], TraversalDirection::Incoming),
+            vec![true, false, false, false]
+        );
+    }
+
+    #[test]
+    fn reachable_handles_self_loops() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let only = graph.add_node(());
+        let other = graph.add_node(());
+        graph.add_edge(only, only, ());
+        assert_eq!(
+            reachable(&graph, [only], TraversalDirection::Outgoing),
+            vec![true, false]
+        );
+        // A self-loop is not a reason to be reachable from elsewhere.
+        assert_eq!(
+            reachable(&graph, [other], TraversalDirection::Outgoing),
+            vec![false, true]
         );
     }
 

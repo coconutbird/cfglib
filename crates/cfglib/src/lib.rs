@@ -168,6 +168,7 @@ pub use graph::dominator::DominatorTree;
 pub use graph::dot::write_view_dot;
 pub use graph::edge_traverse::{EdgeStep, breadth_first_edges, shortest_path_edges, walk_edges};
 pub use graph::eh::{EhBlockKind, EhEdge, EhModel, build_eh_model, cleanup_blocks, landing_pads};
+pub use graph::horn::HornClauses;
 pub use graph::inc_dom::{IncrementalUpdate, update_after_edge_insert, update_after_edge_remove};
 pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
 pub use graph::keyed::KeyedGraph;
@@ -180,7 +181,7 @@ pub use graph::structure::{
     find_back_edges, find_back_edges_tagged, insert_preheader, loop_exit_blocks,
 };
 pub use graph::traverse::{
-    TraversalDirection, breadth_first, depth_first_postorder, depth_first_preorder,
+    TraversalDirection, breadth_first, depth_first_postorder, depth_first_preorder, reachable,
     reverse_postorder, shortest_path, topological_sort,
 };
 pub use graph::verify::{VerifyError, VerifyResult, verify, verify_view};
