@@ -178,6 +178,7 @@ pub use graph::inc_dom::{IncrementalUpdate, update_after_edge_insert, update_aft
 pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
 pub use graph::keyed::KeyedGraph;
 pub use graph::loopnest::{LoopNestNode, LoopNestingTree};
+pub use graph::open::{OpenSearchConfig, follow, follow_path, open_search};
 pub use graph::pdg::{DependenceKind, DependenceNode, program_dependence_graph};
 pub use graph::reverse::reverse_cfg;
 pub use graph::scc::{Scc, SccResult, condensation, tarjan_scc};

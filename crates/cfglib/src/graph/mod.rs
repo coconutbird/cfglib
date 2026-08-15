@@ -13,6 +13,7 @@ pub mod inc_dom;
 pub mod interval;
 pub mod keyed;
 pub mod loopnest;
+pub mod open;
 pub mod pdg;
 pub mod reducible;
 pub mod reverse;

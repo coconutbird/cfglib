@@ -16,6 +16,9 @@
 //! answer. [`depth_first_events`] serves the other family: consumers whose
 //! output order *is* the traversal (cycle diagnostics, tri-color edge
 //! classification).
+//!
+//! [`open_search`](super::open::open_search) applies the same discipline to a
+//! lazily discovered node space that has no dense identities.
 
 extern crate alloc;
 use alloc::collections::VecDeque;

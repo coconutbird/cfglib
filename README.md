@@ -105,6 +105,8 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Edge-aware traversal | `breadth_first_edges`, `walk_edges` (filtered + depth-bounded) | Every distinct edge once with identity + endpoints; parallel-edge provenance |
 | Configurable search | `search` + `SearchConfig` (order, visited policy, direction, depth bound) | First-match, pruning (`Visit::Skip`), early exit (`ControlFlow::Break`), and backtracking as configuration; `VisitedPolicy::Path` un-marks on unwind so every route to a node is reported |
 | Depth-first events | `depth_first_events` → `DfsEvent` | Discover / tree / back / forward-or-cross / finish in a pinned order — tri-color edge classification, cycle diagnostics in traversal order |
+| Open-graph search | `open_search` + `OpenSearchConfig` | The same disciplines over a lazily discovered node space: successors come from a closure, no dense ids (import/re-export chases, ordered emission walks) |
+| Alias chase | `follow`, `follow_path` | Out-degree ≤ 1 chase with a hop bound and a full-path cycle guard; the chain, or just its end |
 | Shortest path | `shortest_path` (nodes), `shortest_path_edges` (edge witness) | Forward or reverse unweighted witness path |
 | Multi-source reachability | `reachable` | Dense `Vec<bool>` from a seed set, forward or reverse; order-insensitive |
 | Nearest common ancestor | `nearest_common_ancestor` | Bidirectional BFS meet of two nodes; smallest combined distance, ties by smallest node id |

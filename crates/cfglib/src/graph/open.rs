@@ -1,0 +1,746 @@
+//! The [`search`](super::search::search) disciplines over an *open* node
+//! space — one discovered lazily, with no dense identities.
+//!
+//! [`DirectedGraphView`](super::view::DirectedGraphView) requires the graph to
+//! exist: dense ids in `0..node_count`, adjacency on demand. Plenty of real
+//! walks have no such graph. An import chase probes a live resolver and mints
+//! the next node from the answer; a re-export chase walks a `(file, name)`
+//! space whose edges are barrel files it has not read yet; an emission walk
+//! interleaves children by source offset as it computes them. Materialising
+//! those spaces to walk them is exactly backwards — the walk is what decides
+//! which nodes exist.
+//!
+//! [`open_search`] takes the successor relation as a closure and everything
+//! else from [`OpenSearchConfig`], so an open walk gets the same first-match,
+//! pruning, depth-bounding, and backtracking discipline as a dense one. The
+//! configuration is deliberately *reduced*: there is no `direction`, because
+//! the closure defines the edges and a direction field could only lie.
+//!
+//! [`follow`] and [`follow_path`] are the degenerate case that shows up just
+//! as often: an out-degree ≤ 1 chase (import alias to import alias, symlink to
+//! symlink, type alias to type alias) which needs a hop bound and a cycle
+//! guard and nothing else.
+
+extern crate alloc;
+use alloc::collections::{BTreeSet, VecDeque};
+use alloc::vec::Vec;
+use core::ops::ControlFlow;
+
+use crate::graph::search::{SearchOrder, Visit, VisitedPolicy};
+
+/// The discipline an [`open_search`] runs under.
+///
+/// This is [`SearchConfig`](super::search::SearchConfig) minus its
+/// `direction`: in an open space the successor closure *is* the edge
+/// relation, so a walk runs backwards by being given a closure that reports
+/// predecessors.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OpenSearchConfig {
+    /// Frontier discipline: depth-first or breadth-first.
+    pub order: SearchOrder,
+    /// Whether visited marks are global or per path.
+    pub visited: VisitedPolicy,
+    /// Maximum depth to expand from, in hops from a seed. `None` is
+    /// unbounded; `Some(0)` visits the seeds alone.
+    pub max_depth: Option<usize>,
+}
+
+impl OpenSearchConfig {
+    /// A globally marked, unbounded search in `order`.
+    #[must_use]
+    pub const fn new(order: SearchOrder) -> Self {
+        Self {
+            order,
+            visited: VisitedPolicy::Global,
+            max_depth: None,
+        }
+    }
+
+    /// Return this configuration with a different [`VisitedPolicy`].
+    #[must_use]
+    pub const fn with_visited(mut self, visited: VisitedPolicy) -> Self {
+        self.visited = visited;
+        self
+    }
+
+    /// Return this configuration bounded to `max_depth` hops from a seed.
+    #[must_use]
+    pub const fn with_max_depth(mut self, max_depth: usize) -> Self {
+        self.max_depth = Some(max_depth);
+        self
+    }
+}
+
+/// Search a lazily discovered node space from `seeds`, returning the value the
+/// visitor broke with, or `None` when the walk ran to completion.
+///
+/// `successors` is handed a node and a scratch buffer, **cleared before every
+/// call**, and pushes that node's successors *in the order they should be
+/// explored*. Nodes are compared and marked by `Ord`, so identity is whatever
+/// the consumer's node type says it is — a `(file, name)` pair, a resolved
+/// module handle, an interned id.
+///
+/// # Semantics
+///
+/// Identical to [`search`](super::search::search), with visited marks held in
+/// a `BTreeSet` instead of a dense table:
+///
+/// - **Seeds** are visited at depth 0 in the order given; deduplicated under
+///   [`VisitedPolicy::Global`], each starting a fresh path context under
+///   [`VisitedPolicy::Path`].
+/// - **Depth-first** explores the first pushed successor first.
+///   **Breadth-first** visits in discovery order.
+/// - **`max_depth` bounds expansion, not visiting.**
+/// - **[`Visit::Skip`]** prunes a node's successors; the closure is not even
+///   called for it, which matters when discovering successors costs a file
+///   read.
+/// - **[`ControlFlow::Break`]** returns immediately with `Some(value)`.
+///
+/// # Examples
+///
+/// Chasing a name through re-export barrels, named re-exports before stars,
+/// stopping at the first module that defines it:
+///
+/// ```
+/// use core::ops::ControlFlow;
+///
+/// use cfglib::{OpenSearchConfig, SearchOrder, Visit, open_search};
+///
+/// // Module 0 re-exports `Widget` from module 1 by name and has a star
+/// // re-export of module 2; module 2 stars module 3. Both 1 and 3 define
+/// // `Widget`, so the push order decides which one wins.
+/// let successors = |node: &(u32, &'static str), out: &mut Vec<(u32, &'static str)>| {
+///     let (module, name) = *node;
+///     match module {
+///         0 => {
+///             out.push((1, name)); // named re-export first
+///             out.push((2, name)); // then the star
+///         }
+///         2 => out.push((3, name)),
+///         _ => {}
+///     }
+/// };
+///
+/// let defines = |&(module, _): &(u32, &str)| module == 1 || module == 3;
+/// let found = open_search(
+///     [(0, "Widget")],
+///     OpenSearchConfig::new(SearchOrder::DepthFirst),
+///     successors,
+///     |node, _depth| {
+///         if defines(node) {
+///             return ControlFlow::Break(*node);
+///         }
+///         ControlFlow::Continue(Visit::Descend)
+///     },
+/// );
+///
+/// assert_eq!(found, Some((1, "Widget")));
+/// ```
+///
+/// # Panics
+///
+/// Panics when `config` pairs [`SearchOrder::BreadthFirst`] with
+/// [`VisitedPolicy::Path`] — a breadth-first frontier has no unwind on which
+/// to un-mark.
+#[must_use]
+pub fn open_search<N: Clone + Ord, B>(
+    seeds: impl IntoIterator<Item = N>,
+    config: OpenSearchConfig,
+    successors: impl FnMut(&N, &mut Vec<N>),
+    visitor: impl FnMut(&N, usize) -> ControlFlow<B, Visit>,
+) -> Option<B> {
+    let seeds: Vec<N> = seeds.into_iter().collect();
+    match (config.order, config.visited) {
+        (SearchOrder::DepthFirst, VisitedPolicy::Global) => {
+            open_depth_first_global(seeds, config, successors, visitor)
+        }
+        (SearchOrder::DepthFirst, VisitedPolicy::Path) => {
+            open_depth_first_path(seeds, config, successors, visitor)
+        }
+        (SearchOrder::BreadthFirst, VisitedPolicy::Global) => {
+            open_breadth_first_global(seeds, config, successors, visitor)
+        }
+        (SearchOrder::BreadthFirst, VisitedPolicy::Path) => {
+            panic!(
+                "VisitedPolicy::Path requires SearchOrder::DepthFirst: a breadth-first frontier never unwinds, so a path mark could never be removed"
+            )
+        }
+    }
+}
+
+/// Whether a node at `depth` may expand under `config`.
+fn may_expand(config: OpenSearchConfig, depth: usize) -> bool {
+    config.max_depth.is_none_or(|limit| depth < limit)
+}
+
+fn open_depth_first_global<N: Clone + Ord, B>(
+    seeds: Vec<N>,
+    config: OpenSearchConfig,
+    mut successors: impl FnMut(&N, &mut Vec<N>),
+    mut visitor: impl FnMut(&N, usize) -> ControlFlow<B, Visit>,
+) -> Option<B> {
+    let mut visited: BTreeSet<N> = BTreeSet::new();
+    // Reversed so the first seed pops first; the same convention applies to
+    // successors below, so push order is expansion order.
+    let mut stack: Vec<(N, usize)> = seeds.into_iter().rev().map(|seed| (seed, 0)).collect();
+    let mut discovered = Vec::new();
+
+    while let Some((node, depth)) = stack.pop() {
+        if !visited.insert(node.clone()) {
+            continue;
+        }
+        match visitor(&node, depth) {
+            ControlFlow::Break(value) => return Some(value),
+            ControlFlow::Continue(Visit::Skip) => continue,
+            ControlFlow::Continue(Visit::Descend) => {}
+        }
+        if !may_expand(config, depth) {
+            continue;
+        }
+        discovered.clear();
+        successors(&node, &mut discovered);
+        for next in discovered.drain(..).rev() {
+            if !visited.contains(&next) {
+                stack.push((next, depth + 1));
+            }
+        }
+    }
+
+    None
+}
+
+/// One step of a path-marked open depth-first walk.
+enum PathStep<N> {
+    /// Enter `node` at this depth, marking it on the current path.
+    Enter(N, usize),
+    /// Leave `node`: the unwind point at which its path mark is removed.
+    Leave(N),
+}
+
+fn open_depth_first_path<N: Clone + Ord, B>(
+    seeds: Vec<N>,
+    config: OpenSearchConfig,
+    mut successors: impl FnMut(&N, &mut Vec<N>),
+    mut visitor: impl FnMut(&N, usize) -> ControlFlow<B, Visit>,
+) -> Option<B> {
+    let mut on_path: BTreeSet<N> = BTreeSet::new();
+    let mut stack: Vec<PathStep<N>> = seeds
+        .into_iter()
+        .rev()
+        .map(|seed| PathStep::Enter(seed, 0))
+        .collect();
+    let mut discovered = Vec::new();
+
+    while let Some(step) = stack.pop() {
+        let (node, depth) = match step {
+            // Every `Enter` pushes its own `Leave` before any successor, so
+            // this pops exactly when the node's subtree is exhausted — and
+            // between two seeds the path is empty again.
+            PathStep::Leave(node) => {
+                on_path.remove(&node);
+                continue;
+            }
+            PathStep::Enter(node, depth) => (node, depth),
+        };
+        if !on_path.insert(node.clone()) {
+            continue;
+        }
+        stack.push(PathStep::Leave(node.clone()));
+        match visitor(&node, depth) {
+            ControlFlow::Break(value) => return Some(value),
+            ControlFlow::Continue(Visit::Skip) => continue,
+            ControlFlow::Continue(Visit::Descend) => {}
+        }
+        if !may_expand(config, depth) {
+            continue;
+        }
+        discovered.clear();
+        successors(&node, &mut discovered);
+        for next in discovered.drain(..).rev() {
+            stack.push(PathStep::Enter(next, depth + 1));
+        }
+    }
+
+    None
+}
+
+fn open_breadth_first_global<N: Clone + Ord, B>(
+    seeds: Vec<N>,
+    config: OpenSearchConfig,
+    mut successors: impl FnMut(&N, &mut Vec<N>),
+    mut visitor: impl FnMut(&N, usize) -> ControlFlow<B, Visit>,
+) -> Option<B> {
+    let mut visited: BTreeSet<N> = BTreeSet::new();
+    let mut queue: VecDeque<(N, usize)> = VecDeque::new();
+    for seed in seeds {
+        if visited.insert(seed.clone()) {
+            queue.push_back((seed, 0));
+        }
+    }
+    let mut discovered = Vec::new();
+
+    while let Some((node, depth)) = queue.pop_front() {
+        match visitor(&node, depth) {
+            ControlFlow::Break(value) => return Some(value),
+            ControlFlow::Continue(Visit::Skip) => continue,
+            ControlFlow::Continue(Visit::Descend) => {}
+        }
+        if !may_expand(config, depth) {
+            continue;
+        }
+        discovered.clear();
+        successors(&node, &mut discovered);
+        for next in discovered.drain(..) {
+            if visited.insert(next.clone()) {
+                queue.push_back((next, depth + 1));
+            }
+        }
+    }
+
+    None
+}
+
+/// Follow an out-degree ≤ 1 chase from `seed` and return where it ends.
+///
+/// `step` reports the next node, or `None` at the end of the chain. The chase
+/// stops — returning the **last** node it stood on — when `step` yields
+/// `None`, when `max_hops` steps have been taken, or when the next node is
+/// already on the path walked so far.
+///
+/// The cycle guard is the **full path**, not just the seed: an alias chain
+/// that re-enters itself three hops in is a cycle even though it never
+/// returns to where it started. `max_hops` keeps that scan small (and is the
+/// real bound for a chase over an untrusted graph).
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::follow;
+///
+/// // A chain of type aliases: 0 -> 1 -> 2, and 2 is the real definition.
+/// let chain = |node: &u32| match node {
+///     0 => Some(1),
+///     1 => Some(2),
+///     _ => None,
+/// };
+/// assert_eq!(follow(0, 16, chain), 2);
+///
+/// // A cycle stops at the last node before it closes.
+/// let cyclic = |node: &u32| Some((node + 1) % 3);
+/// assert_eq!(follow(0, 16, cyclic), 2);
+///
+/// // So does the hop bound.
+/// assert_eq!(follow(0, 1, cyclic), 1);
+/// ```
+#[must_use]
+pub fn follow<N: PartialEq + Clone>(
+    seed: N,
+    max_hops: usize,
+    step: impl FnMut(&N) -> Option<N>,
+) -> N {
+    let last = seed.clone();
+    follow_path(seed, max_hops, step).pop().unwrap_or(last)
+}
+
+/// Follow an out-degree ≤ 1 chase from `seed` and return the whole chain,
+/// `seed` first.
+///
+/// The chain is what [`follow`] walks — same termination, same full-path
+/// cycle guard — kept instead of discarded, for a consumer that reports the
+/// route (a diagnostic naming every alias between a use and its definition)
+/// or inspects it. The result always contains `seed`, so it is never empty,
+/// and holds at most `max_hops + 1` nodes.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::follow_path;
+///
+/// let cyclic = |node: &u32| Some((node + 1) % 3);
+/// assert_eq!(follow_path(0, 16, cyclic), vec![0, 1, 2]);
+/// assert_eq!(follow_path(0, 1, cyclic), vec![0, 1]);
+///
+/// let end = |_: &u32| None;
+/// assert_eq!(follow_path(7, 16, end), vec![7]);
+/// ```
+#[must_use]
+pub fn follow_path<N: PartialEq + Clone>(
+    seed: N,
+    max_hops: usize,
+    mut step: impl FnMut(&N) -> Option<N>,
+) -> Vec<N> {
+    let mut chain = Vec::new();
+    chain.push(seed);
+
+    for _ in 0..max_hops {
+        let Some(current) = chain.last() else { break };
+        let Some(next) = step(current) else { break };
+        if chain.contains(&next) {
+            break;
+        }
+        chain.push(next);
+    }
+
+    chain
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::graph::directed::{DirectedGraph, NodeId};
+    use crate::graph::search::{SearchConfig, search};
+    use crate::graph::traverse::TraversalDirection;
+    use alloc::vec;
+
+    /// A `(module, name)` node in a re-export space.
+    type Export = (u32, &'static str);
+
+    /// Module 0 re-exports the name from module 1 and stars module 2, which
+    /// stars module 3. Modules 1 and 3 both define it, so which one the
+    /// chase reports is decided by the push order alone.
+    fn barrels(named_first: bool) -> impl FnMut(&Export, &mut Vec<Export>) {
+        move |node: &Export, out: &mut Vec<Export>| {
+            let (module, name) = *node;
+            match module {
+                0 if named_first => {
+                    out.push((1, name));
+                    out.push((2, name));
+                }
+                0 => {
+                    out.push((2, name));
+                    out.push((1, name));
+                }
+                2 => out.push((3, name)),
+                _ => {}
+            }
+        }
+    }
+
+    fn first_definition(named_first: bool) -> Option<Export> {
+        open_search(
+            [(0, "Widget")],
+            OpenSearchConfig::new(SearchOrder::DepthFirst),
+            barrels(named_first),
+            |node, _| {
+                if node.0 == 1 || node.0 == 3 {
+                    return ControlFlow::Break(*node);
+                }
+                ControlFlow::Continue(Visit::Descend)
+            },
+        )
+    }
+
+    #[test]
+    fn an_open_chase_explores_successors_in_push_order() {
+        // The named re-export is pushed first, so it wins the ambiguity.
+        assert_eq!(first_definition(true), Some((1, "Widget")));
+        // Pushing the star first reaches the other definition, through the
+        // module that only forwards.
+        assert_eq!(first_definition(false), Some((3, "Widget")));
+    }
+
+    #[test]
+    fn an_open_chase_visits_lazily_minted_nodes_in_order() {
+        let mut seen = Vec::new();
+        let outcome = open_search(
+            [(0, "Widget")],
+            OpenSearchConfig::new(SearchOrder::DepthFirst),
+            barrels(true),
+            |node, depth| {
+                seen.push((*node, depth));
+                ControlFlow::<(), _>::Continue(Visit::Descend)
+            },
+        );
+
+        assert_eq!(outcome, None);
+        assert_eq!(
+            seen,
+            vec![
+                ((0, "Widget"), 0),
+                ((1, "Widget"), 1),
+                ((2, "Widget"), 1),
+                ((3, "Widget"), 2),
+            ]
+        );
+    }
+
+    #[test]
+    fn skip_prunes_before_the_successors_are_discovered() {
+        let mut expanded = Vec::new();
+        let mut seen = Vec::new();
+        let outcome = open_search(
+            [(0, "Widget")],
+            OpenSearchConfig::new(SearchOrder::DepthFirst),
+            |node: &Export, out: &mut Vec<Export>| {
+                expanded.push(*node);
+                barrels(true)(node, out);
+            },
+            |node, _| {
+                seen.push(*node);
+                if node.0 == 2 {
+                    return ControlFlow::<(), _>::Continue(Visit::Skip);
+                }
+                ControlFlow::Continue(Visit::Descend)
+            },
+        );
+
+        assert_eq!(outcome, None);
+        assert_eq!(seen, vec![(0, "Widget"), (1, "Widget"), (2, "Widget")]);
+        // Module 2 was pruned, so its barrel was never read.
+        assert_eq!(expanded, vec![(0, "Widget"), (1, "Widget")]);
+    }
+
+    #[test]
+    fn max_depth_bounds_the_open_walk() {
+        let visits = |max_depth| {
+            let mut seen = Vec::new();
+            let outcome = open_search(
+                [(0, "Widget")],
+                OpenSearchConfig::new(SearchOrder::DepthFirst).with_max_depth(max_depth),
+                barrels(true),
+                |node, _| {
+                    seen.push(*node);
+                    ControlFlow::<(), _>::Continue(Visit::Descend)
+                },
+            );
+            assert_eq!(outcome, None);
+            seen
+        };
+
+        assert_eq!(visits(0), vec![(0, "Widget")]);
+        assert_eq!(visits(1), vec![(0, "Widget"), (1, "Widget"), (2, "Widget")]);
+    }
+
+    /// A diamond in an open space: `a` forwards to `b` and `c`, both of which
+    /// forward to `d`.
+    fn diamond(node: &&'static str, out: &mut Vec<&'static str>) {
+        match *node {
+            "a" => {
+                out.push("b");
+                out.push("c");
+            }
+            "b" | "c" => out.push("d"),
+            _ => {}
+        }
+    }
+
+    fn open_visits(config: OpenSearchConfig) -> Vec<(&'static str, usize)> {
+        let mut seen = Vec::new();
+        let outcome = open_search(["a"], config, diamond, |node, depth| {
+            seen.push((*node, depth));
+            ControlFlow::<(), _>::Continue(Visit::Descend)
+        });
+        assert_eq!(outcome, None);
+        seen
+    }
+
+    #[test]
+    fn path_policy_revisits_an_open_node_once_per_route() {
+        assert_eq!(
+            open_visits(OpenSearchConfig::new(SearchOrder::DepthFirst)),
+            vec![("a", 0), ("b", 1), ("d", 2), ("c", 1)]
+        );
+        // Both routes into `d` are reported — the answer a globally marked
+        // walk silently drops.
+        assert_eq!(
+            open_visits(
+                OpenSearchConfig::new(SearchOrder::DepthFirst).with_visited(VisitedPolicy::Path)
+            ),
+            vec![("a", 0), ("b", 1), ("d", 2), ("c", 1), ("d", 2)]
+        );
+    }
+
+    #[test]
+    fn an_open_cycle_terminates_under_both_policies() {
+        let ring = |node: &u32, out: &mut Vec<u32>| out.push((node + 1) % 3);
+        let visits = |config| {
+            let mut seen = Vec::new();
+            let outcome = open_search([0_u32], config, ring, |node, _| {
+                seen.push(*node);
+                ControlFlow::<(), _>::Continue(Visit::Descend)
+            });
+            assert_eq!(outcome, None);
+            seen
+        };
+
+        assert_eq!(
+            visits(OpenSearchConfig::new(SearchOrder::DepthFirst)),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            visits(OpenSearchConfig::new(SearchOrder::BreadthFirst)),
+            vec![0, 1, 2]
+        );
+        assert_eq!(
+            visits(
+                OpenSearchConfig::new(SearchOrder::DepthFirst).with_visited(VisitedPolicy::Path)
+            ),
+            vec![0, 1, 2]
+        );
+    }
+
+    /// A node of a source tree: `(offset, label)`.
+    type Emission = (u32, &'static str);
+
+    #[test]
+    fn ordered_emission_reproduces_a_caller_defined_interleaving() {
+        // Two child sources the consumer holds separately — declarations and
+        // comments — merged by source offset before they are pushed, so the
+        // walk emits one interleaved stream in the caller's order.
+        let successors = |node: &Emission, out: &mut Vec<Emission>| {
+            let (declarations, comments): (&[Emission], &[Emission]) = match node.0 {
+                0 => (
+                    &[(10, "fn a"), (40, "fn b")],
+                    &[(5, "// header"), (30, "// between")],
+                ),
+                10 => (&[(20, "let x")], &[(15, "// inner")]),
+                _ => (&[], &[]),
+            };
+            out.extend_from_slice(declarations);
+            out.extend_from_slice(comments);
+            out.sort_unstable();
+        };
+
+        let mut emitted = Vec::new();
+        let outcome = open_search(
+            [(0, "file")],
+            OpenSearchConfig::new(SearchOrder::DepthFirst),
+            successors,
+            |node, _| {
+                emitted.push(*node);
+                ControlFlow::<(), _>::Continue(Visit::Descend)
+            },
+        );
+
+        assert_eq!(outcome, None);
+        assert_eq!(
+            emitted,
+            vec![
+                (0, "file"),
+                (5, "// header"),
+                (10, "fn a"),
+                (15, "// inner"),
+                (20, "let x"),
+                (30, "// between"),
+                (40, "fn b"),
+            ]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "VisitedPolicy::Path requires SearchOrder::DepthFirst")]
+    fn breadth_first_with_path_marks_is_rejected() {
+        let _ = open_search(
+            ["a"],
+            OpenSearchConfig::new(SearchOrder::BreadthFirst).with_visited(VisitedPolicy::Path),
+            diamond,
+            |_, _| ControlFlow::<(), _>::Continue(Visit::Descend),
+        );
+    }
+
+    #[test]
+    fn follow_stops_at_the_end_the_bound_and_the_cycle() {
+        let chain = |node: &u32| (*node < 3).then(|| node + 1);
+        assert_eq!(follow(0, 16, chain), 3, "runs out of steps to take");
+        assert_eq!(follow(0, 2, chain), 2, "the hop bound stops it");
+        assert_eq!(
+            follow(9, 16, chain),
+            9,
+            "a seed with no step is its own answer"
+        );
+
+        // The guard is the whole path, not the seed: `0 -> 1 -> 2 -> 3 -> 1`
+        // closes on a middle node and never returns to where it started.
+        let lasso = |node: &u32| Some(if *node == 3 { 1 } else { node + 1 });
+        assert_eq!(follow(0, 16, lasso), 3);
+        assert_eq!(follow_path(0, 16, lasso), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn follow_path_returns_the_chain_including_the_seed() {
+        let chain = |node: &u32| (*node < 3).then(|| node + 1);
+        assert_eq!(follow_path(0, 16, chain), vec![0, 1, 2, 3]);
+        assert_eq!(follow_path(0, 2, chain), vec![0, 1, 2]);
+        assert_eq!(follow_path(0, 0, chain), vec![0]);
+        assert_eq!(follow_path(9, 16, chain), vec![9]);
+        // `follow` is the last node of exactly this chain.
+        for hops in 0..5 {
+            assert_eq!(
+                Some(follow(0, hops, chain)),
+                follow_path(0, hops, chain).pop()
+            );
+        }
+    }
+
+    /// `a -> b`, `a -> c`, `b -> d`, `c -> d`, `d -> a`.
+    fn dense_diamond() -> (DirectedGraph<(), ()>, [NodeId; 4]) {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let a = graph.add_node(());
+        let b = graph.add_node(());
+        let c = graph.add_node(());
+        let d = graph.add_node(());
+        graph.add_edge(a, b, ());
+        graph.add_edge(a, c, ());
+        graph.add_edge(b, d, ());
+        graph.add_edge(c, d, ());
+        graph.add_edge(d, a, ());
+        (graph, [a, b, c, d])
+    }
+
+    #[test]
+    fn the_open_search_matches_the_dense_search_node_for_node() {
+        let (graph, [a, _b, _c, _d]) = dense_diamond();
+        let orders = [SearchOrder::DepthFirst, SearchOrder::BreadthFirst];
+        let policies = [VisitedPolicy::Global, VisitedPolicy::Path];
+
+        for order in orders {
+            for visited in policies {
+                if (order, visited) == (SearchOrder::BreadthFirst, VisitedPolicy::Path) {
+                    continue;
+                }
+                for max_depth in [None, Some(0), Some(2)] {
+                    let mut dense = Vec::new();
+                    let outcome = search(
+                        &graph,
+                        [a],
+                        SearchConfig {
+                            order,
+                            visited,
+                            direction: TraversalDirection::Outgoing,
+                            max_depth,
+                        },
+                        |node, depth| {
+                            dense.push((node.index(), depth));
+                            ControlFlow::<(), _>::Continue(Visit::Descend)
+                        },
+                    );
+                    assert_eq!(outcome, None);
+
+                    let mut open = Vec::new();
+                    let outcome = open_search(
+                        [a.index()],
+                        OpenSearchConfig {
+                            order,
+                            visited,
+                            max_depth,
+                        },
+                        |node: &usize, out: &mut Vec<usize>| {
+                            out.extend(
+                                graph
+                                    .successors(NodeId::from_index(*node))
+                                    .map(NodeId::index),
+                            );
+                        },
+                        |node, depth| {
+                            open.push((*node, depth));
+                            ControlFlow::<(), _>::Continue(Visit::Descend)
+                        },
+                    );
+                    assert_eq!(outcome, None);
+
+                    assert_eq!(dense, open, "{order:?} {visited:?} {max_depth:?}");
+                }
+            }
+        }
+    }
+}
