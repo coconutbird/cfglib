@@ -270,6 +270,41 @@ pub fn reachable<G: DirectedGraphView>(
     visited
 }
 
+/// Breadth-first discovery order from `start` together with the hop count to
+/// every node reachable by walking `direction` edges, `None` for the
+/// unreachable ones. `start` itself is discovered first, at distance 0.
+///
+/// `max_depth` bounds the walk: nodes farther than that many hops are neither
+/// discovered nor measured. `None` walks the whole reachable set.
+fn breadth_first_bounded<G: DirectedGraphView>(
+    graph: &G,
+    start: G::NodeId,
+    direction: TraversalDirection,
+    max_depth: Option<usize>,
+) -> (Vec<G::NodeId>, Vec<Option<usize>>) {
+    let mut distances = vec![None; graph.node_count()];
+    let mut order = Vec::new();
+    let mut queue = VecDeque::new();
+    distances[start.index()] = Some(0);
+    order.push(start);
+    queue.push_back((start, 0_usize));
+
+    while let Some((node, depth)) = queue.pop_front() {
+        if max_depth.is_some_and(|limit| depth >= limit) {
+            continue;
+        }
+        for adjacent in neighbors(graph, node, direction) {
+            if distances[adjacent.index()].is_none() {
+                distances[adjacent.index()] = Some(depth + 1);
+                order.push(adjacent);
+                queue.push_back((adjacent, depth + 1));
+            }
+        }
+    }
+
+    (order, distances)
+}
+
 /// Hop counts from `start` to every node reachable by walking `direction`
 /// edges, `None` for the unreachable ones. `start` itself is at distance 0.
 fn breadth_first_distances<G: DirectedGraphView>(
@@ -277,21 +312,7 @@ fn breadth_first_distances<G: DirectedGraphView>(
     start: G::NodeId,
     direction: TraversalDirection,
 ) -> Vec<Option<usize>> {
-    let mut distances = vec![None; graph.node_count()];
-    let mut queue = VecDeque::new();
-    distances[start.index()] = Some(0);
-    queue.push_back((start, 0_usize));
-
-    while let Some((node, depth)) = queue.pop_front() {
-        for adjacent in neighbors(graph, node, direction) {
-            if distances[adjacent.index()].is_none() {
-                distances[adjacent.index()] = Some(depth + 1);
-                queue.push_back((adjacent, depth + 1));
-            }
-        }
-    }
-
-    distances
+    breadth_first_bounded(graph, start, direction, None).1
 }
 
 /// Return the nearest node reachable from both `a` and `b` by walking
@@ -316,6 +337,13 @@ fn breadth_first_distances<G: DirectedGraphView>(
 /// by smallest node id.** The combined distance of a candidate is its hop
 /// count from `a` plus its hop count from `b`. The answer therefore never
 /// depends on adjacency order or on which endpoint was passed first.
+///
+/// That rank is a `min` over `(combined distance, node id)` and nothing else.
+/// A consumer whose language fixes another one — a linearization order, a
+/// declaration order, a tie-break on the distance from a single endpoint —
+/// asks [`common_ancestors`] for every shared node with both distances and
+/// applies its own rank; this function is that generalization ranked the one
+/// way a tuple can express.
 ///
 /// # Examples
 ///
@@ -379,6 +407,126 @@ pub fn nearest_common_ancestor<G: DirectedGraphView>(
         })
         .min()
         .map(|(_, node)| node)
+}
+
+/// A node reachable from both endpoints of a [`common_ancestors`] query,
+/// carrying the hop count from each so the consumer can rank it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CommonAncestor<N> {
+    /// The shared node.
+    pub node: N,
+    /// Hop count from the first endpoint (`a`).
+    pub from_a: usize,
+    /// Hop count from the second endpoint (`b`).
+    pub from_b: usize,
+}
+
+impl<N> CommonAncestor<N> {
+    /// The combined distance — the hop count from `a` plus the hop count
+    /// from `b`, the primary rank [`nearest_common_ancestor`] uses.
+    #[inline]
+    #[must_use]
+    pub fn combined(&self) -> usize {
+        self.from_a + self.from_b
+    }
+}
+
+/// Return every node reachable from both `a` and `b` by walking `direction`
+/// edges, each with its hop count from either endpoint.
+///
+/// This is the consumer-rankable generalization of
+/// [`nearest_common_ancestor`], which collapses the same candidate set with
+/// one fixed rank — smallest combined distance, ties by smallest node id.
+/// Language semantics routinely fix a different one (a C3 linearization
+/// prefers the base nearest the *second* operand, an overload resolution
+/// prefers the declaration seen first), and a rank that is not a function of
+/// `(distance, node id)` cannot be expressed by returning a single node.
+///
+/// `max_depth` bounds **each side independently**: with `Some(limit)` a node
+/// qualifies only when it is within `limit` hops of `a` *and* within `limit`
+/// hops of `b`. `None` searches the whole reachable set. Both endpoints are
+/// at distance 0 from themselves, so `a == b` yields everything reachable
+/// from `a` within the bound, each entry with equal distances.
+///
+/// # Order
+///
+/// The result is in **`b`'s breadth-first discovery order**: the order a
+/// breadth-first walk from `b` along `direction` edges first reaches each
+/// node, with ties inside a level following adjacency order. That guarantee
+/// is the point of the function — a consumer scanning the list for its own
+/// first best match reproduces a scan-order tie-break (`min_by_key` and
+/// `max_by_key` both keep the first of equal elements) instead of having to
+/// re-derive one from node ids. Distances are exact regardless of the order.
+///
+/// # Examples
+///
+/// ```
+/// use cfglib::{DirectedGraph, TraversalDirection, common_ancestors};
+///
+/// // An inheritance graph with edges base -> derived, so predecessors are
+/// // base classes:  object -> mixin, mixin -> a, mixin -> b.
+/// let mut graph = DirectedGraph::<&str, ()>::new();
+/// let object = graph.add_node("object");
+/// let mixin = graph.add_node("mixin");
+/// let a = graph.add_node("A");
+/// let b = graph.add_node("B");
+/// graph.add_edge(object, mixin, ());
+/// graph.add_edge(mixin, a, ());
+/// graph.add_edge(mixin, b, ());
+///
+/// // Both shared bases, in the order a walk from `b` discovers them.
+/// let shared = common_ancestors(&graph, a, b, TraversalDirection::Incoming, None);
+/// assert_eq!(
+///     shared.iter().map(|found| found.node).collect::<Vec<_>>(),
+///     vec![mixin, object]
+/// );
+/// assert_eq!((shared[0].from_a, shared[0].from_b), (1, 1));
+///
+/// // A consumer applies its own rank over that order — here "nearest to
+/// // both, ties to the one nearest `b`, ties to whichever came first".
+/// let chosen = shared
+///     .iter()
+///     .min_by_key(|found| (found.combined(), found.from_b))
+///     .map(|found| found.node);
+/// assert_eq!(chosen, Some(mixin));
+///
+/// // Bounding the search to one hop from each endpoint drops `object`.
+/// let near = common_ancestors(&graph, a, b, TraversalDirection::Incoming, Some(1));
+/// assert_eq!(
+///     near.iter().map(|found| found.node).collect::<Vec<_>>(),
+///     vec![mixin]
+/// );
+/// ```
+///
+/// # Panics
+///
+/// Panics when either endpoint is not a node in `graph`.
+#[must_use]
+pub fn common_ancestors<G: DirectedGraphView>(
+    graph: &G,
+    a: G::NodeId,
+    b: G::NodeId,
+    direction: TraversalDirection,
+    max_depth: Option<usize>,
+) -> Vec<CommonAncestor<G::NodeId>> {
+    assert!(a.index() < graph.node_count(), "node `a` is out of range");
+    assert!(b.index() < graph.node_count(), "node `b` is out of range");
+    let (_, from_a) = breadth_first_bounded(graph, a, direction, max_depth);
+    let (order_b, from_b) = breadth_first_bounded(graph, b, direction, max_depth);
+
+    // Walking `b`'s discovery order — rather than the node ids — is what
+    // makes the result's order the documented one; the bound is already
+    // applied by both walks, so a node present in either table is in range.
+    order_b
+        .into_iter()
+        .filter_map(|node| {
+            Some(CommonAncestor {
+                node,
+                from_a: from_a[node.index()]?,
+                from_b: from_b[node.index()]?,
+            })
+        })
+        .collect()
 }
 
 /// Return a topological ordering, or `None` when the graph contains a cycle.
@@ -630,17 +778,9 @@ mod tests {
 
     #[test]
     fn nearest_common_ancestor_breaks_ties_by_smallest_node_id() {
-        let mut graph = DirectedGraph::<(), ()>::new();
-        let first_sink = graph.add_node(());
-        let second_sink = graph.add_node(());
-        let left = graph.add_node(());
-        let right = graph.add_node(());
         // Adjacency deliberately offers the higher-id sink first, so a
         // discovery-order answer would pick `second_sink`.
-        graph.add_edge(left, second_sink, ());
-        graph.add_edge(left, first_sink, ());
-        graph.add_edge(right, second_sink, ());
-        graph.add_edge(right, first_sink, ());
+        let (graph, [first_sink, second_sink, left, right]) = twin_sinks();
 
         // Both sinks sit at combined distance 2; the smaller id wins.
         assert_eq!(
@@ -700,6 +840,164 @@ mod tests {
             nearest_common_ancestor(&graph, left, right, TraversalDirection::Incoming),
             Some(mid)
         );
+    }
+
+    /// Two shared sinks at the same distance, offered to the traversal in
+    /// descending id order — discovery order and id order disagree.
+    fn twin_sinks() -> (DirectedGraph<(), ()>, [NodeId; 4]) {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let first_sink = graph.add_node(());
+        let second_sink = graph.add_node(());
+        let left = graph.add_node(());
+        let right = graph.add_node(());
+        graph.add_edge(left, second_sink, ());
+        graph.add_edge(left, first_sink, ());
+        graph.add_edge(right, second_sink, ());
+        graph.add_edge(right, first_sink, ());
+        (graph, [first_sink, second_sink, left, right])
+    }
+
+    fn ancestor_nodes(found: &[CommonAncestor<NodeId>]) -> Vec<NodeId> {
+        found.iter().map(|entry| entry.node).collect()
+    }
+
+    #[test]
+    fn common_ancestors_returns_every_shared_node_with_both_distances() {
+        let (graph, [root, mid, left, right, bottom]) = diamond();
+        let found = common_ancestors(&graph, left, right, TraversalDirection::Incoming, None);
+        assert_eq!(ancestor_nodes(&found), vec![mid, root]);
+        assert_eq!((found[0].from_a, found[0].from_b), (1, 1));
+        assert_eq!((found[1].from_a, found[1].from_b), (2, 2));
+        assert_eq!(found[1].combined(), 4);
+
+        // Forward, the same two legs share only the merge point.
+        let merged = common_ancestors(&graph, left, right, TraversalDirection::Outgoing, None);
+        assert_eq!(ancestor_nodes(&merged), vec![bottom]);
+    }
+
+    #[test]
+    fn common_ancestors_are_in_b_discovery_order_not_id_order() {
+        let (graph, [first_sink, second_sink, left, right]) = twin_sinks();
+        // A walk from `right` reaches `second_sink` first because adjacency
+        // offers it first, even though its id is larger.
+        let found = common_ancestors(&graph, left, right, TraversalDirection::Outgoing, None);
+        assert_eq!(ancestor_nodes(&found), vec![second_sink, first_sink]);
+        // Both sit at the same combined distance, so a consumer's first-match
+        // scan takes the discovery-order winner while the fixed rank of
+        // `nearest_common_ancestor` takes the smaller id.
+        let scanned = found.iter().min_by_key(|entry| entry.combined());
+        assert_eq!(scanned.map(|entry| entry.node), Some(second_sink));
+        assert_eq!(
+            nearest_common_ancestor(&graph, left, right, TraversalDirection::Outgoing),
+            Some(first_sink)
+        );
+
+        // Swapping the endpoints swaps the order, since it is `b`'s.
+        let swapped = common_ancestors(&graph, right, left, TraversalDirection::Outgoing, None);
+        assert_eq!(ancestor_nodes(&swapped), vec![second_sink, first_sink]);
+    }
+
+    #[test]
+    fn common_ancestors_bound_each_side_by_max_depth() {
+        let (graph, [_root, mid, left, right, _bottom]) = diamond();
+        // `root` is two hops from either leg, `mid` one.
+        assert_eq!(
+            ancestor_nodes(&common_ancestors(
+                &graph,
+                left,
+                right,
+                TraversalDirection::Incoming,
+                Some(1)
+            )),
+            vec![mid]
+        );
+        assert!(
+            common_ancestors(&graph, left, right, TraversalDirection::Incoming, Some(0)).is_empty()
+        );
+        // A bound at or beyond the eccentricity is the unbounded answer.
+        assert_eq!(
+            common_ancestors(&graph, left, right, TraversalDirection::Incoming, Some(2)),
+            common_ancestors(&graph, left, right, TraversalDirection::Incoming, None)
+        );
+    }
+
+    #[test]
+    fn common_ancestors_of_a_node_with_itself_is_its_reachable_set() {
+        let (graph, [_root, _mid, left, _right, bottom]) = diamond();
+        let found = common_ancestors(&graph, left, left, TraversalDirection::Outgoing, None);
+        assert_eq!(ancestor_nodes(&found), vec![left, bottom]);
+        assert!(
+            found
+                .iter()
+                .all(|entry| entry.from_a == entry.from_b && entry.combined() % 2 == 0)
+        );
+        // Bounded to zero hops, only the node itself.
+        assert_eq!(
+            ancestor_nodes(&common_ancestors(
+                &graph,
+                left,
+                left,
+                TraversalDirection::Outgoing,
+                Some(0)
+            )),
+            vec![left]
+        );
+    }
+
+    #[test]
+    fn common_ancestors_without_a_shared_node_is_empty() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let start = graph.add_node(());
+        let lonely = graph.add_node(());
+        let end = graph.add_node(());
+        graph.add_edge(start, end, ());
+        assert!(
+            common_ancestors(&graph, start, lonely, TraversalDirection::Outgoing, None).is_empty()
+        );
+        assert!(
+            common_ancestors(&graph, end, lonely, TraversalDirection::Incoming, None).is_empty()
+        );
+    }
+
+    #[test]
+    fn common_ancestors_terminates_on_cycles() {
+        let (mut graph, [root, mid, left, right, bottom]) = diamond();
+        graph.add_edge(bottom, mid, ());
+
+        // Every node now reaches both legs; the walk still terminates and
+        // reports each node exactly once, in `right`'s discovery order.
+        let found = common_ancestors(&graph, left, right, TraversalDirection::Incoming, None);
+        assert_eq!(ancestor_nodes(&found), vec![right, mid, root, bottom, left]);
+        assert_eq!(
+            found
+                .iter()
+                .min_by_key(|entry| entry.combined())
+                .map(|entry| entry.node),
+            Some(mid)
+        );
+    }
+
+    #[test]
+    fn common_ancestors_generalizes_nearest_common_ancestor() {
+        let (plain, _) = diamond();
+        let (twins, _) = twin_sinks();
+        let (mut cyclic, [_, mid, _, _, bottom]) = diamond();
+        cyclic.add_edge(bottom, mid, ());
+        for graph in [&plain, &twins, &cyclic] {
+            for a in graph.node_ids() {
+                for b in graph.node_ids() {
+                    for direction in [TraversalDirection::Incoming, TraversalDirection::Outgoing] {
+                        // The fixed rank is a `min` over `(combined, id)` of
+                        // exactly this candidate set.
+                        let ranked = common_ancestors(graph, a, b, direction, None)
+                            .into_iter()
+                            .min_by_key(|entry| (entry.combined(), entry.node))
+                            .map(|entry| entry.node);
+                        assert_eq!(ranked, nearest_common_ancestor(graph, a, b, direction));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

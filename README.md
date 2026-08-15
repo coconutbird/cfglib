@@ -104,6 +104,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Shortest path | `shortest_path` (nodes), `shortest_path_edges` (edge witness) | Forward or reverse unweighted witness path |
 | Multi-source reachability | `reachable` | Dense `Vec<bool>` from a seed set, forward or reverse; order-insensitive |
 | Nearest common ancestor | `nearest_common_ancestor` | Bidirectional BFS meet of two nodes; smallest combined distance, ties by smallest node id |
+| All common ancestors | `common_ancestors` → `Vec<CommonAncestor>` | Every shared node with both hop counts, depth-bounded, in `b`'s BFS discovery order — the consumer-rankable form (MRO linearization, overload preference) |
 | Horn-clause derivability | `HornClauses` | AND-OR closure (`head <- b1 & b2`): nullability, all-arguments-constant, all-callers-dead |
 | Topological sort | `topological_sort` | Stable ordering or cycle detection |
 | Dominator tree | `DominatorTree::compute` (rooted views), `compute_from` (explicit root) | Cooper-Harvey-Kennedy over any graph view |
