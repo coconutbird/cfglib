@@ -93,6 +93,45 @@ impl<N: DenseNodeId> SccResult<N> {
     }
 }
 
+/// One frame of the explicit depth-first stack both decompositions walk on.
+///
+/// A frame's successors live in the walk's single arena rather than in a `Vec`
+/// of its own: frames are pushed and popped strictly last in, first out, so
+/// the frame on top of the stack always owns the arena's tail and a pop
+/// truncates the arena back to where that frame's successors began. One
+/// allocation for the whole decomposition, instead of one per node it enters.
+///
+/// The **numbering** each algorithm documents is untouched by construction:
+/// the frame is handed the same successors, in the same adjacency order, read
+/// left to right by the same advancing cursor. Only where they are stored
+/// changes.
+struct SccFrame<N> {
+    node: N,
+    /// Where this frame's successors start in the arena; the pop truncates to
+    /// it.
+    start: usize,
+    /// The next successor to examine, as an arena index. The frame's
+    /// successors are exhausted when it reaches the arena's length, since the
+    /// top frame's region runs to the end.
+    cursor: usize,
+}
+
+/// Push the frame for `node`, taking its successors onto the arena's tail.
+fn enter<G: DirectedGraphView>(
+    graph: &G,
+    node: G::NodeId,
+    arena: &mut Vec<G::NodeId>,
+    calls: &mut Vec<SccFrame<G::NodeId>>,
+) {
+    let start = arena.len();
+    arena.extend(graph.successors(node));
+    calls.push(SccFrame {
+        node,
+        start,
+        cursor: start,
+    });
+}
+
 /// Collapse a graph to its component DAG.
 ///
 /// One node per strongly connected component, carrying that component's
@@ -140,6 +179,11 @@ pub fn tarjan_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
     let mut lowlinks = vec![0_usize; node_count];
     let mut component_of = vec![0_usize; node_count];
     let mut components = Vec::new();
+    // Every frame's successors, appended as the frame is pushed and truncated
+    // away as it pops. Both are empty again when a root's walk ends, so one
+    // allocation covers the whole decomposition rather than one per root.
+    let mut arena: Vec<G::NodeId> = Vec::new();
+    let mut calls: Vec<SccFrame<G::NodeId>> = Vec::new();
 
     for start in graph.node_ids() {
         if indices[start.index()] != usize::MAX {
@@ -151,16 +195,15 @@ pub fn tarjan_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
         next_index += 1;
         stack.push(start);
         on_stack[start.index()] = true;
-        let mut calls = vec![(start, graph.successors(start).collect::<Vec<_>>(), 0_usize)];
+        enter(graph, start, &mut arena, &mut calls);
 
-        // Read frames through `last_mut` and copy only the Copy fields —
-        // cloning the whole frame (with its successor Vec) per iteration
-        // would make the walk O(Σ deg²) in time and allocation.
+        // Read frames through `last_mut` and copy the Copy fields out; the
+        // successors are no longer among them, so no frame is ever cloned.
         while let Some(frame) = calls.last_mut() {
-            let node = frame.0;
-            if frame.2 < frame.1.len() {
-                let successor = frame.1[frame.2];
-                frame.2 += 1;
+            let node = frame.node;
+            if frame.cursor < arena.len() {
+                let successor = arena[frame.cursor];
+                frame.cursor += 1;
 
                 if indices[successor.index()] == usize::MAX {
                     indices[successor.index()] = next_index;
@@ -168,7 +211,7 @@ pub fn tarjan_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
                     next_index += 1;
                     stack.push(successor);
                     on_stack[successor.index()] = true;
-                    calls.push((successor, graph.successors(successor).collect(), 0));
+                    enter(graph, successor, &mut arena, &mut calls);
                 } else if on_stack[successor.index()] {
                     lowlinks[node.index()] = lowlinks[node.index()].min(indices[successor.index()]);
                 }
@@ -192,9 +235,11 @@ pub fn tarjan_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
                 components.push(Scc { nodes });
             }
 
-            calls.pop();
-            if let Some((parent, _, _)) = calls.last() {
-                lowlinks[parent.index()] = lowlinks[parent.index()].min(lowlinks[node.index()]);
+            let Some(finished) = calls.pop() else { break };
+            arena.truncate(finished.start);
+            if let Some(parent) = calls.last() {
+                lowlinks[parent.node.index()] =
+                    lowlinks[parent.node.index()].min(lowlinks[node.index()]);
             }
         }
     }
@@ -275,6 +320,10 @@ pub fn kosaraju_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
     let node_count = graph.node_count();
     let mut visited = vec![false; node_count];
     let mut finish_order: Vec<G::NodeId> = Vec::with_capacity(node_count);
+    // One arena and one frame stack for the whole pass, on the discipline
+    // `SccFrame` documents.
+    let mut arena: Vec<G::NodeId> = Vec::new();
+    let mut calls: Vec<SccFrame<G::NodeId>> = Vec::new();
 
     // Pass 1: record nodes by finish time over the forward graph.
     for start in graph.node_ids() {
@@ -282,24 +331,24 @@ pub fn kosaraju_scc<G: DirectedGraphView>(graph: &G) -> SccResult<G::NodeId> {
             continue;
         }
         visited[start.index()] = true;
-        let mut calls = vec![(start, graph.successors(start).collect::<Vec<_>>(), 0_usize)];
+        enter(graph, start, &mut arena, &mut calls);
 
-        // Read frames through `last_mut` and copy only the Copy fields —
-        // cloning the whole frame (with its successor Vec) per iteration
-        // would make the walk O(Σ deg²) in time and allocation.
+        // Read frames through `last_mut` and copy the Copy fields out; the
+        // successors are no longer among them, so no frame is ever cloned.
         while let Some(frame) = calls.last_mut() {
-            if frame.2 < frame.1.len() {
-                let successor = frame.1[frame.2];
-                frame.2 += 1;
+            if frame.cursor < arena.len() {
+                let successor = arena[frame.cursor];
+                frame.cursor += 1;
                 if !visited[successor.index()] {
                     visited[successor.index()] = true;
-                    calls.push((successor, graph.successors(successor).collect(), 0));
+                    enter(graph, successor, &mut arena, &mut calls);
                 }
                 continue;
             }
 
-            finish_order.push(frame.0);
-            calls.pop();
+            finish_order.push(frame.node);
+            let Some(finished) = calls.pop() else { break };
+            arena.truncate(finished.start);
         }
     }
 
@@ -482,10 +531,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn kosaraju_numbering_matches_the_hand_computed_two_pass_order() {
-        // `a <-> b <-> c` is a cycle, `b` enters the `d <-> e` cycle, `f`
-        // enters `a`, and `g` is isolated.
+    /// `a <-> b <-> c` is a cycle, `b` enters the `d <-> e` cycle, `f` enters
+    /// `a`, and `g` is isolated. A branching frame (`b` has two successors)
+    /// makes this the shape that catches a depth-first walk which loses a
+    /// frame's remaining successors when a sibling subtree finishes.
+    fn nested() -> (DirectedGraph<&'static str, ()>, [NodeId; 7]) {
         let mut graph = DirectedGraph::<&str, ()>::new();
         let outer_a = graph.add_node("a");
         let outer_b = graph.add_node("b");
@@ -501,23 +551,58 @@ mod tests {
         graph.add_edge(inner_d, inner_e, ());
         graph.add_edge(inner_e, inner_d, ());
         graph.add_edge(entry_f, outer_a, ());
+        (
+            graph,
+            [outer_a, outer_b, outer_c, inner_d, inner_e, entry_f, lone_g],
+        )
+    }
+
+    /// The component sequence, as payload names.
+    fn sequence(
+        result: &SccResult<NodeId>,
+        graph: &DirectedGraph<&'static str, ()>,
+    ) -> Vec<Vec<&'static str>> {
+        result
+            .components
+            .iter()
+            .map(|component| component.nodes.iter().map(|&node| graph[node]).collect())
+            .collect()
+    }
+
+    #[test]
+    fn kosaraju_numbering_matches_the_hand_computed_two_pass_order() {
+        let (graph, [_, outer_b, _, _, inner_e, entry_f, lone_g]) = nested();
 
         // Pass 1 finishes [c, e, d, b, a, f, g], so pass 2 walks that in
         // reverse and mints components from the roots g, f, a, d — the
         // isolated node first because it finished last.
         let result = kosaraju_scc(&graph);
         assert_eq!(
-            result
-                .components
-                .iter()
-                .map(|component| component.nodes.iter().map(|&node| graph[node]).collect())
-                .collect::<Vec<Vec<_>>>(),
+            sequence(&result, &graph),
             vec![vec!["g"], vec!["f"], vec!["a", "b", "c"], vec!["d", "e"]]
         );
         assert_eq!(result.component_index(lone_g), 0);
         assert_eq!(result.component_index(entry_f), 1);
         assert_eq!(result.component_index(outer_b), 2);
         assert_eq!(result.component_index(inner_e), 3);
+    }
+
+    #[test]
+    fn tarjan_numbering_matches_the_hand_computed_leaves_first_order() {
+        let (graph, [outer_a, _, _, _, inner_e, entry_f, lone_g]) = nested();
+
+        // One pass from `a`: `c` closes the cycle back to `a` without minting,
+        // then `b`'s second successor `d` mints the inner cycle first, then
+        // `a` mints its own. `f` and `g` follow as later roots, in node order.
+        let result = tarjan_scc(&graph);
+        assert_eq!(
+            sequence(&result, &graph),
+            vec![vec!["d", "e"], vec!["a", "b", "c"], vec!["f"], vec!["g"]]
+        );
+        assert_eq!(result.component_index(inner_e), 0);
+        assert_eq!(result.component_index(outer_a), 1);
+        assert_eq!(result.component_index(entry_f), 2);
+        assert_eq!(result.component_index(lone_g), 3);
     }
 
     #[test]
