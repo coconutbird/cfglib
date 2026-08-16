@@ -122,6 +122,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Incremental dominators | `update_after_edge_insert`, `update_after_edge_remove` | Recompute + diff |
 | Strongly connected components | `tarjan_scc` → `SccResult<N>`, `condensation` → component DAG | Generic iterative Tarjan algorithm, reverse-topological order (leaves first) |
 | SCC in topological order | `kosaraju_scc` → `SccResult<N>` | The same partition numbered sources first (`index(u) < index(v)` across every edge); the classic deterministic two-pass algorithm, for budgeted forward closures over the condensation |
+| Condensation of a given decomposition | `condensation_of(graph, &SccResult)` → `DirectedGraph<(), ()>` | The component DAG whose node index **is** the given decomposition's component index, either algorithm's; deduplicated edges, and in-degrees plus dependents straight off the graph (the one-pass fixpoint shape) |
 | Back-edge detection | `find_back_edges` (dominance, any view), `find_back_edges_tagged` (CFG, honours `Back` tags) | |
 | Natural loop detection | `detect_loops` / `detect_loops_tagged` → `Vec<NaturalLoop<N>>` | Header, body, latches, nesting depth |
 | Loop nesting tree | `LoopNestingTree::build` | Parent/child loop hierarchy |

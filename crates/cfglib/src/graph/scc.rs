@@ -6,6 +6,13 @@
 //! [`tarjan_scc`] takes one `O(V + E)` pass and numbers leaves first, while
 //! [`kosaraju_scc`] takes two and numbers sources first, for consumers that
 //! must process a component before everything it reaches.
+//!
+//! The component DAG comes in the same two shapes. [`condensation`] computes
+//! its own Tarjan decomposition and carries each [`Scc`] as a node payload;
+//! [`condensation_of`] takes the decomposition the consumer already holds and
+//! numbers the DAG's nodes exactly as that decomposition numbers its
+//! components, so a sources-first pass keeps its numbering all the way through
+//! to the graph it walks.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
@@ -132,6 +139,28 @@ fn enter<G: DirectedGraphView>(
     });
 }
 
+/// Report every edge of the component DAG exactly once, as index pairs.
+///
+/// Nodes are read in id order and each node's successors in adjacency order,
+/// and a pair is reported the first time it is seen, so the edge sequence is
+/// deterministic and shared by both condensations rather than derived twice.
+fn for_each_component_edge<G: DirectedGraphView>(
+    graph: &G,
+    components: &SccResult<G::NodeId>,
+    mut on_edge: impl FnMut(usize, usize),
+) {
+    let mut wired = BTreeSet::new();
+    for node in graph.node_ids() {
+        let from = components.component_index(node);
+        for successor in graph.successors(node) {
+            let to = components.component_index(successor);
+            if from != to && wired.insert((from, to)) {
+                on_edge(from, to);
+            }
+        }
+    }
+}
+
 /// Collapse a graph to its component DAG.
 ///
 /// One node per strongly connected component, carrying that component's
@@ -140,6 +169,11 @@ fn enter<G: DirectedGraphView>(
 /// source graph (deduplicated). The result is acyclic by construction, so
 /// topological processing, condensed traces, and cycle summaries follow
 /// directly.
+///
+/// The decomposition is [`tarjan_scc`]'s, computed here. A consumer that
+/// already holds one — in particular one numbered the other way round by
+/// [`kosaraju_scc`] — wants [`condensation_of`] instead, which preserves the
+/// numbering it is given.
 #[must_use]
 pub fn condensation<G: DirectedGraphView>(graph: &G) -> DirectedGraph<Scc<G::NodeId>, ()> {
     let components = tarjan_scc(graph);
@@ -150,16 +184,117 @@ pub fn condensation<G: DirectedGraphView>(graph: &G) -> DirectedGraph<Scc<G::Nod
         .map(|component| condensed.add_node(component.clone()))
         .collect();
 
-    let mut wired = BTreeSet::new();
-    for node in graph.node_ids() {
-        let from = components.component_index(node);
-        for successor in graph.successors(node) {
-            let to = components.component_index(successor);
-            if from != to && wired.insert((from, to)) {
-                condensed.add_edge(ids[from], ids[to], ());
-            }
-        }
+    for_each_component_edge(graph, &components, |from, to| {
+        condensed.add_edge(ids[from], ids[to], ());
+    });
+    condensed
+}
+
+/// Collapse a graph to the component DAG of a decomposition **you** computed,
+/// with `NodeId::from_index(i)` being component `i` of that decomposition.
+///
+/// [`condensation`] computes its own [`tarjan_scc`] and is therefore
+/// leaves-first, which inverts the one numbering a budgeted forward pass wants
+/// — [`kosaraju_scc`]'s sources-first order, where a component is numbered
+/// only after everything that can reach it. Recovering that from
+/// [`condensation`] means matching two decompositions of the same graph
+/// against each other, which is both wasteful and a place for the two
+/// numberings to disagree. Here the numbering is an input: whichever algorithm
+/// produced `components`, node `i` of the result **is** `components.components[i]`,
+/// and `components.component_index(node)` indexes the result directly.
+///
+/// The edges are the same as [`condensation`]'s: one per pair of distinct
+/// components connected in the source graph, deduplicated, so parallel edges
+/// and every additional pair of nodes joining the same two components collapse
+/// into one. The result is acyclic by construction.
+///
+/// Node and edge payloads are `()` deliberately. The caller already owns the
+/// components (it passed them in), so carrying a clone of each [`Scc`] would
+/// duplicate a `BTreeSet` per component to say what
+/// `components.components[i]` already says; and everything a fixpoint needs
+/// beyond the partition — the in-degree of a component, the dependents to
+/// re-queue when its fact changes — falls out of the returned graph's
+/// `predecessors` and `successors`.
+///
+/// # Examples
+///
+/// The shape this exists for: a grammar `FIRST`-set fixpoint whose work budget
+/// is one pass, which holds only if every component is processed after
+/// everything it depends on. Kahn's algorithm over the condensation, always
+/// taking the smallest ready component, reproduces exactly ascending component
+/// order — so the pass itself can simply walk `components` from 0 upwards.
+///
+/// ```
+/// use cfglib::{DirectedGraph, NodeId, condensation_of, kosaraju_scc};
+///
+/// // A symbol-dependency graph: `stmt` uses `expr`, `expr` and `term` are
+/// // mutually recursive, and both use `atom`.
+/// let mut grammar = DirectedGraph::<&str, ()>::new();
+/// let stmt = grammar.add_node("stmt");
+/// let expr = grammar.add_node("expr");
+/// let term = grammar.add_node("term");
+/// let atom = grammar.add_node("atom");
+/// grammar.add_edge(stmt, expr, ());
+/// grammar.add_edge(expr, term, ());
+/// grammar.add_edge(term, expr, ());
+/// grammar.add_edge(term, atom, ());
+///
+/// let components = kosaraju_scc(&grammar);
+/// let dag = condensation_of(&grammar, &components);
+///
+/// // The cycle is one component, and the numbering is the input's.
+/// assert_eq!(dag.node_count(), components.len());
+/// assert_eq!(components.component_index(expr), components.component_index(term));
+/// assert_eq!(dag[NodeId::from_index(components.component_index(stmt))], ());
+///
+/// // In-degrees and dependents both fall out of the DAG.
+/// let mut pending: Vec<usize> = dag
+///     .node_ids()
+///     .map(|component| dag.predecessors(component).count())
+///     .collect();
+/// let mut ready: Vec<usize> = (0..dag.node_count()).filter(|&c| pending[c] == 0).collect();
+/// let mut processed = Vec::new();
+/// while !ready.is_empty() {
+///     let position = ready.iter().enumerate().min_by_key(|&(_, c)| *c).map(|(p, _)| p);
+///     let component = ready.remove(position.expect("a ready component"));
+///     processed.push(component);
+///     for dependent in dag.successors(NodeId::from_index(component)) {
+///         pending[dependent.index()] -= 1;
+///         if pending[dependent.index()] == 0 {
+///             ready.push(dependent.index());
+///         }
+///     }
+/// }
+///
+/// // Sources-first numbering means ascending order already IS that order.
+/// assert_eq!(processed, (0..dag.node_count()).collect::<Vec<_>>());
+/// ```
+///
+/// # Panics
+///
+/// Panics when `components` was not computed from `graph`: the decomposition
+/// covers a fixed node space, and one that disagrees with this graph's node
+/// count cannot index it.
+#[must_use]
+pub fn condensation_of<G: DirectedGraphView>(
+    graph: &G,
+    components: &SccResult<G::NodeId>,
+) -> DirectedGraph<(), ()> {
+    assert!(
+        components.component_of.len() == graph.node_count(),
+        "the decomposition covers {} nodes but the graph has {}: condensation_of takes the decomposition OF this graph",
+        components.component_of.len(),
+        graph.node_count()
+    );
+
+    let mut condensed = DirectedGraph::with_capacity(components.len(), components.len());
+    for _ in 0..components.len() {
+        condensed.add_node(());
     }
+
+    for_each_component_edge(graph, components, |from, to| {
+        condensed.add_edge(NodeId::from_index(from), NodeId::from_index(to), ());
+    });
     condensed
 }
 
@@ -603,6 +738,119 @@ mod tests {
         assert_eq!(result.component_index(outer_a), 1);
         assert_eq!(result.component_index(entry_f), 2);
         assert_eq!(result.component_index(lone_g), 3);
+    }
+
+    /// The component pairs of a condensation, as a set.
+    fn condensed_pairs(dag: &DirectedGraph<(), ()>) -> BTreeSet<(usize, usize)> {
+        dag.edges()
+            .map(|edge| (edge.source().index(), edge.target().index()))
+            .collect()
+    }
+
+    #[test]
+    fn condensation_of_numbers_its_nodes_by_the_decomposition_it_is_given() {
+        for (name, graph) in fixtures() {
+            for (algorithm, components) in [
+                ("tarjan", tarjan_scc(&graph)),
+                ("kosaraju", kosaraju_scc(&graph)),
+            ] {
+                let dag = condensation_of(&graph, &components);
+                assert_eq!(dag.node_count(), components.len(), "{name}/{algorithm}");
+
+                // Node index IS component index: every graph edge crossing two
+                // components appears as that pair, and nothing else does.
+                let expected: BTreeSet<(usize, usize)> = graph
+                    .edges()
+                    .map(|edge| {
+                        (
+                            components.component_index(edge.source()),
+                            components.component_index(edge.target()),
+                        )
+                    })
+                    .filter(|&(from, to)| from != to)
+                    .collect();
+                assert_eq!(condensed_pairs(&dag), expected, "{name}/{algorithm}");
+                assert!(tarjan_scc(&dag).is_dag(&dag), "{name}/{algorithm}");
+            }
+
+            // And under sources-first numbering the DAG's own edges only ever
+            // run upwards — the property a single ascending pass rides on.
+            let sources_first = kosaraju_scc(&graph);
+            let dag = condensation_of(&graph, &sources_first);
+            for (from, to) in condensed_pairs(&dag) {
+                assert!(from < to, "{name}: {from} !< {to}");
+            }
+        }
+    }
+
+    #[test]
+    fn condensation_of_deduplicates_parallel_and_repeated_component_edges() {
+        // Two nodes of the same component both point into the other, one of
+        // them twice: three graph edges, one component edge.
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let left = graph.add_node(());
+        let right = graph.add_node(());
+        let sink = graph.add_node(());
+        graph.add_edge(left, right, ());
+        graph.add_edge(right, left, ());
+        graph.add_edge(left, sink, ());
+        graph.add_edge(left, sink, ());
+        graph.add_edge(right, sink, ());
+
+        let components = kosaraju_scc(&graph);
+        let dag = condensation_of(&graph, &components);
+        assert_eq!(dag.node_count(), 2);
+        assert_eq!(dag.edge_count(), 1);
+        assert_eq!(
+            condensed_pairs(&dag),
+            [(
+                components.component_index(left),
+                components.component_index(sink)
+            )]
+            .into_iter()
+            .collect()
+        );
+    }
+
+    #[test]
+    fn condensation_of_tarjan_is_the_condensation_without_its_payloads() {
+        for (name, graph) in fixtures() {
+            let payloaded = condensation(&graph);
+            let plain = condensation_of(&graph, &tarjan_scc(&graph));
+            assert_eq!(plain.node_count(), payloaded.node_count(), "{name}");
+            assert_eq!(
+                condensed_pairs(&plain),
+                payloaded
+                    .edges()
+                    .map(|edge| (edge.source().index(), edge.target().index()))
+                    .collect(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "the decomposition covers 4 nodes but the graph has 2")]
+    fn condensation_of_another_graphs_decomposition_panics() {
+        let (four, _) = nested_pair();
+        let mut two = DirectedGraph::<&str, ()>::new();
+        let first = two.add_node("a");
+        let second = two.add_node("b");
+        two.add_edge(first, second, ());
+        let _ = condensation_of(&two, &kosaraju_scc(&four));
+    }
+
+    /// A four-node graph for the mismatch test: `a <-> b`, `c -> d`.
+    fn nested_pair() -> (DirectedGraph<&'static str, ()>, [NodeId; 4]) {
+        let mut graph = DirectedGraph::<&str, ()>::new();
+        let a = graph.add_node("a");
+        let b = graph.add_node("b");
+        let c = graph.add_node("c");
+        let d = graph.add_node("d");
+        graph.add_edge(a, b, ());
+        graph.add_edge(b, a, ());
+        graph.add_edge(c, d, ());
+        (graph, [a, b, c, d])
     }
 
     #[test]
