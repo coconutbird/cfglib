@@ -18,44 +18,103 @@ pub enum TraversalDirection {
     Incoming,
 }
 
-/// Append the neighbors of `node` in `direction` to `out`.
+/// One adjacency axis of a [`DirectedGraphView`], as a **type** rather than a
+/// value.
 ///
-/// A walk cannot iterate `successors` or `predecessors` in place, because the
-/// two are distinct opaque iterator types and the branch is taken per expanded
-/// node — so the adjacency has to be materialised somewhere. Materialising it
-/// into a **fresh** `Vec` is one allocation per expanded node, which on a pass
-/// that expands hundreds of thousands of times is the whole cost of the walk:
-/// the term dominates once [`EpochMarks`](super::search::EpochMarks) has
-/// removed the per-search mark buffer. Every walk core in this module and in
-/// [`search`](super::search) therefore owns one buffer for the whole walk and
-/// refills it, so the allocation is per walk rather than per expansion.
+/// [`TraversalDirection`] is a public parameter of every walk here, and
+/// reading it *inside* a walk costs more than the branch it looks like:
+/// `successors` and `predecessors` are distinct opaque iterator types, so a
+/// core that decides per expanded node cannot hold either of them. It has to
+/// materialise the adjacency into a buffer first and then test and push out of
+/// that copy. Owning one buffer per walk removed the copy's *allocation*; the
+/// copy itself is what was left.
 ///
-/// Appending rather than clearing is the caller's choice on purpose: the
-/// frontier walks refill one scratch buffer, while the frame-stack walks
-/// append into a single arena whose last-in-first-out regions *are* the
-/// frames' successor lists.
-pub(crate) fn extend_neighbors<G: DirectedGraphView>(
-    graph: &G,
-    node: G::NodeId,
-    direction: TraversalDirection,
-    out: &mut Vec<G::NodeId>,
-) {
-    match direction {
-        TraversalDirection::Outgoing => out.extend(graph.successors(node)),
-        TraversalDirection::Incoming => out.extend(graph.predecessors(node)),
+/// A zero-sized axis moves the decision to monomorphisation: a core generic
+/// over `A: Adjacency` names one concrete iterator type, so it can iterate the
+/// graph's own adjacency **in place**. The public functions keep their
+/// `TraversalDirection` argument and turn it into a type exactly once, at
+/// entry, with [`by_axis!`].
+///
+/// # Which walks the copy actually leaves
+///
+/// A walk that consumes adjacency **in adjacency order** — every
+/// breadth-first frontier, the reachability stack, the bounded meets, the
+/// breadth-first [`search`](super::search::search) core — reads the axis
+/// directly and keeps no buffer at all, which measured 1.2x to 1.9x on the
+/// pinned fixtures.
+///
+/// A **depth-first** walk does not: its rev-push convention needs the
+/// successors in reverse, an axis yields a plain `Iterator`, and requiring a
+/// `DoubleEndedIterator` of every consumer-owned view would be a contract
+/// change for a walk-local convenience. The alternative that needs no reversed
+/// read — push forward, then reverse the frontier's tail — was measured on the
+/// same fixtures and is not one: it is 1.2x to 1.5x *faster* where nodes have
+/// at most one successor and 1.9x *slower* at out-degree two, and a substrate
+/// core cannot pick per graph shape. So the depth-first cores keep one
+/// adjacency buffer per walk and take from the axis only the branch, which is
+/// perfectly predicted and measures as parity.
+///
+/// The price of the axis is one monomorphisation of every core per direction,
+/// which is why it stays an implementation detail rather than becoming a
+/// second public spelling of a direction consumers already pass.
+pub(crate) trait Adjacency: Copy {
+    /// Iterate `node`'s neighbors along this axis.
+    fn neighbors<G: DirectedGraphView>(
+        self,
+        graph: &G,
+        node: G::NodeId,
+    ) -> impl Iterator<Item = G::NodeId> + '_;
+}
+
+/// The forward axis: [`DirectedGraphView::successors`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Outgoing;
+
+/// The reverse axis: [`DirectedGraphView::predecessors`].
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Incoming;
+
+impl Adjacency for Outgoing {
+    fn neighbors<G: DirectedGraphView>(
+        self,
+        graph: &G,
+        node: G::NodeId,
+    ) -> impl Iterator<Item = G::NodeId> + '_ {
+        graph.successors(node)
     }
 }
 
-/// Refill `out` with the neighbors of `node` in `direction`.
-pub(crate) fn refill_neighbors<G: DirectedGraphView>(
-    graph: &G,
-    node: G::NodeId,
-    direction: TraversalDirection,
-    out: &mut Vec<G::NodeId>,
-) {
-    out.clear();
-    extend_neighbors(graph, node, direction, out);
+impl Adjacency for Incoming {
+    fn neighbors<G: DirectedGraphView>(
+        self,
+        graph: &G,
+        node: G::NodeId,
+    ) -> impl Iterator<Item = G::NodeId> + '_ {
+        graph.predecessors(node)
+    }
 }
+
+/// Call an axis-generic core, resolving a [`TraversalDirection`] **once**.
+///
+/// The core takes its axis as a leading argument, so the value becomes a type
+/// at one place per public walk — its entry — and the two arms cannot drift
+/// apart across the dozen walks that need them. Written as a macro rather than
+/// a helper because the arms differ only in a *type*, which no value-taking
+/// helper can carry.
+macro_rules! by_axis {
+    ($direction:expr, $core:ident($($argument:expr),* $(,)?)) => {
+        match $direction {
+            $crate::graph::traverse::TraversalDirection::Outgoing => {
+                $core($crate::graph::traverse::Outgoing, $($argument),*)
+            }
+            $crate::graph::traverse::TraversalDirection::Incoming => {
+                $core($crate::graph::traverse::Incoming, $($argument),*)
+            }
+        }
+    };
+}
+
+pub(crate) use by_axis;
 
 /// Return nodes in depth-first preorder from `start`.
 ///
@@ -67,6 +126,14 @@ pub fn depth_first_preorder<G: DirectedGraphView>(
     graph: &G,
     start: G::NodeId,
     direction: TraversalDirection,
+) -> Vec<G::NodeId> {
+    by_axis!(direction, preorder_from(graph, start))
+}
+
+fn preorder_from<G: DirectedGraphView, A: Adjacency>(
+    axis: A,
+    graph: &G,
+    start: G::NodeId,
 ) -> Vec<G::NodeId> {
     assert!(
         start.index() < graph.node_count(),
@@ -84,7 +151,8 @@ pub fn depth_first_preorder<G: DirectedGraphView>(
         visited[node.index()] = true;
         order.push(node);
 
-        refill_neighbors(graph, node, direction, &mut adjacent);
+        adjacent.clear();
+        adjacent.extend(axis.neighbors(graph, node));
         for &successor in adjacent.iter().rev() {
             if !visited[successor.index()] {
                 stack.push(successor);
@@ -106,6 +174,14 @@ pub fn depth_first_postorder<G: DirectedGraphView>(
     start: G::NodeId,
     direction: TraversalDirection,
 ) -> Vec<G::NodeId> {
+    by_axis!(direction, postorder_from(graph, start))
+}
+
+fn postorder_from<G: DirectedGraphView, A: Adjacency>(
+    axis: A,
+    graph: &G,
+    start: G::NodeId,
+) -> Vec<G::NodeId> {
     assert!(
         start.index() < graph.node_count(),
         "start node is out of range"
@@ -126,7 +202,8 @@ pub fn depth_first_postorder<G: DirectedGraphView>(
 
         visited[node.index()] = true;
         stack.push((node, true));
-        refill_neighbors(graph, node, direction, &mut adjacent);
+        adjacent.clear();
+        adjacent.extend(axis.neighbors(graph, node));
         for &successor in adjacent.iter().rev() {
             if !visited[successor.index()] {
                 stack.push((successor, false));
@@ -160,6 +237,14 @@ pub fn breadth_first<G: DirectedGraphView>(
     start: G::NodeId,
     direction: TraversalDirection,
 ) -> Vec<G::NodeId> {
+    by_axis!(direction, breadth_first_from(graph, start))
+}
+
+fn breadth_first_from<G: DirectedGraphView, A: Adjacency>(
+    axis: A,
+    graph: &G,
+    start: G::NodeId,
+) -> Vec<G::NodeId> {
     assert!(
         start.index() < graph.node_count(),
         "start node is out of range"
@@ -167,14 +252,12 @@ pub fn breadth_first<G: DirectedGraphView>(
     let mut visited = vec![false; graph.node_count()];
     let mut order = Vec::with_capacity(graph.node_count());
     let mut queue = VecDeque::new();
-    let mut adjacent = Vec::new();
     visited[start.index()] = true;
     queue.push_back(start);
 
     while let Some(node) = queue.pop_front() {
         order.push(node);
-        refill_neighbors(graph, node, direction, &mut adjacent);
-        for &next in &adjacent {
+        for next in axis.neighbors(graph, node) {
             if !visited[next.index()] {
                 visited[next.index()] = true;
                 queue.push_back(next);
@@ -199,6 +282,15 @@ pub fn shortest_path<G: DirectedGraphView>(
     goal: G::NodeId,
     direction: TraversalDirection,
 ) -> Option<Vec<G::NodeId>> {
+    by_axis!(direction, shortest_path_from(graph, start, goal))
+}
+
+fn shortest_path_from<G: DirectedGraphView, A: Adjacency>(
+    axis: A,
+    graph: &G,
+    start: G::NodeId,
+    goal: G::NodeId,
+) -> Option<Vec<G::NodeId>> {
     assert!(
         start.index() < graph.node_count(),
         "start node is out of range"
@@ -210,7 +302,6 @@ pub fn shortest_path<G: DirectedGraphView>(
     let mut previous = vec![None; graph.node_count()];
     let mut visited = vec![false; graph.node_count()];
     let mut queue = VecDeque::new();
-    let mut adjacent = Vec::new();
     visited[start.index()] = true;
     queue.push_back(start);
 
@@ -226,8 +317,7 @@ pub fn shortest_path<G: DirectedGraphView>(
             return Some(path);
         }
 
-        refill_neighbors(graph, node, direction, &mut adjacent);
-        for &next in &adjacent {
+        for next in axis.neighbors(graph, node) {
             if !visited[next.index()] {
                 visited[next.index()] = true;
                 previous[next.index()] = Some(node);
@@ -280,9 +370,16 @@ pub fn reachable<G: DirectedGraphView>(
     seeds: impl IntoIterator<Item = G::NodeId>,
     direction: TraversalDirection,
 ) -> Vec<bool> {
+    by_axis!(direction, reachable_from(graph, seeds))
+}
+
+fn reachable_from<G: DirectedGraphView, A: Adjacency>(
+    axis: A,
+    graph: &G,
+    seeds: impl IntoIterator<Item = G::NodeId>,
+) -> Vec<bool> {
     let mut visited = vec![false; graph.node_count()];
     let mut stack = Vec::new();
-    let mut adjacent = Vec::new();
 
     for seed in seeds {
         assert!(
@@ -296,8 +393,7 @@ pub fn reachable<G: DirectedGraphView>(
     }
 
     while let Some(node) = stack.pop() {
-        refill_neighbors(graph, node, direction, &mut adjacent);
-        for &next in &adjacent {
+        for next in axis.neighbors(graph, node) {
             if !visited[next.index()] {
                 visited[next.index()] = true;
                 stack.push(next);
@@ -314,16 +410,15 @@ pub fn reachable<G: DirectedGraphView>(
 ///
 /// `max_depth` bounds the walk: nodes farther than that many hops are neither
 /// discovered nor measured. `None` walks the whole reachable set.
-fn breadth_first_bounded<G: DirectedGraphView>(
+fn breadth_first_bounded<G: DirectedGraphView, A: Adjacency>(
+    axis: A,
     graph: &G,
     start: G::NodeId,
-    direction: TraversalDirection,
     max_depth: Option<usize>,
 ) -> (Vec<G::NodeId>, Vec<Option<usize>>) {
     let mut distances = vec![None; graph.node_count()];
     let mut order = Vec::new();
     let mut queue = VecDeque::new();
-    let mut adjacent = Vec::new();
     distances[start.index()] = Some(0);
     order.push(start);
     queue.push_back((start, 0_usize));
@@ -332,8 +427,7 @@ fn breadth_first_bounded<G: DirectedGraphView>(
         if max_depth.is_some_and(|limit| depth >= limit) {
             continue;
         }
-        refill_neighbors(graph, node, direction, &mut adjacent);
-        for &next in &adjacent {
+        for next in axis.neighbors(graph, node) {
             if distances[next.index()].is_none() {
                 distances[next.index()] = Some(depth + 1);
                 order.push(next);
@@ -345,14 +439,14 @@ fn breadth_first_bounded<G: DirectedGraphView>(
     (order, distances)
 }
 
-/// Hop counts from `start` to every node reachable by walking `direction`
-/// edges, `None` for the unreachable ones. `start` itself is at distance 0.
-fn breadth_first_distances<G: DirectedGraphView>(
+/// Hop counts from `start` to every node reachable along `axis`, `None` for
+/// the unreachable ones. `start` itself is at distance 0.
+fn breadth_first_distances<G: DirectedGraphView, A: Adjacency>(
+    axis: A,
     graph: &G,
     start: G::NodeId,
-    direction: TraversalDirection,
 ) -> Vec<Option<usize>> {
-    breadth_first_bounded(graph, start, direction, None).1
+    breadth_first_bounded(axis, graph, start, None).1
 }
 
 /// Return the nearest node reachable from both `a` and `b` by walking
@@ -430,10 +524,19 @@ pub fn nearest_common_ancestor<G: DirectedGraphView>(
     b: G::NodeId,
     direction: TraversalDirection,
 ) -> Option<G::NodeId> {
+    by_axis!(direction, nearest_meet(graph, a, b))
+}
+
+fn nearest_meet<G: DirectedGraphView, A: Adjacency>(
+    axis: A,
+    graph: &G,
+    a: G::NodeId,
+    b: G::NodeId,
+) -> Option<G::NodeId> {
     assert!(a.index() < graph.node_count(), "node `a` is out of range");
     assert!(b.index() < graph.node_count(), "node `b` is out of range");
-    let from_a = breadth_first_distances(graph, a, direction);
-    let from_b = breadth_first_distances(graph, b, direction);
+    let from_a = breadth_first_distances(axis, graph, a);
+    let from_b = breadth_first_distances(axis, graph, b);
 
     // `min` over `(combined distance, node id)` *is* the documented
     // tie-break: node ids are dense and ordered, so the tuple ordering
@@ -549,10 +652,20 @@ pub fn common_ancestors<G: DirectedGraphView>(
     direction: TraversalDirection,
     max_depth: Option<usize>,
 ) -> Vec<CommonAncestor<G::NodeId>> {
+    by_axis!(direction, all_meets(graph, a, b, max_depth))
+}
+
+fn all_meets<G: DirectedGraphView, A: Adjacency>(
+    axis: A,
+    graph: &G,
+    a: G::NodeId,
+    b: G::NodeId,
+    max_depth: Option<usize>,
+) -> Vec<CommonAncestor<G::NodeId>> {
     assert!(a.index() < graph.node_count(), "node `a` is out of range");
     assert!(b.index() < graph.node_count(), "node `b` is out of range");
-    let (_, from_a) = breadth_first_bounded(graph, a, direction, max_depth);
-    let (order_b, from_b) = breadth_first_bounded(graph, b, direction, max_depth);
+    let (_, from_a) = breadth_first_bounded(axis, graph, a, max_depth);
+    let (order_b, from_b) = breadth_first_bounded(axis, graph, b, max_depth);
 
     // Walking `b`'s discovery order — rather than the node ids — is what
     // makes the result's order the documented one; the bound is already

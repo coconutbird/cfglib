@@ -34,7 +34,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-use crate::graph::traverse::{TraversalDirection, extend_neighbors};
+use crate::graph::traverse::{Adjacency, TraversalDirection, by_axis};
 use crate::graph::view::{DenseNodeId, DirectedGraphView};
 
 /// The frontier discipline of a [`search`].
@@ -160,10 +160,11 @@ impl SearchConfig {
 ///
 /// The buffer holds one `u32` stamp per node and is the only allocation in a
 /// search whose size is O(node count); what remains per call is O(seeds) and
-/// O(nodes visited) — the frontier, the seed vector, and one adjacency buffer,
-/// refilled per expanded node rather than allocated per expansion. Those are
-/// what [`SearchScratch`] owns, for the pass whose searches are so small that
-/// the call itself is the cost. Sizing is fixed at
+/// O(nodes visited) — the seed vector, the frontier, and (for the depth-first
+/// cores alone, which read a node's successors in reverse) one adjacency
+/// buffer refilled per expansion. Those are what [`SearchScratch`] owns, for
+/// the pass whose searches are so small that the call itself is the cost.
+/// Sizing is fixed at
 /// construction: a buffer smaller than the graph is a panic, not a resize, so
 /// that a marks buffer never silently reallocates in the middle of the pass it
 /// exists to keep allocation-free. A buffer **larger** than the graph is fine,
@@ -268,7 +269,9 @@ struct SearchBuffers {
     /// The frontier of the path-marked core, whose unwind markers the other
     /// two have no use for.
     path: Vec<PathStep>,
-    /// One expanded node's adjacency, refilled per expansion.
+    /// One expanded node's adjacency, refilled per expansion — the buffer only
+    /// the depth-first cores still need, to read a node's successors in
+    /// reverse.
     adjacent: Vec<usize>,
 }
 
@@ -286,16 +289,16 @@ impl SearchBuffers {
 }
 
 /// Everything a repeated search allocates, owned by the caller: the visited
-/// marks of [`EpochMarks`] plus the frontier and adjacency buffers of the call
-/// itself.
+/// marks of [`EpochMarks`] plus the seed, frontier, and adjacency buffers of
+/// the call itself.
 ///
 /// [`EpochMarks`] removed the term that scales with the **graph**. This removes
 /// the term that scales with the **call**, which is what is left when a pass
 /// runs many *tiny* searches over one large node space — a nulling closure per
 /// grammar nonterminal, an alias chase per binding — and each search visits a
 /// handful of nodes. There the walk itself is nearly free and the cost is the
-/// call: a seed vector, a frontier, and an adjacency buffer, each a malloc and
-/// a free for a four-node answer.
+/// call: a seed vector, a frontier, and (depth-first only) an adjacency
+/// buffer, each a malloc and a free for a four-node answer.
 ///
 /// Hand one scratch to every [`search_with_scratch`] of the pass. The buffers
 /// grow to the largest search the pass performs and are then reused by every
@@ -329,9 +332,9 @@ impl SearchBuffers {
 /// and it is fixed at construction on the terms [`EpochMarks`] sets: a scratch
 /// smaller than the graph is a panic rather than a resize, and one larger than
 /// the graph is fine, which is how one scratch covers a set of graphs. The
-/// frontier and adjacency buffers carry no such promise, because their size is
-/// O(the walk) and cannot be known from a node count — they grow on the
-/// searches that need them and are reused by the ones that follow.
+/// other buffers carry no such promise, because their size is O(the walk) and
+/// cannot be known from a node count — they grow on the searches that need
+/// them and are reused by the ones that follow.
 ///
 /// # Examples
 ///
@@ -352,8 +355,8 @@ pub struct SearchScratch {
 impl SearchScratch {
     /// Scratch covering `node_count` nodes, with nothing marked.
     ///
-    /// Only the marks are sized here; the frontier and adjacency buffers start
-    /// empty and grow to what the pass actually walks.
+    /// Only the marks are sized here; the other buffers start empty and grow
+    /// to what the pass actually walks.
     #[must_use]
     pub fn new(node_count: usize) -> Self {
         Self {
@@ -464,8 +467,8 @@ pub fn search<G: DirectedGraphView, B>(
 ///
 /// A pass whose searches are *small* wants [`search_with_scratch`] instead:
 /// the marks are the buffer that scales with the graph, but the seed vector,
-/// the frontier, and the adjacency buffer are still allocated per call, and on
-/// a four-node closure those are the cost.
+/// the frontier, and the depth-first cores' adjacency buffer are still
+/// allocated per call, and on a four-node closure those are the cost.
 ///
 /// # Marks are reset on entry
 ///
@@ -645,16 +648,22 @@ fn search_in<G: DirectedGraphView, B>(
     );
     marks.reset();
 
+    // The direction becomes a type here and nowhere else: each core is generic
+    // over its adjacency axis, so it reads the graph's own adjacency in place
+    // instead of branching per expanded node and copying into a buffer.
     match (config.order, config.visited) {
-        (SearchOrder::DepthFirst, VisitedPolicy::Global) => {
+        (SearchOrder::DepthFirst, VisitedPolicy::Global) => by_axis!(
+            config.direction,
             depth_first_global(graph, config, marks, buffers, visitor)
-        }
-        (SearchOrder::DepthFirst, VisitedPolicy::Path) => {
+        ),
+        (SearchOrder::DepthFirst, VisitedPolicy::Path) => by_axis!(
+            config.direction,
             depth_first_path(graph, config, marks, buffers, visitor)
-        }
-        (SearchOrder::BreadthFirst, VisitedPolicy::Global) => {
+        ),
+        (SearchOrder::BreadthFirst, VisitedPolicy::Global) => by_axis!(
+            config.direction,
             breadth_first_global(graph, config, marks, buffers, visitor)
-        }
+        ),
         (SearchOrder::BreadthFirst, VisitedPolicy::Path) => {
             panic!(
                 "VisitedPolicy::Path requires SearchOrder::DepthFirst: a breadth-first frontier never unwinds, so a path mark could never be removed"
@@ -668,28 +677,8 @@ fn may_expand(config: SearchConfig, depth: usize) -> bool {
     config.max_depth.is_none_or(|limit| depth < limit)
 }
 
-/// Refill `out` with the dense indices of `node`'s neighbors in `direction`.
-///
-/// The index form of
-/// [`refill_neighbors`](super::traverse::refill_neighbors), for the buffers a
-/// [`SearchScratch`] owns: they are typeless so that one scratch serves every
-/// view, and [`DenseNodeId`] is the contract that makes an index lossless.
-fn refill_indices<G: DirectedGraphView>(
-    graph: &G,
-    node: G::NodeId,
-    direction: TraversalDirection,
-    out: &mut Vec<usize>,
-) {
-    out.clear();
-    match direction {
-        TraversalDirection::Outgoing => out.extend(graph.successors(node).map(DenseNodeId::index)),
-        TraversalDirection::Incoming => {
-            out.extend(graph.predecessors(node).map(DenseNodeId::index));
-        }
-    }
-}
-
-fn depth_first_global<G: DirectedGraphView, B>(
+fn depth_first_global<G: DirectedGraphView, A: Adjacency, B>(
+    axis: A,
     graph: &G,
     config: SearchConfig,
     visited: &mut EpochMarks,
@@ -721,7 +710,8 @@ fn depth_first_global<G: DirectedGraphView, B>(
         if !may_expand(config, depth) {
             continue;
         }
-        refill_indices(graph, id, config.direction, adjacent);
+        adjacent.clear();
+        adjacent.extend(axis.neighbors(graph, id).map(DenseNodeId::index));
         for &successor in adjacent.iter().rev() {
             if !visited.is_marked(successor) {
                 stack.push((successor, depth + 1));
@@ -732,7 +722,8 @@ fn depth_first_global<G: DirectedGraphView, B>(
     None
 }
 
-fn depth_first_path<G: DirectedGraphView, B>(
+fn depth_first_path<G: DirectedGraphView, A: Adjacency, B>(
+    axis: A,
     graph: &G,
     config: SearchConfig,
     on_path: &mut EpochMarks,
@@ -773,7 +764,8 @@ fn depth_first_path<G: DirectedGraphView, B>(
         if !may_expand(config, depth) {
             continue;
         }
-        refill_indices(graph, id, config.direction, adjacent);
+        adjacent.clear();
+        adjacent.extend(axis.neighbors(graph, id).map(DenseNodeId::index));
         for &successor in adjacent.iter().rev() {
             stack.push(PathStep::Enter(successor, depth + 1));
         }
@@ -782,7 +774,8 @@ fn depth_first_path<G: DirectedGraphView, B>(
     None
 }
 
-fn breadth_first_global<G: DirectedGraphView, B>(
+fn breadth_first_global<G: DirectedGraphView, A: Adjacency, B>(
+    axis: A,
     graph: &G,
     config: SearchConfig,
     visited: &mut EpochMarks,
@@ -792,7 +785,6 @@ fn breadth_first_global<G: DirectedGraphView, B>(
     let SearchBuffers {
         seeds,
         frontier: queue,
-        adjacent,
         ..
     } = buffers;
     for &seed in &*seeds {
@@ -820,8 +812,7 @@ fn breadth_first_global<G: DirectedGraphView, B>(
         if !may_expand(config, depth) {
             continue;
         }
-        refill_indices(graph, id, config.direction, adjacent);
-        for &next in &*adjacent {
+        for next in axis.neighbors(graph, id).map(DenseNodeId::index) {
             if !visited.is_marked(next) {
                 visited.mark(next);
                 queue.push((next, depth + 1));
@@ -957,6 +948,15 @@ pub fn depth_first_events<G: DirectedGraphView, B>(
     graph: &G,
     start: G::NodeId,
     direction: TraversalDirection,
+    on_event: impl FnMut(DfsEvent<G::NodeId>) -> ControlFlow<B>,
+) -> Option<B> {
+    by_axis!(direction, events_from(graph, start, on_event))
+}
+
+fn events_from<G: DirectedGraphView, A: Adjacency, B>(
+    axis: A,
+    graph: &G,
+    start: G::NodeId,
     mut on_event: impl FnMut(DfsEvent<G::NodeId>) -> ControlFlow<B>,
 ) -> Option<B> {
     assert!(
@@ -983,7 +983,7 @@ pub fn depth_first_events<G: DirectedGraphView, B>(
     macro_rules! descend {
         ($node:expr, $depth:expr) => {{
             let start = arena.len();
-            extend_neighbors(graph, $node, direction, &mut arena);
+            arena.extend(axis.neighbors(graph, $node));
             stack.push(DfsFrame {
                 node: $node,
                 depth: $depth,
@@ -1354,6 +1354,38 @@ mod tests {
                 SearchConfig::new(SearchOrder::DepthFirst, TraversalDirection::Incoming)
             )),
             vec![d, b, a]
+        );
+    }
+
+    #[test]
+    fn every_discipline_walks_the_incoming_axis() {
+        // The direction is resolved to a type once per call, so each
+        // discipline reaches its reverse axis through its own dispatch arm:
+        // a mixed-up arm would silently walk the graph the other way round.
+        let (graph, [a, b, c, d]) = diamond();
+        let reverse = |order| SearchConfig::new(order, TraversalDirection::Incoming);
+
+        assert_eq!(
+            nodes(&visit_order(
+                &graph,
+                [d],
+                reverse(SearchOrder::BreadthFirst)
+            )),
+            vec![d, b, c, a]
+        );
+        // Path marks un-mark on unwind, so `a` is reported once per route.
+        assert_eq!(
+            nodes(&visit_order(
+                &graph,
+                [d],
+                reverse(SearchOrder::DepthFirst).with_visited(VisitedPolicy::Path)
+            )),
+            vec![d, b, a, c, a]
+        );
+        // And the forward axis of the same graph is a different answer.
+        assert_eq!(
+            nodes(&visit_order(&graph, [a], config(SearchOrder::BreadthFirst))),
+            vec![a, b, c, d]
         );
     }
 
