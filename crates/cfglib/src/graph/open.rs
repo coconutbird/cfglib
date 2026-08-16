@@ -390,15 +390,23 @@ pub enum OpenDfsEvent<'a, N> {
 }
 
 /// One frame of the explicit stack an [`open_depth_first_events`] walk keeps.
+///
+/// The successors themselves live in the walk's single arena, not in a `Vec`
+/// per frame: frames are pushed and popped strictly last in, first out, so the
+/// top frame always owns the arena's tail and a pop truncates back to where
+/// that frame's successors began. One allocation for the walk (two with the
+/// scratch buffer the closure is handed), instead of one per entered node.
 struct OpenDfsFrame<N> {
     /// The node the frame stands on.
     node: N,
     /// Its depth in hops from the seed.
     depth: usize,
-    /// Its successors, as the closure pushed them; empty when it was pruned
-    /// or sat at the depth bound.
-    successors: Vec<N>,
-    /// How many of them have been entered.
+    /// Where its successors start in the arena, as the closure pushed them;
+    /// the region is empty when the node was pruned or sat at the depth bound.
+    start: usize,
+    /// The next successor to enter, as an arena index. The frame's successors
+    /// are exhausted when it reaches the arena's length, since the top frame's
+    /// region runs to the end.
     cursor: usize,
 }
 
@@ -537,6 +545,12 @@ pub fn open_depth_first_events<N: Clone + Ord, B>(
 ) -> Option<B> {
     let mut marks: BTreeSet<N> = BTreeSet::new();
     let mut stack: Vec<OpenDfsFrame<N>> = Vec::new();
+    // Every frame's successors, appended as the frame is pushed and truncated
+    // away as it pops, plus the buffer the closure writes into — which has to
+    // be a separate one, because the closure is promised an empty `Vec` (a
+    // consumer that sorts its successors would otherwise sort the arena).
+    let mut arena: Vec<N> = Vec::new();
+    let mut scratch: Vec<N> = Vec::new();
 
     // Enter a node: discover it and push its frame, or report the re-entry
     // the mark policy refuses. Used for seeds and successors alike, so the
@@ -550,15 +564,17 @@ pub fn open_depth_first_events<N: Clone + Ord, B>(
                     ControlFlow::Break(value) => return Some(value),
                     ControlFlow::Continue(verdict) => verdict,
                 };
-                let mut discovered = Vec::new();
+                scratch.clear();
                 if matches!(verdict, Visit::Descend) && may_expand(config.max_depth, depth) {
-                    successors(&node, &mut discovered);
+                    successors(&node, &mut scratch);
                 }
+                let start = arena.len();
+                arena.append(&mut scratch);
                 stack.push(OpenDfsFrame {
                     node,
                     depth,
-                    successors: discovered,
-                    cursor: 0,
+                    start,
+                    cursor: start,
                 });
             } else if let ControlFlow::Break(value) = on_event(OpenDfsEvent::Refused(&node, depth))
             {
@@ -570,14 +586,15 @@ pub fn open_depth_first_events<N: Clone + Ord, B>(
     for seed in seeds {
         enter!(seed, 0);
         while let Some(frame) = stack.last_mut() {
-            if frame.cursor < frame.successors.len() {
-                let next = frame.successors[frame.cursor].clone();
+            if frame.cursor < arena.len() {
+                let next = arena[frame.cursor].clone();
                 let depth = frame.depth + 1;
                 frame.cursor += 1;
                 enter!(next, depth);
                 continue;
             }
             let Some(finished) = stack.pop() else { break };
+            arena.truncate(finished.start);
             if matches!(config.visited, VisitedPolicy::Path) {
                 marks.remove(&finished.node);
             }
@@ -1091,6 +1108,43 @@ mod tests {
                 Seen::Discover("c", 1),
                 Seen::Finish("c"),
                 Seen::Finish("a"),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_events_closure_is_handed_a_cleared_buffer() {
+        // Every frame's successors share one arena, so the buffer the closure
+        // writes into has to be a separate one. A consumer that *reorders*
+        // what it pushed — the ordered-emission shape — would otherwise sort
+        // its ancestors' not-yet-entered successors along with its own.
+        let successors = |node: &u32, out: &mut Vec<u32>| {
+            assert!(out.is_empty(), "the closure is handed a cleared buffer");
+            match *node {
+                0 => out.extend([3, 1]),
+                1 => out.extend([5, 4]),
+                _ => {}
+            }
+            out.sort_unstable();
+        };
+
+        assert_eq!(
+            open_events(
+                [0_u32],
+                OpenDfsConfig::new(VisitedPolicy::Global),
+                successors
+            ),
+            vec![
+                Seen::Discover(0, 0),
+                Seen::Discover(1, 1),
+                Seen::Discover(4, 2),
+                Seen::Finish(4),
+                Seen::Discover(5, 2),
+                Seen::Finish(5),
+                Seen::Finish(1),
+                Seen::Discover(3, 1),
+                Seen::Finish(3),
+                Seen::Finish(0),
             ]
         );
     }

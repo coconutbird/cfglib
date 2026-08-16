@@ -18,15 +18,43 @@ pub enum TraversalDirection {
     Incoming,
 }
 
-pub(crate) fn neighbors<G: DirectedGraphView>(
+/// Append the neighbors of `node` in `direction` to `out`.
+///
+/// A walk cannot iterate `successors` or `predecessors` in place, because the
+/// two are distinct opaque iterator types and the branch is taken per expanded
+/// node — so the adjacency has to be materialised somewhere. Materialising it
+/// into a **fresh** `Vec` is one allocation per expanded node, which on a pass
+/// that expands hundreds of thousands of times is the whole cost of the walk:
+/// the term dominates once [`EpochMarks`](super::search::EpochMarks) has
+/// removed the per-search mark buffer. Every walk core in this module and in
+/// [`search`](super::search) therefore owns one buffer for the whole walk and
+/// refills it, so the allocation is per walk rather than per expansion.
+///
+/// Appending rather than clearing is the caller's choice on purpose: the
+/// frontier walks refill one scratch buffer, while the frame-stack walks
+/// append into a single arena whose last-in-first-out regions *are* the
+/// frames' successor lists.
+pub(crate) fn extend_neighbors<G: DirectedGraphView>(
     graph: &G,
     node: G::NodeId,
     direction: TraversalDirection,
-) -> Vec<G::NodeId> {
+    out: &mut Vec<G::NodeId>,
+) {
     match direction {
-        TraversalDirection::Outgoing => graph.successors(node).collect(),
-        TraversalDirection::Incoming => graph.predecessors(node).collect(),
+        TraversalDirection::Outgoing => out.extend(graph.successors(node)),
+        TraversalDirection::Incoming => out.extend(graph.predecessors(node)),
     }
+}
+
+/// Refill `out` with the neighbors of `node` in `direction`.
+pub(crate) fn refill_neighbors<G: DirectedGraphView>(
+    graph: &G,
+    node: G::NodeId,
+    direction: TraversalDirection,
+    out: &mut Vec<G::NodeId>,
+) {
+    out.clear();
+    extend_neighbors(graph, node, direction, out);
 }
 
 /// Return nodes in depth-first preorder from `start`.
@@ -47,6 +75,7 @@ pub fn depth_first_preorder<G: DirectedGraphView>(
     let mut visited = vec![false; graph.node_count()];
     let mut order = Vec::with_capacity(graph.node_count());
     let mut stack = vec![start];
+    let mut adjacent = Vec::new();
 
     while let Some(node) = stack.pop() {
         if visited[node.index()] {
@@ -55,7 +84,8 @@ pub fn depth_first_preorder<G: DirectedGraphView>(
         visited[node.index()] = true;
         order.push(node);
 
-        for successor in neighbors(graph, node, direction).into_iter().rev() {
+        refill_neighbors(graph, node, direction, &mut adjacent);
+        for &successor in adjacent.iter().rev() {
             if !visited[successor.index()] {
                 stack.push(successor);
             }
@@ -83,6 +113,7 @@ pub fn depth_first_postorder<G: DirectedGraphView>(
     let mut visited = vec![false; graph.node_count()];
     let mut order = Vec::with_capacity(graph.node_count());
     let mut stack = vec![(start, false)];
+    let mut adjacent = Vec::new();
 
     while let Some((node, processed)) = stack.pop() {
         if processed {
@@ -95,7 +126,8 @@ pub fn depth_first_postorder<G: DirectedGraphView>(
 
         visited[node.index()] = true;
         stack.push((node, true));
-        for successor in neighbors(graph, node, direction).into_iter().rev() {
+        refill_neighbors(graph, node, direction, &mut adjacent);
+        for &successor in adjacent.iter().rev() {
             if !visited[successor.index()] {
                 stack.push((successor, false));
             }
@@ -135,15 +167,17 @@ pub fn breadth_first<G: DirectedGraphView>(
     let mut visited = vec![false; graph.node_count()];
     let mut order = Vec::with_capacity(graph.node_count());
     let mut queue = VecDeque::new();
+    let mut adjacent = Vec::new();
     visited[start.index()] = true;
     queue.push_back(start);
 
     while let Some(node) = queue.pop_front() {
         order.push(node);
-        for adjacent in neighbors(graph, node, direction) {
-            if !visited[adjacent.index()] {
-                visited[adjacent.index()] = true;
-                queue.push_back(adjacent);
+        refill_neighbors(graph, node, direction, &mut adjacent);
+        for &next in &adjacent {
+            if !visited[next.index()] {
+                visited[next.index()] = true;
+                queue.push_back(next);
             }
         }
     }
@@ -176,6 +210,7 @@ pub fn shortest_path<G: DirectedGraphView>(
     let mut previous = vec![None; graph.node_count()];
     let mut visited = vec![false; graph.node_count()];
     let mut queue = VecDeque::new();
+    let mut adjacent = Vec::new();
     visited[start.index()] = true;
     queue.push_back(start);
 
@@ -191,11 +226,12 @@ pub fn shortest_path<G: DirectedGraphView>(
             return Some(path);
         }
 
-        for adjacent in neighbors(graph, node, direction) {
-            if !visited[adjacent.index()] {
-                visited[adjacent.index()] = true;
-                previous[adjacent.index()] = Some(node);
-                queue.push_back(adjacent);
+        refill_neighbors(graph, node, direction, &mut adjacent);
+        for &next in &adjacent {
+            if !visited[next.index()] {
+                visited[next.index()] = true;
+                previous[next.index()] = Some(node);
+                queue.push_back(next);
             }
         }
     }
@@ -246,6 +282,7 @@ pub fn reachable<G: DirectedGraphView>(
 ) -> Vec<bool> {
     let mut visited = vec![false; graph.node_count()];
     let mut stack = Vec::new();
+    let mut adjacent = Vec::new();
 
     for seed in seeds {
         assert!(
@@ -259,10 +296,11 @@ pub fn reachable<G: DirectedGraphView>(
     }
 
     while let Some(node) = stack.pop() {
-        for adjacent in neighbors(graph, node, direction) {
-            if !visited[adjacent.index()] {
-                visited[adjacent.index()] = true;
-                stack.push(adjacent);
+        refill_neighbors(graph, node, direction, &mut adjacent);
+        for &next in &adjacent {
+            if !visited[next.index()] {
+                visited[next.index()] = true;
+                stack.push(next);
             }
         }
     }
@@ -285,6 +323,7 @@ fn breadth_first_bounded<G: DirectedGraphView>(
     let mut distances = vec![None; graph.node_count()];
     let mut order = Vec::new();
     let mut queue = VecDeque::new();
+    let mut adjacent = Vec::new();
     distances[start.index()] = Some(0);
     order.push(start);
     queue.push_back((start, 0_usize));
@@ -293,11 +332,12 @@ fn breadth_first_bounded<G: DirectedGraphView>(
         if max_depth.is_some_and(|limit| depth >= limit) {
             continue;
         }
-        for adjacent in neighbors(graph, node, direction) {
-            if distances[adjacent.index()].is_none() {
-                distances[adjacent.index()] = Some(depth + 1);
-                order.push(adjacent);
-                queue.push_back((adjacent, depth + 1));
+        refill_neighbors(graph, node, direction, &mut adjacent);
+        for &next in &adjacent {
+            if distances[next.index()].is_none() {
+                distances[next.index()] = Some(depth + 1);
+                order.push(next);
+                queue.push_back((next, depth + 1));
             }
         }
     }

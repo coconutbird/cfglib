@@ -33,7 +33,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::ControlFlow;
 
-use crate::graph::traverse::{TraversalDirection, neighbors};
+use crate::graph::traverse::{TraversalDirection, extend_neighbors, refill_neighbors};
 use crate::graph::view::{DenseNodeId, DirectedGraphView};
 
 /// The frontier discipline of a [`search`].
@@ -159,8 +159,9 @@ impl SearchConfig {
 ///
 /// The buffer holds one `u32` stamp per node and is the only allocation in a
 /// search whose size is O(node count); what remains per call is O(seeds) and
-/// O(nodes visited) — the frontier, the seed vector, and the adjacency of each
-/// expanded node. Sizing is fixed at
+/// O(nodes visited) — the frontier, the seed vector, and one adjacency buffer,
+/// refilled per expanded node rather than allocated per expansion. Sizing is
+/// fixed at
 /// construction: a buffer smaller than the graph is a panic, not a resize, so
 /// that a marks buffer never silently reallocates in the middle of the pass it
 /// exists to keep allocation-free. A buffer **larger** than the graph is fine,
@@ -435,6 +436,7 @@ fn depth_first_global<G: DirectedGraphView, B>(
     // Reversed so the first seed pops first; the same convention applies to
     // successors below, so adjacency order is expansion order.
     let mut stack: Vec<(G::NodeId, usize)> = seeds.iter().rev().map(|&seed| (seed, 0)).collect();
+    let mut adjacent = Vec::new();
 
     while let Some((node, depth)) = stack.pop() {
         if visited.is_marked(node.index()) {
@@ -449,7 +451,8 @@ fn depth_first_global<G: DirectedGraphView, B>(
         if !may_expand(config, depth) {
             continue;
         }
-        for successor in neighbors(graph, node, config.direction).into_iter().rev() {
+        refill_neighbors(graph, node, config.direction, &mut adjacent);
+        for &successor in adjacent.iter().rev() {
             if !visited.is_marked(successor.index()) {
                 stack.push((successor, depth + 1));
             }
@@ -479,6 +482,7 @@ fn depth_first_path<G: DirectedGraphView, B>(
         .rev()
         .map(|&seed| PathStep::Enter(seed, 0))
         .collect();
+    let mut adjacent = Vec::new();
 
     while let Some(step) = stack.pop() {
         let (node, depth) = match step {
@@ -504,7 +508,8 @@ fn depth_first_path<G: DirectedGraphView, B>(
         if !may_expand(config, depth) {
             continue;
         }
-        for successor in neighbors(graph, node, config.direction).into_iter().rev() {
+        refill_neighbors(graph, node, config.direction, &mut adjacent);
+        for &successor in adjacent.iter().rev() {
             stack.push(PathStep::Enter(successor, depth + 1));
         }
     }
@@ -520,6 +525,7 @@ fn breadth_first_global<G: DirectedGraphView, B>(
     mut visitor: impl FnMut(G::NodeId, usize) -> ControlFlow<B, Visit>,
 ) -> Option<B> {
     let mut queue: VecDeque<(G::NodeId, usize)> = VecDeque::new();
+    let mut adjacent = Vec::new();
     for &seed in seeds {
         if !visited.is_marked(seed.index()) {
             visited.mark(seed.index());
@@ -536,10 +542,11 @@ fn breadth_first_global<G: DirectedGraphView, B>(
         if !may_expand(config, depth) {
             continue;
         }
-        for adjacent in neighbors(graph, node, config.direction) {
-            if !visited.is_marked(adjacent.index()) {
-                visited.mark(adjacent.index());
-                queue.push_back((adjacent, depth + 1));
+        refill_neighbors(graph, node, config.direction, &mut adjacent);
+        for &next in &adjacent {
+            if !visited.is_marked(next.index()) {
+                visited.mark(next.index());
+                queue.push_back((next, depth + 1));
             }
         }
     }
@@ -576,10 +583,21 @@ pub enum DfsEvent<N> {
 }
 
 /// One frame of the explicit depth-first stack.
+///
+/// A frame's successors live in the walk's single arena rather than in a `Vec`
+/// of its own: frames are pushed and popped strictly last in, first out, so
+/// the frame on top of the stack always owns the arena's tail and a pop
+/// truncates the arena back to where that frame's successors began. One
+/// allocation for the walk, instead of one per expanded node.
 struct DfsFrame<N> {
     node: N,
     depth: usize,
-    successors: Vec<N>,
+    /// Where this frame's successors start in the arena; the pop truncates to
+    /// it.
+    start: usize,
+    /// The next successor to examine, as an arena index. The frame's
+    /// successors are exhausted when it reaches the arena's length, since the
+    /// top frame's region runs to the end.
     cursor: usize,
 }
 
@@ -677,35 +695,44 @@ pub fn depth_first_events<G: DirectedGraphView, B>(
     }
 
     let mut color = vec![Color::White; graph.node_count()];
+    // Every frame's successors, appended as the frame is pushed and truncated
+    // away as it pops. The top frame owns `arena[frame.start..]`.
+    let mut arena: Vec<G::NodeId> = Vec::new();
+    let mut stack: Vec<DfsFrame<G::NodeId>> = Vec::new();
+
+    // Push the frame for a node just discovered at `depth`, taking its
+    // adjacency onto the arena's tail.
+    macro_rules! descend {
+        ($node:expr, $depth:expr) => {{
+            let start = arena.len();
+            extend_neighbors(graph, $node, direction, &mut arena);
+            stack.push(DfsFrame {
+                node: $node,
+                depth: $depth,
+                start,
+                cursor: start,
+            });
+        }};
+    }
+
     color[start.index()] = Color::Gray;
     emit!(DfsEvent::Discover(start, 0));
-    let mut stack = vec![DfsFrame {
-        node: start,
-        depth: 0,
-        successors: neighbors(graph, start, direction),
-        cursor: 0,
-    }];
+    descend!(start, 0);
 
-    // Read frames through `last_mut` and copy only the Copy fields — cloning
-    // a frame with its successor Vec per iteration would make the walk
-    // O(Σ deg²).
+    // Read frames through `last_mut` and copy the Copy fields out; the
+    // successors are no longer among them, so no frame is ever cloned.
     while let Some(frame) = stack.last_mut() {
         let node = frame.node;
         let depth = frame.depth;
-        if frame.cursor < frame.successors.len() {
-            let successor = frame.successors[frame.cursor];
+        if frame.cursor < arena.len() {
+            let successor = arena[frame.cursor];
             frame.cursor += 1;
             match color[successor.index()] {
                 Color::White => {
                     emit!(DfsEvent::TreeEdge(node, successor));
                     color[successor.index()] = Color::Gray;
                     emit!(DfsEvent::Discover(successor, depth + 1));
-                    stack.push(DfsFrame {
-                        node: successor,
-                        depth: depth + 1,
-                        successors: neighbors(graph, successor, direction),
-                        cursor: 0,
-                    });
+                    descend!(successor, depth + 1);
                 }
                 Color::Gray => emit!(DfsEvent::BackEdge(node, successor)),
                 Color::Black => emit!(DfsEvent::ForwardOrCross(node, successor)),
@@ -715,7 +742,8 @@ pub fn depth_first_events<G: DirectedGraphView, B>(
 
         color[node.index()] = Color::Black;
         emit!(DfsEvent::Finish(node));
-        stack.pop();
+        let Some(finished) = stack.pop() else { break };
+        arena.truncate(finished.start);
     }
 
     None
