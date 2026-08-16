@@ -186,8 +186,8 @@ pub use graph::pdg::{DependenceKind, DependenceNode, program_dependence_graph};
 pub use graph::reverse::reverse_cfg;
 pub use graph::scc::{Scc, SccResult, condensation, kosaraju_scc, tarjan_scc};
 pub use graph::search::{
-    DfsEvent, EpochMarks, SearchConfig, SearchOrder, Visit, VisitedPolicy, depth_first_events,
-    search, search_with_marks,
+    DfsEvent, EpochMarks, SearchConfig, SearchOrder, SearchScratch, Visit, VisitedPolicy,
+    depth_first_events, search, search_with_marks, search_with_scratch,
 };
 pub use graph::structure::{
     BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, detect_loops_tagged,
