@@ -5,7 +5,6 @@
 //! `A -> B` for that relation; node payloads retain the original identity.
 
 extern crate alloc;
-use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::graph::directed::DirectedGraph;
@@ -52,10 +51,21 @@ pub fn control_dependence_graph<G: DirectedGraphView>(
     post_dominators: &DominatorTree<G::NodeId>,
 ) -> DirectedGraph<G::NodeId, ()> {
     let mut graph = DirectedGraph::with_capacity(source.node_count(), source.node_count());
-    let nodes: Vec<_> = source.node_ids().map(|node| graph.add_node(node)).collect();
-    let mut dependences = BTreeSet::new();
+    let nodes: Vec<_> = (0..source.node_count())
+        .map(G::NodeId::from_index)
+        .map(|node| graph.add_node(node))
+        .collect();
+    let post_dominator_depths = post_dominators.analysis_depths();
+    let mut seen_dependents = alloc::vec![0_u32; source.node_count()];
+    let mut dependents = Vec::new();
+    let mut epoch = 0_u32;
+    let mut controllers: Vec<_> = source.node_ids().collect();
+    // The previous BTreeSet implementation exposed global `(controller,
+    // dependent)` ordering through stable edge IDs.  Dense index order is not
+    // required to agree with a consumer ID's `Ord`, so retain that behavior.
+    controllers.sort_unstable();
 
-    for controller in source.node_ids() {
+    for controller in controllers {
         // Control dependence is defined through post-dominance; a node the
         // post-dominator computation never reached (it cannot reach any
         // exit) has NO post-dominance facts, and emitting its edges would
@@ -64,28 +74,41 @@ pub fn control_dependence_graph<G: DirectedGraphView>(
         if !post_dominators.is_reachable(controller) {
             continue;
         }
+        epoch = epoch.wrapping_add(1);
+        if epoch == 0 {
+            seen_dependents.fill(0);
+            epoch = 1;
+        }
+        dependents.clear();
         for target in source.successors(controller) {
             if !post_dominators.is_reachable(target) {
                 continue;
             }
-            if post_dominators.dominates(target, controller) {
+            if post_dominators.dominates_with_analysis_depths(
+                target,
+                controller,
+                &post_dominator_depths,
+            ) {
                 continue;
             }
 
             let immediate_post_dominator = post_dominators.idom(controller);
             let mut dependent = target;
             loop {
-                dependences.insert((controller, dependent));
+                if seen_dependents[dependent.index()] != epoch {
+                    seen_dependents[dependent.index()] = epoch;
+                    dependents.push(dependent);
+                }
                 match post_dominators.idom(dependent) {
                     Some(next) if Some(next) != immediate_post_dominator => dependent = next,
                     _ => break,
                 }
             }
         }
-    }
-
-    for (controller, dependent) in dependences {
-        graph.add_edge(nodes[controller.index()], nodes[dependent.index()], ());
+        dependents.sort_unstable();
+        for &dependent in &dependents {
+            graph.add_edge(nodes[controller.index()], nodes[dependent.index()], ());
+        }
     }
     graph
 }
@@ -98,6 +121,72 @@ mod tests {
     use crate::edge::EdgeKind;
     use crate::graph::directed::NodeId;
     use crate::test_util::ff;
+    use alloc::collections::BTreeSet;
+    use alloc::vec;
+    use core::cmp::Ordering;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct ReverseOrdNode(usize);
+
+    impl PartialOrd for ReverseOrdNode {
+        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+            Some(self.cmp(other))
+        }
+    }
+
+    impl Ord for ReverseOrdNode {
+        fn cmp(&self, other: &Self) -> Ordering {
+            other.0.cmp(&self.0)
+        }
+    }
+
+    impl DenseNodeId for ReverseOrdNode {
+        fn from_index(index: usize) -> Self {
+            Self(index)
+        }
+
+        fn index(self) -> usize {
+            self.0
+        }
+    }
+
+    struct ReverseOrdGraph;
+
+    impl DirectedGraphView for ReverseOrdGraph {
+        type NodeId = ReverseOrdNode;
+
+        fn node_count(&self) -> usize {
+            6
+        }
+
+        fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+            const EMPTY: &[usize] = &[];
+            const ZERO: &[usize] = &[1, 2];
+            const ONE: &[usize] = &[3, 4];
+            const EXIT: &[usize] = &[5];
+            let successors = match node.0 {
+                0 => ZERO,
+                1 => ONE,
+                2..=4 => EXIT,
+                _ => EMPTY,
+            };
+            successors.iter().copied().map(ReverseOrdNode)
+        }
+
+        fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+            const EMPTY: &[usize] = &[];
+            const FROM_ZERO: &[usize] = &[0];
+            const FROM_ONE: &[usize] = &[1];
+            const TO_EXIT: &[usize] = &[2, 3, 4];
+            let predecessors = match node.0 {
+                1 | 2 => FROM_ZERO,
+                3 | 4 => FROM_ONE,
+                5 => TO_EXIT,
+                _ => EMPTY,
+            };
+            predecessors.iter().copied().map(ReverseOrdNode)
+        }
+    }
 
     fn node(block: BlockId) -> NodeId {
         NodeId::from_index(block.index())
@@ -142,6 +231,26 @@ mod tests {
         let post = DominatorTree::compute_post_from(&graph, &[]);
         let cdg = control_dependence_graph(&graph, &post);
         assert_eq!(cdg.edge_count(), 0);
+    }
+
+    #[test]
+    fn custom_id_order_retains_global_edge_identity_order() {
+        let post = DominatorTree::compute_post_from(&ReverseOrdGraph, &[ReverseOrdNode(5)]);
+        let graph = control_dependence_graph(&ReverseOrdGraph, &post);
+        let relations: Vec<_> = graph
+            .edges()
+            .map(|edge| (graph[edge.source()], graph[edge.target()]))
+            .collect();
+
+        assert_eq!(
+            relations,
+            vec![
+                (ReverseOrdNode(1), ReverseOrdNode(4)),
+                (ReverseOrdNode(1), ReverseOrdNode(3)),
+                (ReverseOrdNode(0), ReverseOrdNode(2)),
+                (ReverseOrdNode(0), ReverseOrdNode(1)),
+            ]
+        );
     }
 
     #[test]

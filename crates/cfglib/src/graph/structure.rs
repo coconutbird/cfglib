@@ -72,9 +72,10 @@ pub fn find_back_edges<G: DirectedGraphView>(
     dom: &DominatorTree<G::NodeId>,
 ) -> Vec<BackEdge<G::NodeId>> {
     let mut backs = Vec::new();
+    let depths = dom.depths();
     for node in graph.node_ids() {
         for successor in graph.successors(node) {
-            if dom.dominates(successor, node) {
+            if dom.dominates_with_depths(successor, node, &depths) {
                 backs.push(BackEdge {
                     tail: node,
                     header: successor,
@@ -109,22 +110,24 @@ pub fn find_back_edges_tagged<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackE
     backs
 }
 
-/// Compute the natural loop body for a single back-edge.
+/// Compute the merged natural loop body for every back-edge to one header.
 ///
-/// The body is the set of nodes that can reach `tail` without
-/// going through `header`, plus `header` itself.
+/// The body is the set of nodes that can reach any latch without going
+/// through `header`, plus `header` itself. A single multi-source reverse walk
+/// computes the same union without revisiting a shared body for every latch.
 fn loop_body_for<G: DirectedGraphView>(
     graph: &G,
     header: G::NodeId,
-    tail: G::NodeId,
+    latches: &[G::NodeId],
 ) -> BTreeSet<G::NodeId> {
     let mut body = BTreeSet::new();
     body.insert(header);
-    if header == tail {
-        return body;
+    let mut stack = Vec::new();
+    for &latch in latches {
+        if body.insert(latch) {
+            stack.push(latch);
+        }
     }
-    body.insert(tail);
-    let mut stack = alloc::vec![tail];
     while let Some(n) = stack.pop() {
         for p in graph.predecessors(n) {
             if !body.contains(&p) {
@@ -154,10 +157,7 @@ fn loops_from_backs<G: DirectedGraphView>(
 
     let mut loops: Vec<NaturalLoop<G::NodeId>> = Vec::new();
     for (header, latches) in &header_map {
-        let mut body = BTreeSet::new();
-        for &tail in latches {
-            body.extend(loop_body_for(graph, *header, tail));
-        }
+        let body = loop_body_for(graph, *header, latches);
         loops.push(NaturalLoop {
             header: *header,
             body,

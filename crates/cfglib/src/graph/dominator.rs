@@ -7,7 +7,6 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::graph::directed::DirectedGraph;
 use crate::graph::traverse::{TraversalDirection, reverse_postorder};
 use crate::graph::view::{DenseNodeId, DirectedGraphView, RootedGraphView};
 
@@ -36,6 +35,75 @@ pub struct DominatorTree<N = BlockId> {
     /// Immediate dominator for each node. The root has no parent.
     idom: Vec<Option<N>>,
     reachable: Vec<bool>,
+}
+
+/// Smallest lossless depth representation for an internal whole-graph pass.
+pub(crate) enum AnalysisDepths {
+    Compact(Vec<u32>),
+    Full(Vec<usize>),
+}
+
+fn compact_depths_supported(node_count: usize) -> bool {
+    u32::try_from(node_count).is_ok()
+}
+
+/// A reversed graph with one synthetic root connected to every exit.
+///
+/// Keeping this as a view avoids copying every node, edge, and adjacency list
+/// merely to run the generic dominator algorithm.
+struct PostDominatorView<'g, G: DirectedGraphView> {
+    graph: &'g G,
+    exits: &'g [G::NodeId],
+    /// Large ordered exit lists use allocation-free binary membership;
+    /// arbitrary caller order retains the original linear lookup semantics.
+    binary_search_exits: bool,
+}
+
+const POST_DOMINATOR_BINARY_SEARCH_THRESHOLD: usize = 16;
+
+impl<G: DirectedGraphView> DirectedGraphView for PostDominatorView<'_, G> {
+    // The virtual exit is private implementation state.  Use `usize` for the
+    // augmented view so callers' IDs are never asked to represent the
+    // out-of-range index at `graph.node_count()`.
+    type NodeId = usize;
+
+    fn node_count(&self) -> usize {
+        self.graph.node_count() + 1
+    }
+
+    fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+        let original_count = self.graph.node_count();
+        let is_virtual = node == original_count;
+        let original = (node < original_count).then(|| G::NodeId::from_index(node));
+        self.exits
+            .iter()
+            .copied()
+            .map(DenseNodeId::index)
+            .filter(move |_| is_virtual)
+            .chain(
+                original
+                    .into_iter()
+                    .flat_map(move |node| self.graph.predecessors(node).map(DenseNodeId::index)),
+            )
+    }
+
+    fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+        let original_count = self.graph.node_count();
+        let original = (node < original_count).then(|| G::NodeId::from_index(node));
+        let is_exit = node < original_count
+            && if self.binary_search_exits {
+                self.exits
+                    .binary_search(&G::NodeId::from_index(node))
+                    .is_ok()
+            } else {
+                self.exits.contains(&G::NodeId::from_index(node))
+            };
+        let from_virtual = is_exit.then_some(original_count);
+        original
+            .into_iter()
+            .flat_map(move |node| self.graph.successors(node).map(DenseNodeId::index))
+            .chain(from_virtual)
+    }
 }
 
 impl<N: DenseNodeId> DominatorTree<N> {
@@ -70,26 +138,22 @@ impl<N: DenseNodeId> DominatorTree<N> {
             changed = false;
             for node in order.iter().copied().filter(|node| *node != root) {
                 let node_order = order_index[node.index()];
-                let predecessors: Vec<N> = graph.predecessors(node).collect();
-                let mut new_parent = predecessors.iter().find_map(|predecessor| {
+                let mut new_parent_index = None;
+                for predecessor in graph.predecessors(node) {
                     let predecessor_order = order_index[predecessor.index()];
-                    (predecessor_order != usize::MAX && dominators[predecessor_order].is_some())
-                        .then_some(predecessor_order)
-                });
-                let Some(mut new_parent_index) = new_parent.take() else {
+                    if predecessor_order == usize::MAX || dominators[predecessor_order].is_none() {
+                        continue;
+                    }
+
+                    new_parent_index = Some(match new_parent_index {
+                        None => predecessor_order,
+                        Some(parent) if predecessor_order == parent => parent,
+                        Some(parent) => Self::intersect(&dominators, predecessor_order, parent),
+                    });
+                }
+                let Some(new_parent_index) = new_parent_index else {
                     continue;
                 };
-
-                for predecessor in predecessors {
-                    let predecessor_order = order_index[predecessor.index()];
-                    if predecessor_order != usize::MAX
-                        && dominators[predecessor_order].is_some()
-                        && predecessor_order != new_parent_index
-                    {
-                        new_parent_index =
-                            Self::intersect(&dominators, predecessor_order, new_parent_index);
-                    }
-                }
 
                 if dominators[node_order] != Some(new_parent_index) {
                     dominators[node_order] = Some(new_parent_index);
@@ -161,6 +225,79 @@ impl<N: DenseNodeId> DominatorTree<N> {
         false
     }
 
+    /// Query dominance using a caller-reused depth table.
+    ///
+    /// Whole-graph passes call dominance once per edge; rejecting edges that
+    /// point deeper into the tree before walking any parents avoids quadratic
+    /// behavior on long acyclic chains while keeping the tree itself compact.
+    pub(crate) fn dominates_with_depths(&self, dominator: N, node: N, depths: &[usize]) -> bool {
+        debug_assert_eq!(depths.len(), self.idom.len());
+        if dominator == node {
+            return true;
+        }
+
+        let dominator_depth = depths[dominator.index()];
+        let mut node_depth = depths[node.index()];
+        if dominator_depth == usize::MAX
+            || node_depth == usize::MAX
+            || dominator_depth >= node_depth
+        {
+            return false;
+        }
+
+        let mut current = node;
+        while node_depth > dominator_depth {
+            let Some(parent) = self.idom(current) else {
+                return false;
+            };
+            if parent == current {
+                return false;
+            }
+            current = parent;
+            node_depth -= 1;
+        }
+        current == dominator
+    }
+
+    /// Query dominance using the smallest lossless internal depth table.
+    pub(crate) fn dominates_with_analysis_depths(
+        &self,
+        dominator: N,
+        node: N,
+        depths: &AnalysisDepths,
+    ) -> bool {
+        let depths = match depths {
+            AnalysisDepths::Compact(depths) => depths,
+            AnalysisDepths::Full(depths) => {
+                return self.dominates_with_depths(dominator, node, depths);
+            }
+        };
+
+        debug_assert_eq!(depths.len(), self.idom.len());
+        if dominator == node {
+            return true;
+        }
+
+        let dominator_depth = depths[dominator.index()];
+        let mut node_depth = depths[node.index()];
+        if dominator_depth == u32::MAX || node_depth == u32::MAX || dominator_depth >= node_depth {
+            return false;
+        }
+
+        let mut current = node;
+        while node_depth > dominator_depth {
+            let Some(parent) = self.idom(current) else {
+                return false;
+            };
+            if parent == current {
+                return false;
+            }
+            current = parent;
+            node_depth -= 1;
+        }
+        current == dominator
+    }
+
     /// Return nodes whose immediate dominator is `node`.
     #[must_use]
     pub fn children(&self, node: N) -> Vec<N> {
@@ -195,9 +332,113 @@ impl<N: DenseNodeId> DominatorTree<N> {
     /// Return depths indexed by dense node index.
     #[must_use]
     pub fn depths(&self) -> Vec<usize> {
-        (0..self.idom.len())
-            .map(|index| self.depth(N::from_index(index)).unwrap_or(usize::MAX))
-            .collect()
+        let mut depths = vec![usize::MAX; self.idom.len()];
+
+        for index in 0..self.idom.len() {
+            if !self.reachable[index] || depths[index] != usize::MAX {
+                continue;
+            }
+
+            let start = N::from_index(index);
+            let mut current = start;
+            let mut distance = 0_usize;
+            let base = loop {
+                let current_index = current.index();
+                if depths[current_index] != usize::MAX {
+                    break depths[current_index];
+                }
+                match self.idom[current_index] {
+                    None => break 0,
+                    Some(parent) if parent == current => break 0,
+                    Some(parent) => {
+                        current = parent;
+                        distance += 1;
+                    }
+                }
+            };
+
+            current = start;
+            let mut depth = base + distance;
+            loop {
+                let current_index = current.index();
+                if depths[current_index] != usize::MAX {
+                    break;
+                }
+                depths[current_index] = depth;
+                match self.idom[current_index] {
+                    None => break,
+                    Some(parent) if parent == current => break,
+                    Some(parent) => {
+                        current = parent;
+                        depth -= 1;
+                    }
+                }
+            }
+        }
+
+        depths
+    }
+
+    /// Return the smallest lossless depth table for internal analyses.
+    pub(crate) fn analysis_depths(&self) -> AnalysisDepths {
+        if compact_depths_supported(self.idom.len()) {
+            AnalysisDepths::Compact(self.compact_depths())
+        } else {
+            AnalysisDepths::Full(self.depths())
+        }
+    }
+
+    fn compact_depths(&self) -> Vec<u32> {
+        debug_assert!(compact_depths_supported(self.idom.len()));
+        let mut depths = vec![u32::MAX; self.idom.len()];
+
+        for index in 0..self.idom.len() {
+            if !self.reachable[index] || depths[index] != u32::MAX {
+                continue;
+            }
+
+            let start = N::from_index(index);
+            let mut current = start;
+            let mut distance = 0_u32;
+            let base = loop {
+                let current_index = current.index();
+                if depths[current_index] != u32::MAX {
+                    break depths[current_index];
+                }
+                match self.idom[current_index] {
+                    None => break 0,
+                    Some(parent) if parent == current => break 0,
+                    Some(parent) => {
+                        current = parent;
+                        distance = distance
+                            .checked_add(1)
+                            .expect("compact dominator depth exceeds u32");
+                    }
+                }
+            };
+
+            current = start;
+            let mut depth = base
+                .checked_add(distance)
+                .expect("compact dominator depth exceeds u32");
+            loop {
+                let current_index = current.index();
+                if depths[current_index] != u32::MAX {
+                    break;
+                }
+                depths[current_index] = depth;
+                match self.idom[current_index] {
+                    None => break,
+                    Some(parent) if parent == current => break,
+                    Some(parent) => {
+                        current = parent;
+                        depth -= 1;
+                    }
+                }
+            }
+        }
+
+        depths
     }
 }
 
@@ -223,25 +464,22 @@ impl<N: DenseNodeId> DominatorTree<N> {
             };
         }
 
-        let mut reverse = DirectedGraph::with_capacity(node_count + 1, exits.len());
-        let nodes: Vec<_> = (0..node_count).map(|_| reverse.add_node(())).collect();
-        let virtual_exit = reverse.add_node(());
-        for node in graph.node_ids() {
-            for successor in graph.successors(node) {
-                reverse.add_edge(nodes[successor.index()], nodes[node.index()], ());
-            }
-        }
-        for exit in exits {
-            reverse.add_edge(virtual_exit, nodes[exit.index()], ());
-        }
-
-        let reverse_dominators = DominatorTree::compute_from(&reverse, virtual_exit);
-        let idom = nodes
-            .iter()
-            .map(|&node| {
-                reverse_dominators.idom(node).and_then(|parent| {
-                    (parent != virtual_exit).then(|| N::from_index(parent.index()))
-                })
+        // Linear search wins for the tiny exit lists typical of functions;
+        // binary search crosses over around sixteen while adding no storage.
+        let binary_search_exits = exits.len() >= POST_DOMINATOR_BINARY_SEARCH_THRESHOLD
+            && exits.windows(2).all(|pair| pair[0] <= pair[1]);
+        let reverse = PostDominatorView {
+            graph,
+            exits,
+            binary_search_exits,
+        };
+        let virtual_exit = node_count;
+        let reverse_dominators = DominatorTree::<usize>::compute_from(&reverse, virtual_exit);
+        let idom = (0..node_count)
+            .map(|node| {
+                reverse_dominators
+                    .idom(node)
+                    .and_then(|parent| (parent != virtual_exit).then(|| N::from_index(parent)))
             })
             .collect();
         let reachable = reverse_dominators.reachable[..node_count].to_vec();
@@ -279,7 +517,56 @@ mod tests {
     use super::*;
     use crate::cfg::Cfg;
     use crate::edge::EdgeKind;
+    use crate::graph::directed::DirectedGraph;
     use crate::test_util::MockInst;
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    struct BoundedNode(u8);
+
+    impl DenseNodeId for BoundedNode {
+        fn from_index(index: usize) -> Self {
+            assert!(index < 4, "bounded ID cannot represent a synthetic node");
+            Self(u8::try_from(index).expect("test node index fits in u8"))
+        }
+
+        fn index(self) -> usize {
+            usize::from(self.0)
+        }
+    }
+
+    struct BoundedDiamond;
+
+    impl DirectedGraphView for BoundedDiamond {
+        type NodeId = BoundedNode;
+
+        fn node_count(&self) -> usize {
+            4
+        }
+
+        fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+            const EMPTY: &[u8] = &[];
+            const ENTRY: &[u8] = &[1, 2];
+            const TO_EXIT: &[u8] = &[3];
+            let successors = match node.0 {
+                0 => ENTRY,
+                1 | 2 => TO_EXIT,
+                _ => EMPTY,
+            };
+            successors.iter().copied().map(BoundedNode)
+        }
+
+        fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+            const EMPTY: &[u8] = &[];
+            const FROM_ENTRY: &[u8] = &[0];
+            const MERGE: &[u8] = &[1, 2];
+            let predecessors = match node.0 {
+                1 | 2 => FROM_ENTRY,
+                3 => MERGE,
+                _ => EMPTY,
+            };
+            predecessors.iter().copied().map(BoundedNode)
+        }
+    }
 
     #[test]
     fn single_block_cfg() {
@@ -359,6 +646,44 @@ mod tests {
     }
 
     #[test]
+    fn depth_tables_match_queries_when_parents_have_larger_ids() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let leaf = graph.add_node(());
+        let middle = graph.add_node(());
+        let child = graph.add_node(());
+        let root = graph.add_node(());
+        let unreachable = graph.add_node(());
+        graph.add_edge(root, child, ());
+        graph.add_edge(child, middle, ());
+        graph.add_edge(middle, leaf, ());
+
+        let dom = DominatorTree::compute_from(&graph, root);
+        let depths = dom.depths();
+        let AnalysisDepths::Compact(compact_depths) = dom.analysis_depths() else {
+            panic!("small test graph should use compact depths");
+        };
+        for node in [root, child, middle, leaf] {
+            let expected = dom.depth(node).expect("reachable node has a depth");
+            assert_eq!(depths[node.index()], expected);
+            assert_eq!(
+                compact_depths[node.index()],
+                u32::try_from(expected).expect("test depth fits u32")
+            );
+        }
+        assert_eq!(depths[unreachable.index()], usize::MAX);
+        assert_eq!(compact_depths[unreachable.index()], u32::MAX);
+    }
+
+    #[test]
+    fn compact_depth_selection_falls_back_before_the_sentinel_can_be_a_depth() {
+        let largest_compact = usize::try_from(u32::MAX).expect("u32 fits supported usize targets");
+        assert!(compact_depths_supported(largest_compact));
+        if let Some(too_large) = largest_compact.checked_add(1) {
+            assert!(!compact_depths_supported(too_large));
+        }
+    }
+
+    #[test]
     fn post_dominators_over_a_consumer_view() {
         // Diamond in consumer storage: a -> {b, c} -> d. Everything is
         // post-dominated by d; the branch is post-dominated by the merge.
@@ -382,6 +707,32 @@ mod tests {
         let empty = DominatorTree::compute_post_from(&graph, &[]);
         assert_eq!(empty.idom(a), None);
         assert_eq!(empty.depth(a), None);
+    }
+
+    #[test]
+    fn post_dominators_do_not_require_consumer_ids_for_the_virtual_exit() {
+        let post = DominatorTree::compute_post_from(&BoundedDiamond, &[BoundedNode(3)]);
+        assert_eq!(post.idom(BoundedNode(0)), Some(BoundedNode(3)));
+        assert_eq!(post.idom(BoundedNode(1)), Some(BoundedNode(3)));
+        assert_eq!(post.idom(BoundedNode(2)), Some(BoundedNode(3)));
+        assert!(post.dominates(BoundedNode(3), BoundedNode(0)));
+    }
+
+    #[test]
+    fn post_dominators_accept_large_unsorted_exit_lists() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let entry = graph.add_node(());
+        let mut exits = Vec::new();
+        for _ in 0..16 {
+            let exit = graph.add_node(());
+            graph.add_edge(entry, exit, ());
+            exits.push(exit);
+        }
+
+        let ordered = DominatorTree::compute_post_from(&graph, &exits);
+        exits.reverse();
+        let reversed = DominatorTree::compute_post_from(&graph, &exits);
+        assert_eq!(reversed, ordered);
     }
 
     #[test]

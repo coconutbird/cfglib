@@ -118,18 +118,16 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
 
     fn transfer(&self, cfg: &Cfg<I>, block: BlockId, input: &Self::Fact) -> Self::Fact {
         let mut state = input.clone();
+        let mut known: BTreeMap<I::Variable, I::Const> = state
+            .iter()
+            .filter_map(|(variable, value)| {
+                value
+                    .as_const()
+                    .map(|constant| (variable.clone(), constant.clone()))
+            })
+            .collect();
 
         for inst in cfg.block(block).instructions() {
-            // Build known-constants map for the folder.
-            let known: BTreeMap<I::Variable, I::Const> = state
-                .iter()
-                .filter_map(|(variable, value)| {
-                    value
-                        .as_const()
-                        .map(|constant| (variable.clone(), constant.clone()))
-                })
-                .collect();
-
             // Try constant folding. The folder answers for ONE def, but a
             // multi-def instruction redefined its co-defined variables too:
             // bottom every def first so no stale constant survives, then
@@ -137,12 +135,15 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
             if let Some((loc, val)) = inst.fold_constant(&known) {
                 for variable in inst.defs() {
                     state.insert(variable.clone(), ConstValue::Bottom);
+                    known.remove(variable);
                 }
-                state.insert(loc, ConstValue::Const(val));
+                state.insert(loc.clone(), ConstValue::Const(val.clone()));
+                known.insert(loc, val);
             } else {
                 // Default: all defs become Bottom (non-constant).
                 for variable in inst.defs() {
                     state.insert(variable.clone(), ConstValue::Bottom);
+                    known.remove(variable);
                 }
             }
         }

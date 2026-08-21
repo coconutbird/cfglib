@@ -4,7 +4,7 @@
 //! algorithm that iterates until the solution stabilizes.
 
 extern crate alloc;
-use alloc::collections::BTreeSet;
+use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -127,24 +127,35 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
         Direction::Backward => cfg.dfs_postorder(),
     };
 
-    let mut worklist: BTreeSet<u32> = order.iter().map(|b| b.0).collect();
+    // Keep the traversal order chosen for the problem instead of sorting it
+    // back into block-id order. Dense marks deduplicate requeues while a
+    // contiguous FIFO makes both queue operations constant time.
+    let mut queued = vec![false; n];
+    let mut worklist = VecDeque::with_capacity(order.len());
+    for block in order {
+        queued[block.index()] = true;
+        worklist.push_back(block);
+    }
 
-    while let Some(b_raw) = worklist.pop_first() {
-        let block = BlockId(b_raw);
-
+    while let Some(block) = worklist.pop_front() {
+        queued[block.index()] = false;
         match problem.direction() {
             Direction::Forward => {
                 // IN = meet of all predecessors' OUT.
                 let mut preds = cfg.predecessors(block);
                 let merged = match preds.next() {
                     None => problem.entry_fact(),
-                    Some(first) => {
-                        let mut m = block_out[first.index()].clone();
-                        for p in preds {
-                            m = problem.meet(&m, &block_out[p.index()]);
+                    Some(first) => match preds.next() {
+                        None => block_out[first.index()].clone(),
+                        Some(second) => {
+                            let mut m =
+                                problem.meet(&block_out[first.index()], &block_out[second.index()]);
+                            for p in preds {
+                                m = problem.meet(&m, &block_out[p.index()]);
+                            }
+                            m
                         }
-                        m
-                    }
+                    },
                 };
                 block_in[block.index()] = merged;
 
@@ -152,7 +163,10 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
                 if new_out != block_out[block.index()] {
                     block_out[block.index()] = new_out;
                     for s in cfg.successors(block) {
-                        worklist.insert(s.0);
+                        if !queued[s.index()] {
+                            queued[s.index()] = true;
+                            worklist.push_back(s);
+                        }
                     }
                 }
             }
@@ -161,13 +175,17 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
                 let mut succs = cfg.successors(block);
                 let merged = match succs.next() {
                     None => problem.entry_fact(),
-                    Some(first) => {
-                        let mut m = block_in[first.index()].clone();
-                        for s in succs {
-                            m = problem.meet(&m, &block_in[s.index()]);
+                    Some(first) => match succs.next() {
+                        None => block_in[first.index()].clone(),
+                        Some(second) => {
+                            let mut m =
+                                problem.meet(&block_in[first.index()], &block_in[second.index()]);
+                            for s in succs {
+                                m = problem.meet(&m, &block_in[s.index()]);
+                            }
+                            m
                         }
-                        m
-                    }
+                    },
                 };
                 block_out[block.index()] = merged;
 
@@ -175,7 +193,10 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
                 if new_in != block_in[block.index()] {
                     block_in[block.index()] = new_in;
                     for p in cfg.predecessors(block) {
-                        worklist.insert(p.0);
+                        if !queued[p.index()] {
+                            queued[p.index()] = true;
+                            worklist.push_back(p);
+                        }
                     }
                 }
             }

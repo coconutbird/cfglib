@@ -148,10 +148,24 @@ pub fn global_value_numbering<I: ValueNumberInfo>(
     let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
     let mut expr_to_vn: BTreeMap<ExprKey<I::Operation>, ValueNumber> = BTreeMap::new();
     let mut next_vn: ValueNumber = 0;
+    // Linked child lists turn the dominator-tree DFS from one full `idom`
+    // scan per block into a single linear preprocessing pass. Building in
+    // reverse node order preserves `DominatorTree::children`'s ascending
+    // child visitation.
+    let mut first_child = alloc::vec![None; cfg.num_blocks()];
+    let mut next_sibling = alloc::vec![None; cfg.num_blocks()];
+    for index in (0..cfg.num_blocks()).rev() {
+        let child = BlockId::from_index(index);
+        if let Some(parent) = dom.idom(child).filter(|&parent| parent != child) {
+            next_sibling[index] = first_child[parent.index()];
+            first_child[parent.index()] = Some(child);
+        }
+    }
 
     gvn_dfs(
         cfg,
-        dom,
+        &first_child,
+        &next_sibling,
         cfg.entry(),
         &mut variable_values,
         &mut expr_to_vn,
@@ -166,9 +180,11 @@ pub fn global_value_numbering<I: ValueNumberInfo>(
 }
 
 /// Recursive DFS over the dominator tree with push/pop scoping.
+#[allow(clippy::too_many_arguments)]
 fn gvn_dfs<I: ValueNumberInfo>(
     cfg: &Cfg<I>,
-    dom: &DominatorTree,
+    first_child: &[Option<BlockId>],
+    next_sibling: &[Option<BlockId>],
     bid: BlockId,
     variable_values: &mut BTreeMap<I::Variable, ValueNumber>,
     expr_to_vn: &mut BTreeMap<ExprKey<I::Operation>, ValueNumber>,
@@ -250,17 +266,19 @@ fn gvn_dfs<I: ValueNumberInfo>(
     blocks.insert(bid, BlockValueNumbers { inst_vn, redundant });
 
     // Recurse into dominator-tree children.
-    let children = dom.children(bid);
-    for child in children {
+    let mut child = first_child[bid.index()];
+    while let Some(next) = child {
         gvn_dfs(
             cfg,
-            dom,
-            child,
+            first_child,
+            next_sibling,
+            next,
             variable_values,
             expr_to_vn,
             next_vn,
             blocks,
         );
+        child = next_sibling[next.index()];
     }
 
     // Pop scope: undo all insertions/overwrites from this block.

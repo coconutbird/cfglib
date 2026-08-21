@@ -31,13 +31,12 @@ impl DominanceFrontiers {
         let mut frontiers = vec![BTreeSet::new(); cfg.num_blocks()];
 
         for block in cfg.blocks() {
-            let predecessors: Vec<BlockId> = cfg.predecessors(block.id()).collect();
-            if predecessors.len() < 2 {
+            if cfg.predecessor_edges(block.id()).len() < 2 {
                 continue;
             }
 
             let frontier_root = dom.idom(block.id()).unwrap_or(block.id());
-            for predecessor in predecessors {
+            for predecessor in cfg.predecessors(block.id()) {
                 let mut runner = predecessor;
                 while runner != frontier_root {
                     frontiers[runner.index()].insert(block.id());
@@ -114,36 +113,48 @@ impl<V> PhiPlacements<V> {
 #[must_use]
 pub fn place_phis<I: InstrInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PhiPlacements<I::Variable> {
     let frontiers = DominanceFrontiers::compute(cfg, dom);
-    let mut definition_blocks: BTreeMap<I::Variable, BTreeSet<BlockId>> = BTreeMap::new();
+    let mut definition_blocks: BTreeMap<I::Variable, Vec<BlockId>> = BTreeMap::new();
 
     for block in cfg.blocks() {
         for instruction in block.instructions() {
             for variable in instruction.defs() {
-                definition_blocks
-                    .entry(variable.clone())
-                    .or_default()
-                    .insert(block.id());
+                let blocks = definition_blocks.entry(variable.clone()).or_default();
+                if blocks.last().copied() != Some(block.id()) {
+                    blocks.push(block.id());
+                }
             }
         }
     }
 
     let mut placements = vec![Vec::new(); cfg.num_blocks()];
+    let mut has_phi = vec![0_u32; cfg.num_blocks()];
+    let mut visited = vec![0_u32; cfg.num_blocks()];
+    let mut epoch = 0_u32;
     for (variable, definitions) in definition_blocks {
-        let mut worklist: Vec<BlockId> = definitions.iter().copied().collect();
-        let mut has_phi = BTreeSet::new();
-        let mut visited = definitions;
+        epoch = epoch.wrapping_add(1);
+        if epoch == 0 {
+            has_phi.fill(0);
+            visited.fill(0);
+            epoch = 1;
+        }
+        for &block in &definitions {
+            visited[block.index()] = epoch;
+        }
+        let mut worklist = definitions;
 
         while let Some(block) = worklist.pop() {
             for &frontier_block in frontiers.frontier(block) {
-                if !has_phi.insert(frontier_block) {
+                if has_phi[frontier_block.index()] == epoch {
                     continue;
                 }
+                has_phi[frontier_block.index()] = epoch;
 
                 placements[frontier_block.index()].push(PhiPlacement {
                     variable: variable.clone(),
                     predecessors: cfg.predecessors(frontier_block).collect(),
                 });
-                if visited.insert(frontier_block) {
+                if visited[frontier_block.index()] != epoch {
+                    visited[frontier_block.index()] = epoch;
                     worklist.push(frontier_block);
                 }
             }
@@ -389,7 +400,20 @@ fn rename_drafts<I: InstrInfo>(
     max_versions: &mut BTreeMap<I::Variable, SsaVersion>,
 ) {
     let mut stacks = BTreeMap::new();
-    let mut visited = BTreeSet::new();
+    let mut visited = alloc::vec![false; cfg.num_blocks()];
+    // Compact linked child lists avoid scanning the complete dominator table
+    // for every entered block. Iterating children by increasing id builds each
+    // parent's list in descending order, exactly the order the event stack
+    // needs to preserve the previous ascending DFS visitation.
+    let mut first_child = alloc::vec![None; cfg.num_blocks()];
+    let mut next_sibling = alloc::vec![None; cfg.num_blocks()];
+    for (index, sibling) in next_sibling.iter_mut().enumerate() {
+        let child = BlockId::from_index(index);
+        if let Some(parent) = dom.idom(child).filter(|&parent| parent != child) {
+            *sibling = first_child[parent.index()];
+            first_child[parent.index()] = Some(child);
+        }
+    }
     let mut roots = vec![cfg.entry()];
     roots.extend(
         cfg.blocks()
@@ -402,12 +426,15 @@ fn rename_drafts<I: InstrInfo>(
         let mut events = vec![RenameEvent::Enter(root)];
         while let Some(event) = events.pop() {
             match event {
-                RenameEvent::Enter(block) if visited.insert(block) => {
+                RenameEvent::Enter(block) if !visited[block.index()] => {
+                    visited[block.index()] = true;
                     let pushed = rename_block(cfg, block, drafts, &mut stacks, max_versions);
                     events.push(RenameEvent::Exit(pushed));
-                    let mut children = dom.children(block);
-                    children.reverse();
-                    events.extend(children.into_iter().map(RenameEvent::Enter));
+                    let mut child = first_child[block.index()];
+                    while let Some(next) = child {
+                        events.push(RenameEvent::Enter(next));
+                        child = next_sibling[next.index()];
+                    }
                 }
                 RenameEvent::Enter(_) => {}
                 RenameEvent::Exit(pushed_variables) => {
