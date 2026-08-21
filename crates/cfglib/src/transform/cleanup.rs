@@ -77,11 +77,7 @@ pub fn merge_blocks<I>(cfg: &mut Cfg<I>) -> usize {
                 continue;
             }
             // Merge: append target's instructions to id.
-            let target_insts: Vec<I> = cfg
-                .block_mut(target)
-                .instructions_vec_mut()
-                .drain(..)
-                .collect();
+            let target_insts = core::mem::take(cfg.block_mut(target).instructions_vec_mut());
             cfg.block_mut(id)
                 .instructions_vec_mut()
                 .extend(target_insts);
