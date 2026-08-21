@@ -16,7 +16,7 @@ use crate::edge::EdgeKind;
 ///
 /// Unreachable blocks have their instructions cleared and all
 /// incident edges removed, turning them into dead slots in the
-/// arena. Returns the number of blocks made unreachable.
+/// arena. Returns the number of unreachable blocks cleaned up.
 pub fn remove_unreachable<I>(cfg: &mut Cfg<I>) -> usize {
     let reachable = cfg.dfs_preorder();
     let n = cfg.num_blocks();
@@ -54,8 +54,10 @@ pub fn remove_unreachable<I>(cfg: &mut Cfg<I>) -> usize {
 }
 
 /// Merge a block with its sole successor when:
-/// - the block has exactly one successor, and
-/// - that successor has exactly one predecessor.
+/// - the block has exactly one outgoing edge, and
+/// - that edge's target has exactly one incoming edge.
+///
+/// The entry block is never consumed as a merge target.
 ///
 /// Returns the number of merges performed.
 pub fn merge_blocks<I>(cfg: &mut Cfg<I>) -> usize {
@@ -65,8 +67,8 @@ pub fn merge_blocks<I>(cfg: &mut Cfg<I>) -> usize {
         while let [connecting] = cfg.successor_edges(id) {
             let connecting = *connecting;
             let target = cfg.edge(connecting).target();
-            if target == id {
-                break; // self-loop
+            if target == id || target == cfg.entry() {
+                break;
             }
             if cfg.predecessor_edges(target).len() != 1 {
                 break;
@@ -89,8 +91,8 @@ pub fn merge_blocks<I>(cfg: &mut Cfg<I>) -> usize {
     merged
 }
 
-/// Remove empty blocks that have a single unconditional/fallthrough
-/// successor by redirecting predecessors to the successor.
+/// Bypass empty blocks that have a single unconditional/fallthrough outgoing
+/// edge by redirecting their incoming edges to that edge's target.
 ///
 /// Returns the number of blocks bypassed.
 pub fn remove_empty_blocks<I>(cfg: &mut Cfg<I>) -> usize {
@@ -184,5 +186,35 @@ mod tests {
         assert_eq!(cfg.edge(back).kind(), EdgeKind::Back);
         assert_eq!(cfg.edge(back).weight(), Some(0.875));
         assert_eq!(cfg.num_edges(), 3);
+    }
+
+    #[test]
+    fn merge_never_consumes_the_entry_block() {
+        let mut cfg = Cfg::<u32>::new();
+        let entry = cfg.entry();
+        let back_edge_source = cfg.new_block();
+        let branch = cfg.new_block();
+        let exit = cfg.new_block();
+        for (index, block) in [entry, back_edge_source, branch, exit]
+            .into_iter()
+            .enumerate()
+        {
+            cfg.block_mut(block)
+                .push(u32::try_from(index).expect("test block index fits in u32"));
+        }
+        let to_back_edge = cfg.add_edge(entry, back_edge_source, EdgeKind::ConditionalTrue);
+        let to_branch = cfg.add_edge(entry, branch, EdgeKind::ConditionalFalse);
+        let back = cfg.add_edge(back_edge_source, entry, EdgeKind::Back);
+        cfg.add_edge(branch, exit, EdgeKind::Fallthrough);
+
+        assert_eq!(merge_blocks(&mut cfg), 1);
+
+        assert_eq!(cfg.block(entry).instructions(), &[0]);
+        assert_eq!(cfg.successor_edges(entry), &[to_back_edge, to_branch]);
+        assert_eq!(cfg.edge(back).source(), back_edge_source);
+        assert_eq!(cfg.edge(back).target(), entry);
+        assert_eq!(cfg.block(branch).instructions(), &[2, 3]);
+        assert_eq!(cfg.successor_edges(branch).len(), 0);
+        assert!(crate::verify(&cfg).is_ok());
     }
 }

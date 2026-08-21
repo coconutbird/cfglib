@@ -43,6 +43,87 @@ pub(crate) enum AnalysisDepths {
     Full(Vec<usize>),
 }
 
+/// Integer operations shared by full and compact dominator depth tables.
+///
+/// This stays private so the two storage widths are implementation details;
+/// the generic depth cores monomorphise to the same integer operations as the
+/// former hand-written versions.
+trait DepthWord: Copy + Ord {
+    const UNREACHABLE: Self;
+    const ZERO: Self;
+
+    fn add(self, other: Self) -> Self;
+    fn next(self) -> Self;
+    fn previous(self) -> Self;
+}
+
+impl DepthWord for usize {
+    const UNREACHABLE: Self = usize::MAX;
+    const ZERO: Self = 0;
+
+    fn add(self, other: Self) -> Self {
+        self + other
+    }
+
+    fn next(self) -> Self {
+        self + 1
+    }
+
+    fn previous(self) -> Self {
+        self - 1
+    }
+}
+
+impl DepthWord for u32 {
+    const UNREACHABLE: Self = u32::MAX;
+    const ZERO: Self = 0;
+
+    fn add(self, other: Self) -> Self {
+        self.checked_add(other)
+            .expect("compact dominator depth exceeds u32")
+    }
+
+    fn next(self) -> Self {
+        self.checked_add(1)
+            .expect("compact dominator depth exceeds u32")
+    }
+
+    fn previous(self) -> Self {
+        self - 1
+    }
+}
+
+/// Order of siblings in a compact dominator-child linked list.
+#[derive(Clone, Copy)]
+pub(crate) enum DominatorChildOrder {
+    /// Following links visits children by increasing dense node id.
+    Ascending,
+    /// Following links visits children by decreasing dense node id.
+    Descending,
+}
+
+/// Compact, transient child adjacency for whole-tree consumers.
+///
+/// Keeping this separate from [`DominatorTree`] avoids permanently increasing
+/// every tree's memory footprint for the few passes that need repeated child
+/// traversal.
+pub(crate) struct DominatorChildLinks<N> {
+    first_child: Vec<Option<N>>,
+    next_sibling: Vec<Option<N>>,
+}
+
+impl<N: DenseNodeId> DominatorChildLinks<N> {
+    /// First child of `parent` in the selected order.
+    pub(crate) fn first_child(&self, parent: N) -> Option<N> {
+        self.first_child[parent.index()]
+    }
+
+    /// Next sibling after `child` in the selected order.
+    pub(crate) fn next_sibling(&self, child: N) -> Option<N> {
+        self.next_sibling[child.index()]
+    }
+}
+
 fn compact_depths_supported(node_count: usize) -> bool {
     u32::try_from(node_count).is_ok()
 }
@@ -54,12 +135,23 @@ fn compact_depths_supported(node_count: usize) -> bool {
 struct PostDominatorView<'g, G: DirectedGraphView> {
     graph: &'g G,
     exits: &'g [G::NodeId],
-    /// Large ordered exit lists use allocation-free binary membership;
-    /// arbitrary caller order retains the original linear lookup semantics.
+    /// Small exit lists use linear multiplicity counts; large lists are
+    /// normalized before constructing the view and use binary search.
     binary_search_exits: bool,
 }
 
 const POST_DOMINATOR_BINARY_SEARCH_THRESHOLD: usize = 16;
+
+impl<G: DirectedGraphView> PostDominatorView<'_, G> {
+    #[inline]
+    fn exit_multiplicity(&self, node: G::NodeId) -> usize {
+        if self.binary_search_exits {
+            usize::from(self.exits.binary_search(&node).is_ok())
+        } else {
+            self.exits.iter().filter(|&&exit| exit == node).count()
+        }
+    }
+}
 
 impl<G: DirectedGraphView> DirectedGraphView for PostDominatorView<'_, G> {
     // The virtual exit is private implementation state.  Use `usize` for the
@@ -75,11 +167,12 @@ impl<G: DirectedGraphView> DirectedGraphView for PostDominatorView<'_, G> {
         let original_count = self.graph.node_count();
         let is_virtual = node == original_count;
         let original = (node < original_count).then(|| G::NodeId::from_index(node));
-        self.exits
-            .iter()
+        is_virtual
+            .then_some(self.exits)
+            .into_iter()
+            .flatten()
             .copied()
             .map(DenseNodeId::index)
-            .filter(move |_| is_virtual)
             .chain(
                 original
                     .into_iter()
@@ -90,19 +183,11 @@ impl<G: DirectedGraphView> DirectedGraphView for PostDominatorView<'_, G> {
     fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
         let original_count = self.graph.node_count();
         let original = (node < original_count).then(|| G::NodeId::from_index(node));
-        let is_exit = node < original_count
-            && if self.binary_search_exits {
-                self.exits
-                    .binary_search(&G::NodeId::from_index(node))
-                    .is_ok()
-            } else {
-                self.exits.contains(&G::NodeId::from_index(node))
-            };
-        let from_virtual = is_exit.then_some(original_count);
+        let exit_multiplicity = original.map_or(0, |node| self.exit_multiplicity(node));
         original
             .into_iter()
             .flat_map(move |node| self.graph.successors(node).map(DenseNodeId::index))
-            .chain(from_virtual)
+            .chain(core::iter::repeat_n(original_count, exit_multiplicity))
     }
 }
 
@@ -230,7 +315,7 @@ impl<N: DenseNodeId> DominatorTree<N> {
     /// Whole-graph passes call dominance once per edge; rejecting edges that
     /// point deeper into the tree before walking any parents avoids quadratic
     /// behavior on long acyclic chains while keeping the tree itself compact.
-    pub(crate) fn dominates_with_depths(&self, dominator: N, node: N, depths: &[usize]) -> bool {
+    fn dominates_in_depths<D: DepthWord>(&self, dominator: N, node: N, depths: &[D]) -> bool {
         debug_assert_eq!(depths.len(), self.idom.len());
         if dominator == node {
             return true;
@@ -238,8 +323,8 @@ impl<N: DenseNodeId> DominatorTree<N> {
 
         let dominator_depth = depths[dominator.index()];
         let mut node_depth = depths[node.index()];
-        if dominator_depth == usize::MAX
-            || node_depth == usize::MAX
+        if dominator_depth == D::UNREACHABLE
+            || node_depth == D::UNREACHABLE
             || dominator_depth >= node_depth
         {
             return false;
@@ -254,7 +339,7 @@ impl<N: DenseNodeId> DominatorTree<N> {
                 return false;
             }
             current = parent;
-            node_depth -= 1;
+            node_depth = node_depth.previous();
         }
         current == dominator
     }
@@ -266,36 +351,47 @@ impl<N: DenseNodeId> DominatorTree<N> {
         node: N,
         depths: &AnalysisDepths,
     ) -> bool {
-        let depths = match depths {
-            AnalysisDepths::Compact(depths) => depths,
-            AnalysisDepths::Full(depths) => {
-                return self.dominates_with_depths(dominator, node, depths);
+        match depths {
+            AnalysisDepths::Compact(depths) => self.dominates_in_depths(dominator, node, depths),
+            AnalysisDepths::Full(depths) => self.dominates_in_depths(dominator, node, depths),
+        }
+    }
+
+    /// Build compact child adjacency in a caller-selected sibling order.
+    pub(crate) fn child_links(&self, order: DominatorChildOrder) -> DominatorChildLinks<N> {
+        let mut first_child = vec![None; self.idom.len()];
+        let mut next_sibling = vec![None; self.idom.len()];
+
+        match order {
+            DominatorChildOrder::Ascending => {
+                for index in (0..self.idom.len()).rev() {
+                    self.prepend_child(index, &mut first_child, &mut next_sibling);
+                }
             }
-        };
-
-        debug_assert_eq!(depths.len(), self.idom.len());
-        if dominator == node {
-            return true;
-        }
-
-        let dominator_depth = depths[dominator.index()];
-        let mut node_depth = depths[node.index()];
-        if dominator_depth == u32::MAX || node_depth == u32::MAX || dominator_depth >= node_depth {
-            return false;
-        }
-
-        let mut current = node;
-        while node_depth > dominator_depth {
-            let Some(parent) = self.idom(current) else {
-                return false;
-            };
-            if parent == current {
-                return false;
+            DominatorChildOrder::Descending => {
+                for index in 0..self.idom.len() {
+                    self.prepend_child(index, &mut first_child, &mut next_sibling);
+                }
             }
-            current = parent;
-            node_depth -= 1;
         }
-        current == dominator
+
+        DominatorChildLinks {
+            first_child,
+            next_sibling,
+        }
+    }
+
+    fn prepend_child(
+        &self,
+        index: usize,
+        first_child: &mut [Option<N>],
+        next_sibling: &mut [Option<N>],
+    ) {
+        let child = N::from_index(index);
+        if let Some(parent) = self.idom(child).filter(|&parent| parent != child) {
+            next_sibling[index] = first_child[parent.index()];
+            first_child[parent.index()] = Some(child);
+        }
     }
 
     /// Return nodes whose immediate dominator is `node`.
@@ -330,38 +426,44 @@ impl<N: DenseNodeId> DominatorTree<N> {
     }
 
     /// Return depths indexed by dense node index.
+    ///
+    /// Unreachable nodes have the sentinel depth [`usize::MAX`].
     #[must_use]
     pub fn depths(&self) -> Vec<usize> {
-        let mut depths = vec![usize::MAX; self.idom.len()];
+        self.depths_in::<usize>()
+    }
+
+    fn depths_in<D: DepthWord>(&self) -> Vec<D> {
+        let mut depths = vec![D::UNREACHABLE; self.idom.len()];
 
         for index in 0..self.idom.len() {
-            if !self.reachable[index] || depths[index] != usize::MAX {
+            if !self.reachable[index] || depths[index] != D::UNREACHABLE {
                 continue;
             }
 
             let start = N::from_index(index);
             let mut current = start;
-            let mut distance = 0_usize;
+            let mut distance = D::ZERO;
             let base = loop {
                 let current_index = current.index();
-                if depths[current_index] != usize::MAX {
+                if depths[current_index] != D::UNREACHABLE {
                     break depths[current_index];
                 }
                 match self.idom[current_index] {
-                    None => break 0,
-                    Some(parent) if parent == current => break 0,
+                    None => break D::ZERO,
+                    Some(parent) if parent == current => break D::ZERO,
                     Some(parent) => {
                         current = parent;
-                        distance += 1;
+                        distance = distance.next();
                     }
                 }
             };
 
             current = start;
-            let mut depth = base + distance;
+            let mut depth = base.add(distance);
             loop {
                 let current_index = current.index();
-                if depths[current_index] != usize::MAX {
+                if depths[current_index] != D::UNREACHABLE {
                     break;
                 }
                 depths[current_index] = depth;
@@ -370,7 +472,7 @@ impl<N: DenseNodeId> DominatorTree<N> {
                     Some(parent) if parent == current => break,
                     Some(parent) => {
                         current = parent;
-                        depth -= 1;
+                        depth = depth.previous();
                     }
                 }
             }
@@ -390,55 +492,7 @@ impl<N: DenseNodeId> DominatorTree<N> {
 
     fn compact_depths(&self) -> Vec<u32> {
         debug_assert!(compact_depths_supported(self.idom.len()));
-        let mut depths = vec![u32::MAX; self.idom.len()];
-
-        for index in 0..self.idom.len() {
-            if !self.reachable[index] || depths[index] != u32::MAX {
-                continue;
-            }
-
-            let start = N::from_index(index);
-            let mut current = start;
-            let mut distance = 0_u32;
-            let base = loop {
-                let current_index = current.index();
-                if depths[current_index] != u32::MAX {
-                    break depths[current_index];
-                }
-                match self.idom[current_index] {
-                    None => break 0,
-                    Some(parent) if parent == current => break 0,
-                    Some(parent) => {
-                        current = parent;
-                        distance = distance
-                            .checked_add(1)
-                            .expect("compact dominator depth exceeds u32");
-                    }
-                }
-            };
-
-            current = start;
-            let mut depth = base
-                .checked_add(distance)
-                .expect("compact dominator depth exceeds u32");
-            loop {
-                let current_index = current.index();
-                if depths[current_index] != u32::MAX {
-                    break;
-                }
-                depths[current_index] = depth;
-                match self.idom[current_index] {
-                    None => break,
-                    Some(parent) if parent == current => break,
-                    Some(parent) => {
-                        current = parent;
-                        depth -= 1;
-                    }
-                }
-            }
-        }
-
-        depths
+        self.depths_in::<u32>()
     }
 }
 
@@ -451,6 +505,11 @@ impl<N: DenseNodeId> DominatorTree<N> {
     /// algorithm on the reverse graph from that virtual exit — the
     /// multi-exit story consumers previously had to build by hand. An
     /// empty `exits` yields a tree with nothing reachable.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the graph is nonempty and an exit's dense index is outside
+    /// the graph.
     #[must_use]
     pub fn compute_post_from<G>(graph: &G, exits: &[N]) -> Self
     where
@@ -463,11 +522,28 @@ impl<N: DenseNodeId> DominatorTree<N> {
                 reachable: Vec::new(),
             };
         }
+        assert!(
+            exits.iter().all(|exit| exit.index() < node_count),
+            "post-dominator exit index is outside the graph"
+        );
 
-        // Linear search wins for the tiny exit lists typical of functions;
-        // binary search crosses over around sixteen while adding no storage.
-        let binary_search_exits = exits.len() >= POST_DOMINATOR_BINARY_SEARCH_THRESHOLD
-            && exits.windows(2).all(|pair| pair[0] <= pair[1]);
+        // Linear counting wins for tiny exit lists. Sort and deduplicate larger
+        // arbitrary lists once: duplicate virtual edges cannot change a
+        // dominator tree, and normalization keeps repeated reverse-adjacency
+        // queries O(log E) instead of rescanning all E exits for every node.
+        let sorted_exits = if exits.len() >= POST_DOMINATOR_BINARY_SEARCH_THRESHOLD
+            && (!exits.windows(2).all(|pair| pair[0] <= pair[1])
+                || exits.windows(2).any(|pair| pair[0] == pair[1]))
+        {
+            let mut sorted = exits.to_vec();
+            sorted.sort_unstable();
+            sorted.dedup();
+            Some(sorted)
+        } else {
+            None
+        };
+        let exits = sorted_exits.as_deref().unwrap_or(exits);
+        let binary_search_exits = exits.len() >= POST_DOMINATOR_BINARY_SEARCH_THRESHOLD;
         let reverse = PostDominatorView {
             graph,
             exits,
@@ -517,7 +593,7 @@ mod tests {
     use super::*;
     use crate::cfg::Cfg;
     use crate::edge::EdgeKind;
-    use crate::graph::directed::DirectedGraph;
+    use crate::graph::directed::{DirectedGraph, NodeId};
     use crate::test_util::MockInst;
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -574,7 +650,7 @@ mod tests {
         let dom = DominatorTree::compute(&cfg);
         assert_eq!(dom.idom(cfg.entry()), None);
         assert!(dom.dominates(cfg.entry(), cfg.entry()));
-        assert!(dom.children(cfg.entry()).is_empty());
+        assert_eq!(dom.children(cfg.entry()).len(), 0);
     }
 
     #[test]
@@ -675,6 +751,65 @@ mod tests {
     }
 
     #[test]
+    fn full_analysis_depths_match_public_dominance_queries() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let root = graph.add_node(());
+        let left = graph.add_node(());
+        let right = graph.add_node(());
+        let merge = graph.add_node(());
+        let unreachable = graph.add_node(());
+        graph.add_edge(root, left, ());
+        graph.add_edge(root, right, ());
+        graph.add_edge(left, merge, ());
+        graph.add_edge(right, merge, ());
+
+        let dom = DominatorTree::compute_from(&graph, root);
+        let full_depths = AnalysisDepths::Full(dom.depths());
+        let nodes = [root, left, right, merge, unreachable];
+        for dominator in nodes {
+            for node in nodes {
+                assert_eq!(
+                    dom.dominates_with_analysis_depths(dominator, node, &full_depths),
+                    dom.dominates(dominator, node),
+                    "mismatch for {dominator:?} dominating {node:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn child_links_follow_the_selected_sibling_order() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let root = graph.add_node(());
+        let first = graph.add_node(());
+        let second = graph.add_node(());
+        let grandchild = graph.add_node(());
+        let unreachable = graph.add_node(());
+        graph.add_edge(root, first, ());
+        graph.add_edge(root, second, ());
+        graph.add_edge(first, grandchild, ());
+
+        let dom = DominatorTree::compute_from(&graph, root);
+        let ascending = dom.child_links(DominatorChildOrder::Ascending);
+        let descending = dom.child_links(DominatorChildOrder::Descending);
+
+        let collect = |links: &DominatorChildLinks<NodeId>, parent| {
+            let mut children = Vec::new();
+            let mut child = links.first_child(parent);
+            while let Some(next) = child {
+                children.push(next);
+                child = links.next_sibling(next);
+            }
+            children
+        };
+
+        assert_eq!(collect(&ascending, root), vec![first, second]);
+        assert_eq!(collect(&descending, root), vec![second, first]);
+        assert_eq!(collect(&ascending, first), vec![grandchild]);
+        assert_eq!(collect(&ascending, unreachable).len(), 0);
+    }
+
+    #[test]
     fn compact_depth_selection_falls_back_before_the_sentinel_can_be_a_depth() {
         let largest_compact = usize::try_from(u32::MAX).expect("u32 fits supported usize targets");
         assert!(compact_depths_supported(largest_compact));
@@ -707,6 +842,40 @@ mod tests {
         let empty = DominatorTree::compute_post_from(&graph, &[]);
         assert_eq!(empty.idom(a), None);
         assert_eq!(empty.depth(a), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "post-dominator exit index is outside the graph")]
+    fn post_dominators_reject_an_exit_outside_the_graph() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        graph.add_node(());
+
+        let outside = NodeId::from_raw(
+            u32::try_from(graph.node_count()).expect("test graph size fits in u32"),
+        );
+        let _ = DominatorTree::compute_post_from(&graph, &[outside]);
+    }
+
+    #[test]
+    fn post_dominator_view_preserves_duplicate_exit_edges() {
+        let mut graph = DirectedGraph::<(), ()>::new();
+        let exit = graph.add_node(());
+        let exits = [exit, exit];
+        let reverse = PostDominatorView {
+            graph: &graph,
+            exits: &exits,
+            binary_search_exits: false,
+        };
+        let virtual_exit = graph.node_count();
+
+        assert_eq!(
+            reverse.successors(virtual_exit).collect::<Vec<_>>(),
+            vec![exit.index(), exit.index()]
+        );
+        assert_eq!(
+            reverse.predecessors(exit.index()).collect::<Vec<_>>(),
+            vec![virtual_exit, virtual_exit]
+        );
     }
 
     #[test]

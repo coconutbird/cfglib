@@ -4,7 +4,7 @@
 //! algorithm that iterates until the solution stabilizes.
 
 extern crate alloc;
-use alloc::collections::VecDeque;
+use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 
@@ -15,10 +15,8 @@ use crate::cfg::Cfg;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Forward: information flows from predecessors to successors.
-    /// Iteration order: reverse postorder.
     Forward,
     /// Backward: information flows from successors to predecessors.
-    /// Iteration order: postorder.
     Backward,
 }
 
@@ -26,6 +24,8 @@ pub enum Direction {
 ///
 /// `F` is the flow fact type (e.g. `BTreeSet<DefSite>` for reaching
 /// definitions, or `BTreeSet<I::Variable>` for liveness).
+/// Termination requires `meet` and `transfer` to be monotone over a
+/// finite-height fact lattice.
 pub trait Problem<I> {
     /// The flow fact (lattice element) type.
     type Fact: Clone + PartialEq;
@@ -36,7 +36,7 @@ pub trait Problem<I> {
     /// Initial (bottom) value for each block.
     fn bottom(&self) -> Self::Fact;
 
-    /// Initial value for the entry (forward) or exit (backward) block.
+    /// Initial value for the entry (forward) or each exit (backward) block.
     fn entry_fact(&self) -> Self::Fact;
 
     /// Meet/join operator: merge information from multiple paths.
@@ -121,41 +121,33 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
         }
     }
 
-    // Build worklist in appropriate traversal order.
-    let order = match problem.direction() {
-        Direction::Forward => cfg.reverse_postorder(),
-        Direction::Backward => cfg.dfs_postorder(),
+    // Forward solving ignores blocks unreachable from the entry. Backward
+    // solving starts from every allocated block because every exit receives
+    // the boundary fact, including exits in disconnected components.
+    let mut worklist: BTreeSet<u32> = match problem.direction() {
+        Direction::Forward => cfg
+            .dfs_preorder()
+            .into_iter()
+            .map(|block| block.0)
+            .collect(),
+        Direction::Backward => cfg.blocks().iter().map(|block| block.id().0).collect(),
     };
 
-    // Keep the traversal order chosen for the problem instead of sorting it
-    // back into block-id order. Dense marks deduplicate requeues while a
-    // contiguous FIFO makes both queue operations constant time.
-    let mut queued = vec![false; n];
-    let mut worklist = VecDeque::with_capacity(order.len());
-    for block in order {
-        queued[block.index()] = true;
-        worklist.push_back(block);
-    }
-
-    while let Some(block) = worklist.pop_front() {
-        queued[block.index()] = false;
+    while let Some(raw_block) = worklist.pop_first() {
+        let block = BlockId(raw_block);
         match problem.direction() {
             Direction::Forward => {
                 // IN = meet of all predecessors' OUT.
                 let mut preds = cfg.predecessors(block);
                 let merged = match preds.next() {
                     None => problem.entry_fact(),
-                    Some(first) => match preds.next() {
-                        None => block_out[first.index()].clone(),
-                        Some(second) => {
-                            let mut m =
-                                problem.meet(&block_out[first.index()], &block_out[second.index()]);
-                            for p in preds {
-                                m = problem.meet(&m, &block_out[p.index()]);
-                            }
-                            m
+                    Some(first) => {
+                        let mut m = block_out[first.index()].clone();
+                        for p in preds {
+                            m = problem.meet(&m, &block_out[p.index()]);
                         }
-                    },
+                        m
+                    }
                 };
                 block_in[block.index()] = merged;
 
@@ -163,10 +155,7 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
                 if new_out != block_out[block.index()] {
                     block_out[block.index()] = new_out;
                     for s in cfg.successors(block) {
-                        if !queued[s.index()] {
-                            queued[s.index()] = true;
-                            worklist.push_back(s);
-                        }
+                        worklist.insert(s.0);
                     }
                 }
             }
@@ -175,17 +164,13 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
                 let mut succs = cfg.successors(block);
                 let merged = match succs.next() {
                     None => problem.entry_fact(),
-                    Some(first) => match succs.next() {
-                        None => block_in[first.index()].clone(),
-                        Some(second) => {
-                            let mut m =
-                                problem.meet(&block_in[first.index()], &block_in[second.index()]);
-                            for s in succs {
-                                m = problem.meet(&m, &block_in[s.index()]);
-                            }
-                            m
+                    Some(first) => {
+                        let mut m = block_in[first.index()].clone();
+                        for s in succs {
+                            m = problem.meet(&m, &block_in[s.index()]);
                         }
-                    },
+                        m
+                    }
                 };
                 block_out[block.index()] = merged;
 
@@ -193,10 +178,7 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
                 if new_in != block_in[block.index()] {
                     block_in[block.index()] = new_in;
                     for p in cfg.predecessors(block) {
-                        if !queued[p.index()] {
-                            queued[p.index()] = true;
-                            worklist.push_back(p);
-                        }
+                        worklist.insert(p.0);
                     }
                 }
             }
@@ -206,5 +188,54 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
     FixpointResult {
         block_in,
         block_out,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edge::EdgeKind;
+
+    #[test]
+    fn backward_solver_propagates_through_disconnected_components() {
+        struct BackwardReachability;
+
+        impl Problem<()> for BackwardReachability {
+            type Fact = bool;
+
+            fn direction(&self) -> Direction {
+                Direction::Backward
+            }
+
+            fn bottom(&self) -> Self::Fact {
+                false
+            }
+
+            fn entry_fact(&self) -> Self::Fact {
+                true
+            }
+
+            fn meet(&self, a: &Self::Fact, b: &Self::Fact) -> Self::Fact {
+                *a || *b
+            }
+
+            fn transfer(&self, _cfg: &Cfg<()>, _block: BlockId, input: &Self::Fact) -> Self::Fact {
+                *input
+            }
+        }
+
+        let mut cfg = Cfg::new();
+        let disconnected_predecessor = cfg.new_block();
+        let disconnected_exit = cfg.new_block();
+        cfg.add_edge(
+            disconnected_predecessor,
+            disconnected_exit,
+            EdgeKind::Fallthrough,
+        );
+        let result = solve(&cfg, &BackwardReachability);
+        assert!(*result.fact_in(disconnected_predecessor));
+        assert!(*result.fact_out(disconnected_predecessor));
+        assert!(*result.fact_in(disconnected_exit));
+        assert!(*result.fact_out(disconnected_exit));
     }
 }

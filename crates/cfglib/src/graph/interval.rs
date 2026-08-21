@@ -1,10 +1,9 @@
-//! Interval analysis via T1–T2 graph transformations.
+//! First-level Allen-Cocke interval analysis.
 //!
-//! Collapses the CFG into a hierarchy of **intervals** — maximal
-//! single-entry regions where the header dominates all other blocks.
-//! This provides an alternative structural decomposition to the
-//! dominator tree, useful for detecting loops, reducibility, and
-//! for region-based analyses.
+//! Partitions the source graph into **intervals** — maximal single-entry
+//! regions where the header dominates all other blocks. The current analysis
+//! computes only this first partition; it does not construct or iterate over
+//! successively derived graphs.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
@@ -15,7 +14,7 @@ use smallvec::SmallVec;
 use crate::block::BlockId;
 use crate::graph::view::{DenseNodeId, RootedGraphView};
 
-/// An interval in the derived graph, over node identity `N`.
+/// One interval in the source graph's first-level partition.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Interval<N = BlockId> {
     /// The header node — sole entry point of the interval.
@@ -24,26 +23,35 @@ pub struct Interval<N = BlockId> {
     pub blocks: BTreeSet<N>,
 }
 
-/// Result of interval analysis: a sequence of derived graphs.
+/// Result of the source graph's first-level interval analysis.
 ///
-/// `levels[0]` contains the intervals of the original CFG,
-/// `levels[1]` contains the intervals of the first derived graph,
-/// and so on. If the sequence reduces to a single interval at
-/// the top level, the CFG is reducible.
+/// The public `levels` shape is retained for compatibility, but the current
+/// implementation always populates only `levels[0]`, the intervals of the
+/// original graph. It does not compute subsequent derived-graph levels.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IntervalAnalysis<N = BlockId> {
-    /// Successive derived graphs, each containing intervals.
+    /// Interval partitions by level; currently only the source partition at
+    /// `levels[0]` is populated.
     pub levels: Vec<Vec<Interval<N>>>,
-    /// Whether the graph reduced to a single node (reducible).
+    /// Whether the first partition contains at most one interval.
+    ///
+    /// This is sufficient to establish reducibility, but `false` is not a
+    /// complete irreducibility result because derived levels are not computed.
+    /// Use [`is_reducible`](crate::graph::structure::is_reducible) for the full
+    /// graph property.
     pub is_reducible: bool,
 }
 
-/// Compute intervals of a CFG (the first derived graph).
+/// Compute the source graph's first-level intervals.
 ///
 /// Allen & Cocke interval construction: starting from the entry,
 /// repeatedly absorb successor blocks whose only header-reaching
 /// predecessor is within the current interval.
 fn compute_intervals_from_graph<G: RootedGraphView>(graph: &G) -> Vec<Interval<G::NodeId>> {
+    if graph.node_count() == 0 {
+        return Vec::new();
+    }
+
     let max_predecessors = graph
         .node_ids()
         .map(|node| graph.predecessors(node).count())
@@ -221,8 +229,11 @@ where
 
 /// Perform interval analysis on a rooted graph view.
 ///
-/// Iteratively computes derived graphs until either a single interval
-/// remains (reducible) or no further reduction is possible (irreducible).
+/// Computes the Allen-Cocke interval partition of the source graph. The
+/// returned [`IntervalAnalysis`] contains only this first level; no derived
+/// graph iteration is performed. Consequently, `is_reducible == false` means
+/// only that the first partition did not collapse to one interval, not that the
+/// graph has been proven irreducible.
 ///
 /// # Examples
 ///
@@ -244,9 +255,8 @@ pub fn interval_analysis<G: RootedGraphView>(graph: &G) -> IntervalAnalysis<G::N
     let num_intervals = intervals.len();
     levels.push(intervals);
 
-    // A single interval means the CFG is trivially reducible.
-    // Multi-level derived-graph iteration can be added when needed;
-    // for now use `is_reducible()` from structure.rs for the full check.
+    // A single first-level interval is sufficient to establish reducibility.
+    // Use `structure::is_reducible` when a complete Boolean answer is needed.
     IntervalAnalysis {
         is_reducible: num_intervals <= 1,
         levels,
@@ -305,6 +315,17 @@ mod tests {
     }
 
     #[test]
+    fn empty_view_has_one_empty_level() {
+        let graph = DirectedGraph::<(), ()>::new();
+        let view = Rooted::new(&graph, NodeId::from_index(0));
+
+        let result = interval_analysis(&view);
+
+        assert_eq!(result.levels, vec![Vec::new()]);
+        assert!(result.is_reducible);
+    }
+
+    #[test]
     fn linear_cfg_is_one_interval() {
         let cfg = CfgBuilder::build(vec![ff("a"), ff("b"), ff("c")]).unwrap();
         let result = interval_analysis(&cfg);
@@ -330,7 +351,7 @@ mod tests {
 
         let result = interval_analysis(&cfg);
         assert_eq!(result.levels.len(), 1);
-        assert!(!result.levels[0].is_empty());
+        assert_ne!(result.levels[0].len(), 0);
     }
 
     #[test]
@@ -344,7 +365,7 @@ mod tests {
         .unwrap();
         let result = interval_analysis(&cfg);
         assert_eq!(result.levels.len(), 1);
-        assert!(!result.levels[0].is_empty());
+        assert_ne!(result.levels[0].len(), 0);
     }
 
     #[test]
@@ -406,6 +427,33 @@ mod tests {
         assert_eq!(result.levels[0].len(), 1);
         assert_eq!(result.levels[0][0].blocks.len(), 2);
         assert!(result.levels[0][0].blocks.contains(&child));
+    }
+
+    #[test]
+    fn wider_counts_keep_real_values_distinct_from_assignment() {
+        let u32_start = usize::from(u16::MAX);
+        let mut compact = <u32 as IntervalCount>::from_usize(u32_start);
+        assert!(!compact.is_assigned());
+        assert!(!compact.decrement());
+        assert_eq!(compact, u32::from(u16::MAX) - 1);
+        compact.restore();
+        assert_eq!(compact, u32::from(u16::MAX));
+        compact.mark_assigned();
+        assert!(compact.is_assigned());
+        assert!(!compact.decrement());
+        assert_eq!(compact, u32::MAX);
+
+        let wide_start = u32::MAX as usize;
+        let mut wide = WideCount::from_usize(wide_start);
+        assert!(!wide.is_assigned());
+        assert!(!wide.decrement());
+        assert_eq!(wide.remaining, wide_start - 1);
+        wide.restore();
+        assert_eq!(wide.remaining, wide_start);
+        wide.mark_assigned();
+        assert!(wide.is_assigned());
+        assert!(!wide.decrement());
+        assert_eq!(wide.remaining, wide_start);
     }
 
     #[test]

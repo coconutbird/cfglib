@@ -826,7 +826,7 @@ mod tests {
 
         // An empty graph yields an empty table rather than panicking.
         let empty = DirectedGraph::<(), ()>::new();
-        assert!(reachable(&empty, [], TraversalDirection::Outgoing).is_empty());
+        assert_eq!(reachable(&empty, [], TraversalDirection::Outgoing).len(), 0);
     }
 
     #[test]
@@ -1083,8 +1083,9 @@ mod tests {
             )),
             vec![mid]
         );
-        assert!(
-            common_ancestors(&graph, left, right, TraversalDirection::Incoming, Some(0)).is_empty()
+        assert_eq!(
+            common_ancestors(&graph, left, right, TraversalDirection::Incoming, Some(0)).len(),
+            0
         );
         // A bound at or beyond the eccentricity is the unbounded answer.
         assert_eq!(
@@ -1123,11 +1124,13 @@ mod tests {
         let lonely = graph.add_node(());
         let end = graph.add_node(());
         graph.add_edge(start, end, ());
-        assert!(
-            common_ancestors(&graph, start, lonely, TraversalDirection::Outgoing, None).is_empty()
+        assert_eq!(
+            common_ancestors(&graph, start, lonely, TraversalDirection::Outgoing, None).len(),
+            0
         );
-        assert!(
-            common_ancestors(&graph, end, lonely, TraversalDirection::Incoming, None).is_empty()
+        assert_eq!(
+            common_ancestors(&graph, end, lonely, TraversalDirection::Incoming, None).len(),
+            0
         );
     }
 

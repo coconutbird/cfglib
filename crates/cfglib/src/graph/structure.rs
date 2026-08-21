@@ -72,10 +72,10 @@ pub fn find_back_edges<G: DirectedGraphView>(
     dom: &DominatorTree<G::NodeId>,
 ) -> Vec<BackEdge<G::NodeId>> {
     let mut backs = Vec::new();
-    let depths = dom.depths();
+    let depths = dom.analysis_depths();
     for node in graph.node_ids() {
         for successor in graph.successors(node) {
-            if dom.dominates_with_depths(successor, node, &depths) {
+            if dom.dominates_with_analysis_depths(successor, node, &depths) {
                 backs.push(BackEdge {
                     tail: node,
                     header: successor,
@@ -245,13 +245,25 @@ pub fn detect_loops_tagged<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalL
 /// irreducible cycle.
 #[must_use]
 pub fn is_reducible<G: RootedGraphView>(graph: &G, dom: &DominatorTree<G::NodeId>) -> bool {
+    find_irreducible_entry(graph, dom).is_none()
+}
+
+/// Return the first irreducible entry witnessed by the reducibility DFS.
+///
+/// Keeping target discovery and the Boolean query on one traversal prevents
+/// transformations from choosing a different witness than [`is_reducible`]
+/// used to reject the graph.
+pub(crate) fn find_irreducible_entry<G: RootedGraphView>(
+    graph: &G,
+    dom: &DominatorTree<G::NodeId>,
+) -> Option<G::NodeId> {
     const WHITE: u8 = 0;
     const GRAY: u8 = 1;
     const BLACK: u8 = 2;
 
     let n = graph.node_count();
     if n == 0 {
-        return true;
+        return None;
     }
 
     let mut color = alloc::vec![WHITE; n];
@@ -274,13 +286,13 @@ pub fn is_reducible<G: RootedGraphView>(graph: &G, dom: &DominatorTree<G::NodeId
                 GRAY
                     // Retreating edge — must be a natural back-edge.
                     if !dom.dominates(succ, node) => {
-                        return false;
+                        return Some(succ);
                     }
                 _ => {} // Cross/forward edge — fine.
             }
         }
     }
-    true
+    None
 }
 
 // ── Loop canonicalization ───────────────────────────────────────────
@@ -401,7 +413,7 @@ mod tests {
         let cfg = CfgBuilder::build(vec![ff("a"), ff("b"), ff("c")]).unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
-        assert!(loops.is_empty());
+        assert_eq!(loops.len(), 0);
     }
 
     #[test]
@@ -417,6 +429,37 @@ mod tests {
         let loops = detect_loops(&cfg, &dom);
         assert_eq!(loops.len(), 1);
         assert!(!loops[0].body.is_empty(), "loop body is non-empty");
+    }
+
+    #[test]
+    fn loops_with_one_header_merge_every_latch_body() {
+        let mut cfg = Cfg::<MockInst>::new();
+        let header = cfg.entry();
+        let left_body = cfg.new_block();
+        let left_latch = cfg.new_block();
+        let right_body = cfg.new_block();
+        let right_latch = cfg.new_block();
+        let exit = cfg.new_block();
+
+        cfg.add_edge(header, left_body, EdgeKind::ConditionalTrue);
+        cfg.add_edge(header, right_body, EdgeKind::ConditionalFalse);
+        cfg.add_edge(header, exit, EdgeKind::SwitchCase);
+        cfg.add_edge(left_body, left_latch, EdgeKind::Fallthrough);
+        cfg.add_edge(left_latch, header, EdgeKind::Back);
+        cfg.add_edge(right_body, right_latch, EdgeKind::Fallthrough);
+        cfg.add_edge(right_latch, header, EdgeKind::Back);
+
+        let dom = DominatorTree::compute(&cfg);
+        let loops = detect_loops(&cfg, &dom);
+
+        assert_eq!(loops.len(), 1);
+        assert_eq!(loops[0].header, header);
+        assert_eq!(loops[0].latches, BTreeSet::from([left_latch, right_latch]));
+        assert_eq!(
+            loops[0].body,
+            BTreeSet::from([header, left_body, left_latch, right_body, right_latch])
+        );
+        assert_eq!(loops[0].depth, 0);
     }
 
     #[test]
@@ -467,7 +510,7 @@ mod tests {
         cfg.add_edge(b2, b1, EdgeKind::Back);
 
         let dom = DominatorTree::compute(&cfg);
-        assert!(find_back_edges(&cfg, &dom).is_empty());
+        assert_eq!(find_back_edges(&cfg, &dom).len(), 0);
         let tagged = find_back_edges_tagged(&cfg, &dom);
         assert_eq!(tagged.len(), 1);
         assert_eq!(tagged[0].header, b1);
@@ -507,7 +550,7 @@ mod tests {
         .unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
-        assert!(loops.is_empty());
+        assert_eq!(loops.len(), 0);
         assert!(is_reducible(&cfg, &dom));
     }
 
@@ -523,7 +566,7 @@ mod tests {
         .unwrap();
         let dom = DominatorTree::compute(&cfg);
         let loops = detect_loops(&cfg, &dom);
-        assert!(!loops.is_empty());
+        assert_ne!(loops.len(), 0);
         let exits = loop_exit_blocks(&cfg, &loops[0]);
         assert!(
             !exits.is_empty(),

@@ -9,14 +9,16 @@ use alloc::vec::Vec;
 
 use crate::graph::directed::DirectedGraph;
 use crate::graph::dominator::DominatorTree;
+use crate::graph::search::EpochMarks;
 use crate::graph::view::{DenseNodeId, DirectedGraphView};
 
 /// Compute control dependences from a graph view and its post-dominator
 /// tree.
 ///
-/// The returned node identities are allocated in source node order, so a
-/// source node and its graph node have the same dense index. The node
-/// payload remains the authoritative link back to the source graph.
+/// Returned nodes are allocated in source dense-index order, so a source node
+/// and its graph node have the same dense index even when the view overrides
+/// `node_ids()` iteration order. The node payload remains the authoritative
+/// link back to the source graph.
 ///
 /// # Examples
 ///
@@ -56,13 +58,11 @@ pub fn control_dependence_graph<G: DirectedGraphView>(
         .map(|node| graph.add_node(node))
         .collect();
     let post_dominator_depths = post_dominators.analysis_depths();
-    let mut seen_dependents = alloc::vec![0_u32; source.node_count()];
+    let mut seen_dependents = EpochMarks::new(source.node_count());
     let mut dependents = Vec::new();
-    let mut epoch = 0_u32;
     let mut controllers: Vec<_> = source.node_ids().collect();
-    // The previous BTreeSet implementation exposed global `(controller,
-    // dependent)` ordering through stable edge IDs.  Dense index order is not
-    // required to agree with a consumer ID's `Ord`, so retain that behavior.
+    // Stable edge IDs expose global `(controller, dependent)` ordering. Dense
+    // index order need not agree with a consumer ID's `Ord`, so sort here.
     controllers.sort_unstable();
 
     for controller in controllers {
@@ -74,11 +74,7 @@ pub fn control_dependence_graph<G: DirectedGraphView>(
         if !post_dominators.is_reachable(controller) {
             continue;
         }
-        epoch = epoch.wrapping_add(1);
-        if epoch == 0 {
-            seen_dependents.fill(0);
-            epoch = 1;
-        }
+        seen_dependents.reset();
         dependents.clear();
         for target in source.successors(controller) {
             if !post_dominators.is_reachable(target) {
@@ -95,8 +91,8 @@ pub fn control_dependence_graph<G: DirectedGraphView>(
             let immediate_post_dominator = post_dominators.idom(controller);
             let mut dependent = target;
             loop {
-                if seen_dependents[dependent.index()] != epoch {
-                    seen_dependents[dependent.index()] = epoch;
+                if !seen_dependents.is_marked(dependent.index()) {
+                    seen_dependents.mark(dependent.index());
                     dependents.push(dependent);
                 }
                 match post_dominators.idom(dependent) {
@@ -159,10 +155,14 @@ mod tests {
             6
         }
 
+        fn node_ids(&self) -> impl Iterator<Item = Self::NodeId> + '_ {
+            [3, 0, 5, 1, 4, 2].into_iter().map(ReverseOrdNode)
+        }
+
         fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
             const EMPTY: &[usize] = &[];
-            const ZERO: &[usize] = &[1, 2];
-            const ONE: &[usize] = &[3, 4];
+            const ZERO: &[usize] = &[1, 1, 2];
+            const ONE: &[usize] = &[3, 4, 4];
             const EXIT: &[usize] = &[5];
             let successors = match node.0 {
                 0 => ZERO,
@@ -176,11 +176,15 @@ mod tests {
         fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
             const EMPTY: &[usize] = &[];
             const FROM_ZERO: &[usize] = &[0];
+            const TWICE_FROM_ZERO: &[usize] = &[0, 0];
             const FROM_ONE: &[usize] = &[1];
+            const TWICE_FROM_ONE: &[usize] = &[1, 1];
             const TO_EXIT: &[usize] = &[2, 3, 4];
             let predecessors = match node.0 {
-                1 | 2 => FROM_ZERO,
-                3 | 4 => FROM_ONE,
+                1 => TWICE_FROM_ZERO,
+                2 => FROM_ZERO,
+                3 => FROM_ONE,
+                4 => TWICE_FROM_ONE,
                 5 => TO_EXIT,
                 _ => EMPTY,
             };
@@ -237,6 +241,9 @@ mod tests {
     fn custom_id_order_retains_global_edge_identity_order() {
         let post = DominatorTree::compute_post_from(&ReverseOrdGraph, &[ReverseOrdNode(5)]);
         let graph = control_dependence_graph(&ReverseOrdGraph, &post);
+        for index in 0..ReverseOrdGraph.node_count() {
+            assert_eq!(graph[NodeId::from_index(index)], ReverseOrdNode(index));
+        }
         let relations: Vec<_> = graph
             .edges()
             .map(|edge| (graph[edge.source()], graph[edge.target()]))

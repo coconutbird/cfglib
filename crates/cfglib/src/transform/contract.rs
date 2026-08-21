@@ -16,7 +16,7 @@ use crate::cfg::Cfg;
 ///
 /// Returns `true` if contraction was performed, `false` if the edge
 /// cannot be contracted (e.g., target has other predecessors, or
-/// source has other successors).
+/// source has other successors). The CFG entry is never accepted as a target.
 ///
 /// Requires `I: Clone` because instruction vectors are manipulated.
 ///
@@ -34,6 +34,10 @@ use crate::cfg::Cfg;
 /// assert!(contract_edge(&mut cfg, b0, b1));
 /// ```
 pub fn contract_edge<I: Clone>(cfg: &mut Cfg<I>, source: BlockId, target: BlockId) -> bool {
+    if target == cfg.entry() {
+        return false;
+    }
+
     // Target must have exactly one predecessor (source).
     let [incoming] = cfg.predecessor_edges(target) else {
         return false;
@@ -59,11 +63,13 @@ pub fn contract_edge<I: Clone>(cfg: &mut Cfg<I>, source: BlockId, target: BlockI
         .extend(target_instrs);
 
     // Copy label if source doesn't have one.
-    if cfg.block(source).label().is_none()
-        && let Some(lbl) = cfg.block(target).label()
-    {
-        let owned = alloc::string::String::from(lbl);
-        cfg.block_mut(source).set_label(owned);
+    let inherited_label = if cfg.block(source).label().is_none() {
+        cfg.block(target).label().map(alloc::string::String::from)
+    } else {
+        None
+    };
+    if let Some(label) = inherited_label {
+        cfg.block_mut(source).set_label(label);
     }
 
     // Remove the edge source → target.
@@ -120,6 +126,26 @@ mod tests {
 
         // merge has 2 predecessors — cannot contract.
         assert!(!contract_edge(&mut cfg, a, merge));
+    }
+
+    #[test]
+    fn contract_refuses_to_consume_the_entry_block() {
+        let mut cfg = Cfg::<u32>::new();
+        let entry = cfg.entry();
+        let source = cfg.new_block();
+        cfg.block_mut(entry).push(0);
+        cfg.block_mut(source).push(1);
+        let outgoing = cfg.add_edge(entry, source, EdgeKind::Fallthrough);
+        let back = cfg.add_edge(source, entry, EdgeKind::Back);
+
+        assert!(!contract_edge(&mut cfg, source, entry));
+
+        assert_eq!(cfg.block(entry).instructions(), &[0]);
+        assert_eq!(cfg.block(source).instructions(), &[1]);
+        assert_eq!(cfg.successor_edges(entry), &[outgoing]);
+        assert_eq!(cfg.successor_edges(source), &[back]);
+        assert_eq!(cfg.edge(back).target(), entry);
+        assert!(crate::verify(&cfg).is_ok());
     }
 
     #[test]

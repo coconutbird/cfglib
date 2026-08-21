@@ -23,15 +23,24 @@ env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
 ```
 
 The final argument is an optional substring filter. Remove
-`cfg_dominators` to run every case. `CFGLIB_BENCH_MS` is the minimum duration
-of each timing sample and defaults to 75 ms.
+`cfg_dominators` to run every case. A nonempty filter that matches no case
+fails with status 2 instead of producing an empty successful run.
+`CFGLIB_BENCH_MS` is the minimum duration of each timing sample and defaults
+to 75 ms; zero, non-integer, and non-UTF-8 values also fail with status 2.
 
-The harness calibrates an iteration count to reach the target duration, runs
-seven timing samples, and prints the median and minimum nanoseconds per
-operation. Synthetic fixtures are constructed before timing. Every operation
-returns its complete result, which the harness passes through `black_box` and
-then drops inside the measured iteration; mutation cases return the complete
-mutated CFG together with any scalar status.
+Before measurement, every selected operation runs once and its complete result
+is checked by a case-specific semantic oracle. The harness then calibrates an
+iteration count to reach the target duration, runs seven timing samples, and
+prints the median and minimum nanoseconds per operation. Analysis fixtures are
+constructed before timing; cases whose names contain `build` intentionally
+measure construction. Every measured operation returns its complete result,
+which the harness passes through `black_box` and then drops inside the measured
+iteration.
+
+Mutation cases clone their fixture inside the measured operation and return the
+complete mutated CFG together with any scalar status. Their names therefore use
+`clone_…`, and adjacent clone-only controls expose setup cost; they are not
+transform-only measurements.
 
 ## Allocation pressure (instrumented build)
 
@@ -57,7 +66,8 @@ measured operation returns to its starting live-byte baseline. The figures are
 allocator requests, not process RSS, and do not include allocator metadata or
 fragmentation.
 
-Allocation mode performs one unmeasured warm-up operation followed by one
-measured operation. It does not report CPU timing because every allocator call
-in this build passes through the counting wrapper. Pair its allocation results
-with default-mode CPU results from the same benchmark case and revision.
+Allocation mode runs the semantic oracle before enabling counters, then
+performs one additional unmeasured warm-up operation followed by one measured
+operation. It does not report CPU timing because every allocator call in this
+build passes through the counting wrapper. Pair its allocation results with
+default-mode CPU results from the same benchmark case and revision.

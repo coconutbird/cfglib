@@ -229,7 +229,10 @@ mod tests {
             .map(|s| *graph.edge(s.edge).payload())
             .collect();
         assert_eq!(payloads, ["x", "z"]);
-        assert!(walk_edges(&graph, a, TraversalDirection::Outgoing, Some(0), |_| true).is_empty());
+        assert_eq!(
+            walk_edges(&graph, a, TraversalDirection::Outgoing, Some(0), |_| true).len(),
+            0
+        );
     }
 
     #[test]
@@ -240,6 +243,13 @@ mod tests {
         assert_eq!(graph.edge(path[0]).source(), a);
         assert_eq!(graph.edge(path[0]).target(), b);
         assert_eq!(graph.edge(path[1]).target(), c);
+
+        let incoming = shortest_path_edges(&graph, c, a, TraversalDirection::Incoming).unwrap();
+        assert_eq!(incoming.len(), 2);
+        assert_eq!(graph.edge(incoming[0]).source(), b);
+        assert_eq!(graph.edge(incoming[0]).target(), c);
+        assert_eq!(graph.edge(incoming[1]).source(), a);
+        assert_eq!(graph.edge(incoming[1]).target(), b);
 
         assert_eq!(
             shortest_path_edges(&graph, a, a, TraversalDirection::Outgoing),

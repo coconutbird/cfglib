@@ -14,7 +14,8 @@ use alloc::vec::Vec;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::dataflow::{InstrInfo, ProgramPoint, VariableId};
-use crate::graph::dominator::DominatorTree;
+use crate::graph::dominator::{DominatorChildOrder, DominatorTree};
+use crate::graph::search::EpochMarks;
 
 /// The dominance frontier of every block.
 #[derive(Debug, Clone)]
@@ -127,34 +128,29 @@ pub fn place_phis<I: InstrInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PhiPlaceme
     }
 
     let mut placements = vec![Vec::new(); cfg.num_blocks()];
-    let mut has_phi = vec![0_u32; cfg.num_blocks()];
-    let mut visited = vec![0_u32; cfg.num_blocks()];
-    let mut epoch = 0_u32;
+    let mut has_phi = EpochMarks::new(cfg.num_blocks());
+    let mut visited = EpochMarks::new(cfg.num_blocks());
     for (variable, definitions) in definition_blocks {
-        epoch = epoch.wrapping_add(1);
-        if epoch == 0 {
-            has_phi.fill(0);
-            visited.fill(0);
-            epoch = 1;
-        }
+        has_phi.reset();
+        visited.reset();
         for &block in &definitions {
-            visited[block.index()] = epoch;
+            visited.mark(block.index());
         }
         let mut worklist = definitions;
 
         while let Some(block) = worklist.pop() {
             for &frontier_block in frontiers.frontier(block) {
-                if has_phi[frontier_block.index()] == epoch {
+                if has_phi.is_marked(frontier_block.index()) {
                     continue;
                 }
-                has_phi[frontier_block.index()] = epoch;
+                has_phi.mark(frontier_block.index());
 
                 placements[frontier_block.index()].push(PhiPlacement {
                     variable: variable.clone(),
                     predecessors: cfg.predecessors(frontier_block).collect(),
                 });
-                if visited[frontier_block.index()] != epoch {
-                    visited[frontier_block.index()] = epoch;
+                if !visited.is_marked(frontier_block.index()) {
+                    visited.mark(frontier_block.index());
                     worklist.push(frontier_block);
                 }
             }
@@ -401,19 +397,9 @@ fn rename_drafts<I: InstrInfo>(
 ) {
     let mut stacks = BTreeMap::new();
     let mut visited = alloc::vec![false; cfg.num_blocks()];
-    // Compact linked child lists avoid scanning the complete dominator table
-    // for every entered block. Iterating children by increasing id builds each
-    // parent's list in descending order, exactly the order the event stack
-    // needs to preserve the previous ascending DFS visitation.
-    let mut first_child = alloc::vec![None; cfg.num_blocks()];
-    let mut next_sibling = alloc::vec![None; cfg.num_blocks()];
-    for (index, sibling) in next_sibling.iter_mut().enumerate() {
-        let child = BlockId::from_index(index);
-        if let Some(parent) = dom.idom(child).filter(|&parent| parent != child) {
-            *sibling = first_child[parent.index()];
-            first_child[parent.index()] = Some(child);
-        }
-    }
+    // The event stack consumes siblings in reverse, so descending links
+    // preserve `DominatorTree::children`'s ascending DFS visitation.
+    let children = dom.child_links(DominatorChildOrder::Descending);
     let mut roots = vec![cfg.entry()];
     roots.extend(
         cfg.blocks()
@@ -430,10 +416,10 @@ fn rename_drafts<I: InstrInfo>(
                     visited[block.index()] = true;
                     let pushed = rename_block(cfg, block, drafts, &mut stacks, max_versions);
                     events.push(RenameEvent::Exit(pushed));
-                    let mut child = first_child[block.index()];
+                    let mut child = children.first_child(block);
                     while let Some(next) = child {
                         events.push(RenameEvent::Enter(next));
-                        child = next_sibling[next.index()];
+                        child = children.next_sibling(next);
                     }
                 }
                 RenameEvent::Enter(_) => {}
