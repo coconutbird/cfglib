@@ -1,0 +1,32 @@
+minimum_prek_version = "0.4.14"
+default_install_hook_types = ["pre-push"]
+
+[[repos]]
+repo = "local"
+
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt --all"
+entry = "cargo fmt --all"
+language = "system"
+pass_filenames = false
+always_run = true
+stages = ["pre-push"]
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy --workspace --all-targets"
+entry = "cargo clippy --workspace --all-targets"
+language = "system"
+pass_filenames = false
+always_run = true
+stages = ["pre-push"]
+
+[[repos.hooks]]
+id = "cargo-test"
+name = "cargo test --workspace"
+entry = "cargo test --workspace"
+language = "system"
+pass_filenames = false
+always_run = true
+stages = ["pre-push"]
