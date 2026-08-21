@@ -1,8 +1,9 @@
 # Performance benchmark
 
-`performance.rs` is a synthetic benchmark for CPU time and allocator pressure.
-It has two deliberately separate build modes so allocation instrumentation
-cannot perturb the CPU numbers used for comparisons.
+`performance.rs` is the crate root for a synthetic benchmark whose support
+modules live in `performance/`. It has two deliberately separate build modes
+so allocation instrumentation cannot perturb the CPU numbers used for
+comparisons.
 
 The latest local before/after matrix, retained changes, tradeoffs, and rejected
 experiments are recorded in [RESULTS.md](RESULTS.md).
