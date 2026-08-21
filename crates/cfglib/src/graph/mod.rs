@@ -16,6 +16,7 @@ pub mod loopnest;
 pub mod open;
 pub mod pdg;
 pub mod reducible;
+pub mod relax;
 pub mod reverse;
 pub mod scc;
 pub mod search;

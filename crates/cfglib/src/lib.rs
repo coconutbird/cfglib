@@ -183,6 +183,7 @@ pub use graph::open::{
     open_search,
 };
 pub use graph::pdg::{DependenceKind, DependenceNode, program_dependence_graph};
+pub use graph::relax::min_label_relaxation;
 pub use graph::reverse::reverse_cfg;
 pub use graph::scc::{Scc, SccResult, condensation, condensation_of, kosaraju_scc, tarjan_scc};
 pub use graph::search::{

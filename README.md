@@ -111,6 +111,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Open-graph events | `open_depth_first_events` → `OpenDfsEvent` | The same open space walked for a fold: discover/finish pairs (plus refused re-entries) in a pinned post-order, with `VisitedPolicy::Path` re-folding a shared node once per route — C++ base-class member lookup, where that re-fold *is* the ambiguity |
 | Alias chase | `follow`, `follow_path` | Out-degree ≤ 1 chase with a hop bound and a full-path cycle guard; the chain, or just its end |
 | Shortest path | `shortest_path` (nodes), `shortest_path_edges` (edge witness) | Forward or reverse unweighted witness path |
+| Minimum-label relaxation | `min_label_relaxation` | Edge-defined label transfer to a minimum fixpoint; nodes re-expand when their label improves |
 | Multi-source reachability | `reachable` | Dense `Vec<bool>` from a seed set, forward or reverse; order-insensitive |
 | Nearest common ancestor | `nearest_common_ancestor` | Bidirectional BFS meet of two nodes; smallest combined distance, ties by smallest node id |
 | All common ancestors | `common_ancestors` → `Vec<CommonAncestor>` | Every shared node with both hop counts, depth-bounded, in `b`'s BFS discovery order — the consumer-rankable form (MRO linearization, overload preference) |
