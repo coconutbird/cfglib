@@ -97,7 +97,7 @@ pub fn dead_code_elimination<I: crate::dataflow::EffectInfo + Clone>(cfg: &mut C
 
     // Phase 2: apply replacements.
     for (bid, new_insts) in replacements {
-        *cfg.block_mut(bid).instructions_vec_mut() = new_insts;
+        *cfg.block_mut(bid).instructions_mut() = new_insts;
     }
 
     removed
@@ -115,11 +115,11 @@ mod tests {
         let exit = cfg.new_block();
 
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .extend([df_def("dead_def", 0), df_def("live_def", 1)]);
 
         cfg.block_mut(exit)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(df_use("use1", 1));
 
         cfg.add_edge(cfg.entry(), exit, EdgeKind::Fallthrough);

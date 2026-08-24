@@ -83,7 +83,7 @@ pub fn eliminate_pre<I: ValueNumberInfo + Clone>(cfg: &mut Cfg<I>, dom: &Dominat
         indices.sort_unstable();
         indices.reverse();
         for idx in indices {
-            cfg.block_mut(bid).instructions_vec_mut().remove(idx);
+            cfg.block_mut(bid).instructions_mut().remove(idx);
         }
     }
 
@@ -144,7 +144,7 @@ mod tests {
         // Same expression computed twice within one block.
         let mut cfg: Cfg<PreInst> = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .extend([pi(1, &[0, 1], &[2]), pi(1, &[0, 1], &[3])]);
         let dom = DominatorTree::compute(&cfg);
         let result = analyze_pre(&cfg, &dom);
@@ -158,10 +158,10 @@ mod tests {
         let mut cfg: Cfg<PreInst> = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(pi(1, &[0, 1], &[2]));
         cfg.block_mut(b)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(pi(1, &[0, 1], &[3]));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);
@@ -174,10 +174,10 @@ mod tests {
         let mut cfg: Cfg<PreInst> = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(pi(1, &[0, 1], &[2]));
         cfg.block_mut(b)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(pi(2, &[0, 1], &[3]));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);

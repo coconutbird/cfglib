@@ -36,13 +36,27 @@ pub trait AbstractDomain<I>: Lattice {
     fn entry_value() -> Self;
 }
 
-/// Result of abstract interpretation.
+/// Per-block abstract states computed by abstract interpretation.
 #[derive(Debug, Clone)]
 pub struct AbstractFacts<D> {
     /// Abstract state at each block entry.
-    pub block_in: BTreeMap<BlockId, D>,
+    block_in: BTreeMap<BlockId, D>,
     /// Abstract state at each block exit.
-    pub block_out: BTreeMap<BlockId, D>,
+    block_out: BTreeMap<BlockId, D>,
+}
+
+impl<D> AbstractFacts<D> {
+    /// The abstract state entering `block`, if the block was reached.
+    #[must_use]
+    pub fn fact_in(&self, block: BlockId) -> Option<&D> {
+        self.block_in.get(&block)
+    }
+
+    /// The abstract state leaving `block`, if the block was reached.
+    #[must_use]
+    pub fn fact_out(&self, block: BlockId) -> Option<&D> {
+        self.block_out.get(&block)
+    }
 }
 
 /// Bridge that adapts an [`AbstractDomain`] into a [`Problem`] so we
@@ -168,15 +182,12 @@ mod tests {
     fn abstract_interpret_linear() {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let result: AbstractFacts<Sign> = abstract_interpret(&cfg);
         // Entry block out should be present and equal to entry value
         // (identity transfer).
-        assert!(result.block_out.contains_key(&cfg.entry()));
-        assert_eq!(result.block_out[&cfg.entry()], Sign::Zero);
+        assert_eq!(result.fact_out(cfg.entry()), Some(&Sign::Zero));
     }
 }

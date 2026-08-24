@@ -199,12 +199,10 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         let merge = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("br"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(merge).instructions_vec_mut().push(ff("m"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("br"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
+        cfg.block_mut(merge).instructions_mut().push(ff("m"));
         // Wire false first so orientation genuinely reorders.
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
@@ -249,7 +247,7 @@ mod tests {
     fn detects_self_loop() {
         let mut cfg = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("loop"));
         cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
         let pats = detect_patterns(&cfg);

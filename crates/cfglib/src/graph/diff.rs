@@ -121,109 +121,111 @@ fn fingerprint<I>(cfg: &Cfg<I>, block: BlockId) -> BlockFingerprint {
     }
 }
 
-/// Compare two CFGs structurally.
-///
-/// Uses a greedy fingerprint-based matching algorithm:
-/// 1. Compute structural fingerprints for all reachable blocks.
-/// 2. Match entry blocks first (anchoring).
-/// 3. Greedily match remaining blocks by identical fingerprints,
-///    preferring blocks whose predecessors/successors are already matched.
-///
-/// # Example
-///
-/// ```ignore
-/// let diff = cfg_diff(&old_cfg, &new_cfg);
-/// if diff.is_identical() {
-///     println!("CFGs are structurally identical");
-/// } else {
-///     println!("Match ratio: {:.0}%", diff.match_ratio() * 100.0);
-/// }
-/// ```
-#[must_use]
-pub fn cfg_diff<I, I2>(left: &Cfg<I>, right: &Cfg<I2>) -> CfgDiff {
-    let left_blocks = left.depth_first_preorder();
-    let right_blocks = right.depth_first_preorder();
+impl CfgDiff {
+    /// Compare two CFGs structurally.
+    ///
+    /// Uses a greedy fingerprint-based matching algorithm:
+    /// 1. Compute structural fingerprints for all reachable blocks.
+    /// 2. Match entry blocks first (anchoring).
+    /// 3. Greedily match remaining blocks by identical fingerprints,
+    ///    preferring blocks whose predecessors/successors are already matched.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let diff = CfgDiff::compute(&old_cfg, &new_cfg);
+    /// if diff.is_identical() {
+    ///     println!("CFGs are structurally identical");
+    /// } else {
+    ///     println!("Match ratio: {:.0}%", diff.match_ratio() * 100.0);
+    /// }
+    /// ```
+    #[must_use]
+    pub fn compute<I, I2>(left: &Cfg<I>, right: &Cfg<I2>) -> Self {
+        let left_blocks = left.depth_first_preorder();
+        let right_blocks = right.depth_first_preorder();
 
-    let left_fps: BTreeMap<BlockId, BlockFingerprint> = left_blocks
-        .iter()
-        .map(|&b| (b, fingerprint(left, b)))
-        .collect();
-    let right_fps: BTreeMap<BlockId, BlockFingerprint> = right_blocks
-        .iter()
-        .map(|&b| (b, fingerprint(right, b)))
-        .collect();
+        let left_fps: BTreeMap<BlockId, BlockFingerprint> = left_blocks
+            .iter()
+            .map(|&b| (b, fingerprint(left, b)))
+            .collect();
+        let right_fps: BTreeMap<BlockId, BlockFingerprint> = right_blocks
+            .iter()
+            .map(|&b| (b, fingerprint(right, b)))
+            .collect();
 
-    let mut matched = Vec::new();
-    let mut left_matched = alloc::collections::BTreeSet::new();
-    let mut right_matched = alloc::collections::BTreeSet::new();
+        let mut matched = Vec::new();
+        let mut left_matched = alloc::collections::BTreeSet::new();
+        let mut right_matched = alloc::collections::BTreeSet::new();
 
-    // Phase 1: anchor on entry blocks.
-    let left_entry_fp = left_fps.get(&left.entry());
-    let right_entry_fp = right_fps.get(&right.entry());
-    if left_entry_fp == right_entry_fp {
-        let ic_changed = left.block(left.entry()).instructions().len()
-            != right.block(right.entry()).instructions().len();
-        matched.push(BlockMatch {
-            left: left.entry(),
-            right: right.entry(),
-            instruction_count_changed: ic_changed,
-        });
-        left_matched.insert(left.entry());
-        right_matched.insert(right.entry());
-    }
-
-    // Phase 2: greedy matching by fingerprint.
-    // Build index: fingerprint → unmatched right blocks.
-    let mut fp_to_right: BTreeMap<BlockFingerprint, Vec<BlockId>> = BTreeMap::new();
-    for &rb in &right_blocks {
-        if !right_matched.contains(&rb) {
-            let fp = right_fps[&rb].clone();
-            fp_to_right.entry(fp).or_default().push(rb);
-        }
-    }
-
-    for &lb in &left_blocks {
-        if left_matched.contains(&lb) {
-            continue;
-        }
-        let fp = &left_fps[&lb];
-        if let Some(candidates) = fp_to_right.get_mut(fp)
-            && let Some(pos) = candidates.iter().position(|rb| !right_matched.contains(rb))
-        {
-            let rb = candidates.remove(pos);
-            let ic_changed =
-                left.block(lb).instructions().len() != right.block(rb).instructions().len();
+        // Phase 1: anchor on entry blocks.
+        let left_entry_fp = left_fps.get(&left.entry());
+        let right_entry_fp = right_fps.get(&right.entry());
+        if left_entry_fp == right_entry_fp {
+            let ic_changed = left.block(left.entry()).instructions().len()
+                != right.block(right.entry()).instructions().len();
             matched.push(BlockMatch {
-                left: lb,
-                right: rb,
+                left: left.entry(),
+                right: right.entry(),
                 instruction_count_changed: ic_changed,
             });
-            left_matched.insert(lb);
-            right_matched.insert(rb);
+            left_matched.insert(left.entry());
+            right_matched.insert(right.entry());
         }
-    }
 
-    let left_only: Vec<BlockId> = left_blocks
-        .into_iter()
-        .filter(|b| !left_matched.contains(b))
-        .collect();
-    let right_only: Vec<BlockId> = right_blocks
-        .into_iter()
-        .filter(|b| !right_matched.contains(b))
-        .collect();
+        // Phase 2: greedy matching by fingerprint.
+        // Build index: fingerprint → unmatched right blocks.
+        let mut fp_to_right: BTreeMap<BlockFingerprint, Vec<BlockId>> = BTreeMap::new();
+        for &rb in &right_blocks {
+            if !right_matched.contains(&rb) {
+                let fp = right_fps[&rb].clone();
+                fp_to_right.entry(fp).or_default().push(rb);
+            }
+        }
 
-    // Count live edges.
-    let left_edge_count = left.edges().count();
-    let right_edge_count = right.edges().count();
+        for &lb in &left_blocks {
+            if left_matched.contains(&lb) {
+                continue;
+            }
+            let fp = &left_fps[&lb];
+            if let Some(candidates) = fp_to_right.get_mut(fp)
+                && let Some(pos) = candidates.iter().position(|rb| !right_matched.contains(rb))
+            {
+                let rb = candidates.remove(pos);
+                let ic_changed =
+                    left.block(lb).instructions().len() != right.block(rb).instructions().len();
+                matched.push(BlockMatch {
+                    left: lb,
+                    right: rb,
+                    instruction_count_changed: ic_changed,
+                });
+                left_matched.insert(lb);
+                right_matched.insert(rb);
+            }
+        }
 
-    CfgDiff {
-        matched,
-        left_only,
-        right_only,
-        left_block_count: left.block_count(),
-        right_block_count: right.block_count(),
-        left_edge_count,
-        right_edge_count,
+        let left_only: Vec<BlockId> = left_blocks
+            .into_iter()
+            .filter(|b| !left_matched.contains(b))
+            .collect();
+        let right_only: Vec<BlockId> = right_blocks
+            .into_iter()
+            .filter(|b| !right_matched.contains(b))
+            .collect();
+
+        // Count live edges.
+        let left_edge_count = left.edges().count();
+        let right_edge_count = right.edges().count();
+
+        CfgDiff {
+            matched,
+            left_only,
+            right_only,
+            left_block_count: left.block_count(),
+            right_block_count: right.block_count(),
+            left_edge_count,
+            right_edge_count,
+        }
     }
 }
 
@@ -236,17 +238,17 @@ mod tests {
     fn identical_cfgs_produce_identical_diff() {
         let mut a = Cfg::new();
         let b1 = a.new_block();
-        a.block_mut(a.entry()).instructions_vec_mut().push(ff("e"));
-        a.block_mut(b1).instructions_vec_mut().push(ff("b"));
+        a.block_mut(a.entry()).instructions_mut().push(ff("e"));
+        a.block_mut(b1).instructions_mut().push(ff("b"));
         a.add_edge(a.entry(), b1, EdgeKind::Fallthrough);
 
         let mut b = Cfg::new();
         let b2 = b.new_block();
-        b.block_mut(b.entry()).instructions_vec_mut().push(ff("e"));
-        b.block_mut(b2).instructions_vec_mut().push(ff("b"));
+        b.block_mut(b.entry()).instructions_mut().push(ff("e"));
+        b.block_mut(b2).instructions_mut().push(ff("b"));
         b.add_edge(b.entry(), b2, EdgeKind::Fallthrough);
 
-        let diff = cfg_diff(&a, &b);
+        let diff = CfgDiff::compute(&a, &b);
         assert!(diff.is_identical());
         assert!((diff.match_ratio() - 1.0).abs() < f64::EPSILON);
     }
@@ -254,15 +256,15 @@ mod tests {
     #[test]
     fn added_block_detected() {
         let mut a = Cfg::new();
-        a.block_mut(a.entry()).instructions_vec_mut().push(ff("e"));
+        a.block_mut(a.entry()).instructions_mut().push(ff("e"));
 
         let mut b = Cfg::new();
         let extra = b.new_block();
-        b.block_mut(b.entry()).instructions_vec_mut().push(ff("e"));
-        b.block_mut(extra).instructions_vec_mut().push(ff("x"));
+        b.block_mut(b.entry()).instructions_mut().push(ff("e"));
+        b.block_mut(extra).instructions_mut().push(ff("x"));
         b.add_edge(b.entry(), extra, EdgeKind::Fallthrough);
 
-        let diff = cfg_diff(&a, &b);
+        let diff = CfgDiff::compute(&a, &b);
         assert!(!diff.is_identical());
         assert!(!diff.right_only.is_empty(), "new block should be unmatched");
     }
@@ -271,14 +273,14 @@ mod tests {
     fn removed_block_detected() {
         let mut a = Cfg::new();
         let extra = a.new_block();
-        a.block_mut(a.entry()).instructions_vec_mut().push(ff("e"));
-        a.block_mut(extra).instructions_vec_mut().push(ff("x"));
+        a.block_mut(a.entry()).instructions_mut().push(ff("e"));
+        a.block_mut(extra).instructions_mut().push(ff("x"));
         a.add_edge(a.entry(), extra, EdgeKind::Fallthrough);
 
         let mut b = Cfg::new();
-        b.block_mut(b.entry()).instructions_vec_mut().push(ff("e"));
+        b.block_mut(b.entry()).instructions_mut().push(ff("e"));
 
-        let diff = cfg_diff(&a, &b);
+        let diff = CfgDiff::compute(&a, &b);
         assert!(!diff.is_identical());
         assert!(
             !diff.left_only.is_empty(),
@@ -289,22 +291,22 @@ mod tests {
     #[test]
     fn match_ratio_is_correct() {
         let mut a = Cfg::new();
-        a.block_mut(a.entry()).instructions_vec_mut().push(ff("e"));
+        a.block_mut(a.entry()).instructions_mut().push(ff("e"));
         let b1 = a.new_block();
-        a.block_mut(b1).instructions_vec_mut().push(ff("b"));
+        a.block_mut(b1).instructions_mut().push(ff("b"));
         a.add_edge(a.entry(), b1, EdgeKind::Fallthrough);
 
         // b has entry + 2 extra blocks (different topology)
         let mut b = Cfg::new();
-        b.block_mut(b.entry()).instructions_vec_mut().push(ff("e"));
+        b.block_mut(b.entry()).instructions_mut().push(ff("e"));
         let c1 = b.new_block();
         let c2 = b.new_block();
-        b.block_mut(c1).instructions_vec_mut().push(ff("c1"));
-        b.block_mut(c2).instructions_vec_mut().push(ff("c2"));
+        b.block_mut(c1).instructions_mut().push(ff("c1"));
+        b.block_mut(c2).instructions_mut().push(ff("c2"));
         b.add_edge(b.entry(), c1, EdgeKind::ConditionalTrue);
         b.add_edge(b.entry(), c2, EdgeKind::ConditionalFalse);
 
-        let diff = cfg_diff(&a, &b);
+        let diff = CfgDiff::compute(&a, &b);
         assert!(diff.match_ratio() > 0.0);
         assert!(diff.match_ratio() <= 1.0);
     }

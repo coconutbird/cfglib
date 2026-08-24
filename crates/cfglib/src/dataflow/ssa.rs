@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn renaming_uses_latest_definition() {
         let mut cfg = Cfg::<DfInst>::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             df_def("first", 0),
             df_def("second", 0),
             df_use("use", 0),

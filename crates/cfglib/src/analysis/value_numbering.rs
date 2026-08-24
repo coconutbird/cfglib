@@ -345,7 +345,7 @@ mod tests {
         // t = add(a, b); z = add2(t, c); t = load (impure, skipped);
         // y = add2(t, c) — y must NOT match z's key: t was redefined.
         let mut cfg: Cfg<VnInst> = Cfg::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             vn_inst(1, &[0, 1], &[10]),
             vn_inst(2, &[10, 2], &[11]),
             VnInst {
@@ -368,7 +368,7 @@ mod tests {
     fn lvn_detects_redundant() {
         // t0 = add(a, b), t1 = add(a, b) → t1 is redundant
         let mut cfg: Cfg<VnInst> = Cfg::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             vn_inst(1, &[0, 1], &[2]), // t2 = op1(loc0, loc1)
             vn_inst(1, &[0, 1], &[3]), // t3 = op1(loc0, loc1) → redundant
         ]);
@@ -380,7 +380,7 @@ mod tests {
     #[test]
     fn lvn_different_ops_not_redundant() {
         let mut cfg: Cfg<VnInst> = Cfg::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             vn_inst(1, &[0, 1], &[2]),
             vn_inst(2, &[0, 1], &[3]), // different opcode
         ]);
@@ -395,10 +395,10 @@ mod tests {
         let mut cfg: Cfg<VnInst> = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(vn_inst(1, &[0, 1], &[2]));
         cfg.block_mut(b)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(vn_inst(1, &[0, 1], &[3]));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);
@@ -425,10 +425,10 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         cfg.block_mut(a)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(vn_inst(1, &[0, 1], &[2]));
         cfg.block_mut(b)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(vn_inst(1, &[0, 1], &[3]));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);

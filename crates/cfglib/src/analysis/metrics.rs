@@ -216,9 +216,7 @@ mod tests {
     #[test]
     fn single_block_metrics() {
         let mut cfg = Cfg::new();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
 
         let m = CfgMetrics::compute(&cfg);
         assert_eq!(m.graph.node_count, 1);
@@ -235,9 +233,7 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         let merge = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, merge, EdgeKind::Fallthrough);
@@ -254,9 +250,7 @@ mod tests {
         let header = cfg.new_block();
         let body = cfg.new_block();
         let exit = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
         cfg.add_edge(cfg.entry(), header, EdgeKind::Fallthrough);
         cfg.add_edge(header, body, EdgeKind::ConditionalTrue);
         cfg.add_edge(header, exit, EdgeKind::ConditionalFalse);

@@ -40,9 +40,9 @@ pub fn contract_edge_mapped<I, E>(
     }
 
     let target_label = cfg.block(target).label().map(alloc::string::String::from);
-    let target_instructions = core::mem::take(cfg.block_mut(target).instructions_vec_mut());
+    let target_instructions = core::mem::take(cfg.block_mut(target).instructions_mut());
     cfg.block_mut(source)
-        .instructions_vec_mut()
+        .instructions_mut()
         .extend(target_instructions);
     if cfg.block(source).label().is_none()
         && let Some(label) = target_label
@@ -132,7 +132,7 @@ mod tests {
         let mut cfg = Cfg::<_, u8>::with_edge_payload();
         let entry = cfg.entry();
         cfg.block_mut(entry)
-            .instructions_vec_mut()
+            .instructions_mut()
             .extend([ff("a"), ff("may_throw"), ff("c")]);
 
         let error = split_node_at_points(&mut cfg, entry, [(2, 2), (1, 1)]).unwrap_err();

@@ -176,12 +176,10 @@ mod tests {
     #[test]
     fn store_creates_memory_def() {
         let mut cfg: Cfg<MemInst> = Cfg::new();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(MemInst {
-                reads: false,
-                writes: true,
-            });
+        cfg.block_mut(cfg.entry()).instructions_mut().push(MemInst {
+            reads: false,
+            writes: true,
+        });
         let dom = DominatorTree::compute(&cfg);
         let mssa = MemorySSA::compute(&cfg, &dom);
         let accs = mssa.accesses.get(&cfg.entry()).unwrap();
@@ -199,12 +197,10 @@ mod tests {
     #[test]
     fn load_creates_memory_use() {
         let mut cfg: Cfg<MemInst> = Cfg::new();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(MemInst {
-                reads: true,
-                writes: false,
-            });
+        cfg.block_mut(cfg.entry()).instructions_mut().push(MemInst {
+            reads: true,
+            writes: false,
+        });
         let dom = DominatorTree::compute(&cfg);
         let mssa = MemorySSA::compute(&cfg, &dom);
         let accs = mssa.accesses.get(&cfg.entry()).unwrap();
@@ -218,11 +214,11 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         let merge = cfg.new_block();
-        cfg.block_mut(a).instructions_vec_mut().push(MemInst {
+        cfg.block_mut(a).instructions_mut().push(MemInst {
             reads: false,
             writes: true,
         });
-        cfg.block_mut(b).instructions_vec_mut().push(MemInst {
+        cfg.block_mut(b).instructions_mut().push(MemInst {
             reads: false,
             writes: true,
         });

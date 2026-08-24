@@ -193,13 +193,11 @@ mod tests {
         let b = cfg.new_block();
         let merge = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(merge)
-            .instructions_vec_mut()
-            .push(ff("merge"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
+        cfg.block_mut(merge).instructions_mut().push(ff("merge"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, merge, EdgeKind::Fallthrough);
@@ -220,10 +218,10 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, b, EdgeKind::Fallthrough);

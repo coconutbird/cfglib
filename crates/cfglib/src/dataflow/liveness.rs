@@ -220,7 +220,7 @@ mod tests {
 
         let mut cfg: Cfg<DfInst> = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(use_("use_r0", 0));
         cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
         let live = Liveness::compute(&cfg);

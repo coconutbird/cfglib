@@ -264,17 +264,15 @@ fn lift_try_catch_produces_try_node() {
     let after = cfg.new_block(); // 3
 
     cfg.block_mut(cfg.entry())
-        .instructions_vec_mut()
+        .instructions_mut()
         .push(ff("entry"));
     cfg.block_mut(try_body)
-        .instructions_vec_mut()
+        .instructions_mut()
         .push(ff("try_inst"));
     cfg.block_mut(handler_block)
-        .instructions_vec_mut()
+        .instructions_mut()
         .push(ff("catch_inst"));
-    cfg.block_mut(after)
-        .instructions_vec_mut()
-        .push(ff("after"));
+    cfg.block_mut(after).instructions_mut().push(ff("after"));
 
     cfg.add_edge(cfg.entry(), try_body, EdgeKind::Fallthrough);
     cfg.add_edge(try_body, after, EdgeKind::Fallthrough);
@@ -322,13 +320,13 @@ fn lift_preserves_fault_and_filter_handler_kinds() {
     let entry = cfg.entry();
 
     cfg.block_mut(try_body)
-        .instructions_vec_mut()
+        .instructions_mut()
         .push(ff("try_inst"));
     cfg.block_mut(fault)
-        .instructions_vec_mut()
+        .instructions_mut()
         .push(ff("fault_inst"));
     cfg.block_mut(filtered_handler)
-        .instructions_vec_mut()
+        .instructions_mut()
         .push(ff("filtered_inst"));
     cfg.add_edge(entry, try_body, EdgeKind::Fallthrough);
     cfg.add_edge(try_body, after, EdgeKind::Fallthrough);
@@ -369,9 +367,9 @@ fn lift_jump_edge_produces_goto() {
     // entry(0) --Jump--> target(1)
     let target = cfg.new_block();
     cfg.block_mut(cfg.entry())
-        .instructions_vec_mut()
+        .instructions_mut()
         .push(ff("src"));
-    cfg.block_mut(target).instructions_vec_mut().push(ff("dst"));
+    cfg.block_mut(target).instructions_mut().push(ff("dst"));
 
     cfg.add_edge(cfg.entry(), target, EdgeKind::Jump);
 
@@ -396,16 +394,12 @@ fn lift_jump_target_gets_label() {
     let end = cfg.new_block(); // 3
     let jumper = cfg.new_block(); // 4
     cfg.block_mut(cfg.entry())
-        .instructions_vec_mut()
+        .instructions_mut()
         .push(ff("entry"));
-    cfg.block_mut(normal)
-        .instructions_vec_mut()
-        .push(ff("normal"));
-    cfg.block_mut(target).instructions_vec_mut().push(ff("dst"));
-    cfg.block_mut(end).instructions_vec_mut().push(ff("end"));
-    cfg.block_mut(jumper)
-        .instructions_vec_mut()
-        .push(ff("jumper"));
+    cfg.block_mut(normal).instructions_mut().push(ff("normal"));
+    cfg.block_mut(target).instructions_mut().push(ff("dst"));
+    cfg.block_mut(end).instructions_mut().push(ff("end"));
+    cfg.block_mut(jumper).instructions_mut().push(ff("jumper"));
 
     cfg.add_edge(cfg.entry(), normal, EdgeKind::ConditionalTrue);
     cfg.add_edge(cfg.entry(), jumper, EdgeKind::ConditionalFalse);

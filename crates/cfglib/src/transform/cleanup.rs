@@ -42,7 +42,7 @@ pub fn remove_unreachable_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMa
             continue;
         }
 
-        cfg.block_mut(id).instructions_vec_mut().clear();
+        cfg.block_mut(id).instructions_mut().clear();
         let mut incident: Vec<_> = cfg.successor_edges(id).to_vec();
         for &edge in cfg.predecessor_edges(id) {
             if !incident.contains(&edge) {
@@ -90,9 +90,9 @@ pub fn merge_blocks_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
                 continue;
             }
 
-            let target_instructions = core::mem::take(cfg.block_mut(target).instructions_vec_mut());
+            let target_instructions = core::mem::take(cfg.block_mut(target).instructions_mut());
             cfg.block_mut(source)
-                .instructions_vec_mut()
+                .instructions_mut()
                 .extend(target_instructions);
 
             let (_, removed_edge) = cfg.remove_edge_mapped(connecting);

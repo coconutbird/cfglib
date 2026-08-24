@@ -91,7 +91,7 @@ pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropagat
         .collect();
 
     for &bid in &block_ids {
-        let insts = cfg.block_mut(bid).instructions_vec_mut();
+        let insts = cfg.block_mut(bid).instructions_mut();
         for inst in insts.iter_mut() {
             for (old, new) in &substitutions {
                 if inst.uses().contains(old) {
@@ -122,7 +122,7 @@ pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropagat
             }
             new_insts.push(inst);
         }
-        *cfg.block_mut(bid).instructions_vec_mut() = new_insts;
+        *cfg.block_mut(bid).instructions_mut() = new_insts;
     }
 
     CopyPropagationStats {
@@ -144,10 +144,10 @@ mod tests {
         let mut cfg: Cfg<DfInst> = Cfg::new();
         let exit = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .extend([df_def("def_r0", 0), df_copy("mov", 1, 0)]);
         cfg.block_mut(exit)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(df_use("use_r1", 1));
         cfg.add_edge(cfg.entry(), exit, EdgeKind::Fallthrough);
 
@@ -164,7 +164,7 @@ mod tests {
     fn copy_chain_propagation() {
         // def r0; copy r1 = r0; copy r2 = r1; use r2 → use r0.
         let mut cfg: Cfg<DfInst> = Cfg::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             df_def("def_r0", 0),
             df_copy("mov1", 1, 0),
             df_copy("mov2", 2, 1),

@@ -226,10 +226,10 @@ mod tests {
         let exit = cfg.new_block();
         // Entry: const 42 → loc0, then use loc0
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .extend([df_const("load_42", 0, 42)]);
         cfg.block_mut(exit)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(df_use("use0", 0));
         cfg.add_edge(cfg.entry(), exit, EdgeKind::Fallthrough);
 
@@ -244,7 +244,7 @@ mod tests {
         // var 1. Var 2 was still redefined — its stale constant must not
         // survive (a dxbc udiv writes quotient AND remainder).
         let mut cfg: Cfg<DfInst> = Cfg::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             df_const("load5", 2, 5),
             DfInst {
                 defs: alloc::vec![1, 2],
@@ -268,7 +268,7 @@ mod tests {
         let mut cfg: Cfg<DfInst> = Cfg::new();
         // Entry: def loc0 (non-constant)
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(df_def("generic_def", 0));
 
         let result = constant_propagation(&cfg);

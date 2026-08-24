@@ -49,7 +49,7 @@ pub fn reverse_cfg<I: Clone>(cfg: &Cfg<I>) -> Cfg<I> {
     for src in cfg.blocks() {
         let bid = src.id();
         let dst = rev.block_mut(bid);
-        *dst.instructions_vec_mut() = src.instructions().to_vec();
+        *dst.instructions_mut() = src.instructions().to_vec();
         if let Some(lbl) = src.label() {
             dst.set_label(lbl);
         }
@@ -89,11 +89,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
         let c = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(c).instructions_vec_mut().push(ff("c"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
+        cfg.block_mut(c).instructions_mut().push(ff("c"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         cfg.add_edge(b, c, EdgeKind::Fallthrough);
 
@@ -111,7 +109,7 @@ mod tests {
     fn reverse_preserves_instructions() {
         let mut cfg = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("hello"));
 
         let rev = reverse_cfg(&cfg);
@@ -124,9 +122,7 @@ mod tests {
         let mut cfg = Cfg::new();
         let a = cfg.new_block();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
 

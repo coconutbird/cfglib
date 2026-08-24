@@ -99,11 +99,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let a = cfg.new_block();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::Fallthrough);
         cfg.add_edge(a, b, EdgeKind::Fallthrough);
 
@@ -121,10 +119,8 @@ mod tests {
     fn no_change_when_redundant_edge() {
         let mut cfg = Cfg::new();
         let a = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::Fallthrough);
 
         let dom = DominatorTree::compute(&cfg);
@@ -139,11 +135,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let a = cfg.new_block();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, b, EdgeKind::Fallthrough);
@@ -154,10 +148,10 @@ mod tests {
         let a2 = cfg2.new_block();
         let b2 = cfg2.new_block();
         cfg2.block_mut(cfg2.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("e"));
-        cfg2.block_mut(a2).instructions_vec_mut().push(ff("a"));
-        cfg2.block_mut(b2).instructions_vec_mut().push(ff("b"));
+        cfg2.block_mut(a2).instructions_mut().push(ff("a"));
+        cfg2.block_mut(b2).instructions_mut().push(ff("b"));
         cfg2.add_edge(cfg2.entry(), a2, EdgeKind::Fallthrough);
         cfg2.add_edge(a2, b2, EdgeKind::Fallthrough);
 

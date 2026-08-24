@@ -104,6 +104,13 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
   implement `core::error::Error`.
 - Counting accessors use the `*_count` suffix (`block_count`, `edge_count`,
   `value_count`); do not introduce `num_*` names.
+- `_mapped` marks the `RewriteMap`-returning variant of a transform that also
+  exists without one; a transform whose only form returns a map takes no
+  suffix. Passes that only add blocks or edges return the new identities
+  directly instead of a map.
+- Solver facilities (`_from` seeding, `_with_config` bounds, `try_`
+  fallibility) are grown per solver when a consumer needs them, not
+  speculatively mirrored; the edge solver currently carries the full matrix.
 - Use American English spelling in identifiers, documentation, and comments
   (`analyze`, `color`, `normalize`, `initialize`).
 - Unit tests live inline in a `#[cfg(test)] mod tests` in the file they test;

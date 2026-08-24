@@ -468,10 +468,8 @@ mod tests {
     fn valid_cfg_passes() {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
 
         let result = verify(&cfg);
@@ -481,9 +479,7 @@ mod tests {
     #[test]
     fn single_block_cfg_passes() {
         let mut cfg = Cfg::new();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
         assert!(verify(&cfg).is_ok());
     }
 
@@ -493,9 +489,7 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         let merge = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, merge, EdgeKind::Fallthrough);

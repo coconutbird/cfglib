@@ -89,7 +89,7 @@ mod tests {
     fn explicit_tail_call_detected() {
         let mut cfg = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(df_call("call", "foo", true));
 
         let tails = detect_explicit_tail_calls(&cfg);
@@ -102,10 +102,8 @@ mod tests {
     fn no_tail_calls_in_simple_cfg() {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
 
         let tails = detect_tail_calls(&cfg);

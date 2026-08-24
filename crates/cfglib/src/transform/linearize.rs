@@ -232,12 +232,8 @@ mod tests {
     #[test]
     fn linearize_single_block() {
         let mut cfg = Cfg::new();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("b"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("b"));
         let out = linearize(&cfg, BlockOrder::AllocationOrder, &TestEmitter);
         let names = mnemonics(&out);
         // Should be: label, a, b
@@ -248,10 +244,8 @@ mod tests {
     fn linearize_two_blocks_with_fallthrough() {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let out = linearize(&cfg, BlockOrder::AllocationOrder, &TestEmitter);
         let names = mnemonics(&out);
@@ -264,11 +258,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
         let c = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(c).instructions_vec_mut().push(ff("c"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
+        cfg.block_mut(c).instructions_mut().push(ff("c"));
         // entry → c (Jump), layout order is entry, b, c.
         cfg.add_edge(cfg.entry(), c, EdgeKind::Jump);
         let out = linearize(&cfg, BlockOrder::AllocationOrder, &TestEmitter);
@@ -283,10 +275,10 @@ mod tests {
         let t = cfg.new_block();
         let f = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("cmp"));
-        cfg.block_mut(t).instructions_vec_mut().push(ff("then"));
-        cfg.block_mut(f).instructions_vec_mut().push(ff("else"));
+        cfg.block_mut(t).instructions_mut().push(ff("then"));
+        cfg.block_mut(f).instructions_mut().push(ff("else"));
         cfg.add_edge(cfg.entry(), t, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), f, EdgeKind::ConditionalFalse);
         let out = linearize(&cfg, BlockOrder::AllocationOrder, &TestEmitter);
@@ -300,9 +292,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let out = linearize(&cfg, BlockOrder::ReversePostorder, &TestEmitter);
         // In RPO for a linear chain, entry comes first.
@@ -314,9 +306,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         // Reverse order: b first, then entry.
         let out = linearize(

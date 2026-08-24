@@ -243,7 +243,7 @@ mod tests {
     fn to_dot_contains_digraph_wrapper() {
         let mut cfg = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("nop"));
         let dot = cfg.to_dot();
         assert!(dot.starts_with("digraph cfg {"));
@@ -255,11 +255,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry_inst"));
-        cfg.block_mut(b)
-            .instructions_vec_mut()
-            .push(ff("second_inst"));
+        cfg.block_mut(b).instructions_mut().push(ff("second_inst"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dot = cfg.to_dot();
         assert!(dot.contains("entry_inst"), "should contain mnemonic");
@@ -271,9 +269,7 @@ mod tests {
         let mut cfg = Cfg::new();
         let a = cfg.new_block();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("br"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("br"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         let dot = cfg.to_dot();
@@ -294,9 +290,7 @@ mod tests {
     fn to_dot_edge_weight_shows_penwidth() {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
         let eid = cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         cfg.edge_mut(eid).set_weight(Some(0.75));
         let dot = cfg.to_dot();

@@ -187,10 +187,8 @@ mod tests {
     fn no_eh_all_normal() {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let model = EhModel::compute(&cfg);
         assert!(model.eh_edges.is_empty());
@@ -207,11 +205,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let handler = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("call"));
-        cfg.block_mut(handler)
-            .instructions_vec_mut()
-            .push(ff("catch"));
+        cfg.block_mut(handler).instructions_mut().push(ff("catch"));
         cfg.add_edge(cfg.entry(), handler, EdgeKind::ExceptionHandler);
         let model = EhModel::compute(&cfg);
         assert_eq!(model.eh_edges.len(), 1);
@@ -230,10 +226,10 @@ mod tests {
         let after = cfg.new_block();
         let exit = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("try"));
         cfg.block_mut(cleanup)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("finally"));
         let region = cfg.add_region(Region {
             id: RegionId::from_raw(0),
@@ -300,9 +296,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let lp = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("try"));
-        cfg.block_mut(lp).instructions_vec_mut().push(ff("handler"));
+        cfg.block_mut(lp).instructions_mut().push(ff("handler"));
         cfg.add_edge(cfg.entry(), lp, EdgeKind::ExceptionHandler);
         let model = EhModel::compute(&cfg);
         let pads = model.landing_pads();

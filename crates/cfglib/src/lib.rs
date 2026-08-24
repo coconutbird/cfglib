@@ -134,8 +134,8 @@ pub use analysis::metrics::{
     CfgMetrics, GraphMetrics, block_nesting_depths, cfg_block_nesting_depths,
 };
 pub use analysis::pattern::{CfgPattern, detect_cfg_patterns, detect_patterns};
-pub use analysis::profile::CfgProfile;
-pub use analysis::purity::{Purity, all_block_purities, block_purity, cfg_purity};
+pub use analysis::profile::{CfgProfile, set_uniform_edge_weights};
+pub use analysis::purity::{Purity, block_purities, block_purity, cfg_purity};
 pub use analysis::switch_table::{
     JumpTable, SwitchRecovery, SwitchSource, SwitchTargets, detect_switch_tables,
     recover_switch_tables,
@@ -170,7 +170,7 @@ pub use dataflow::node_fixpoint::{
 };
 pub use dataflow::phi_web::{PhiWeb, PhiWebs};
 pub use dataflow::reaching::{ReachingDef, ReachingDefs, ReachingDefsProblem};
-pub use dataflow::sccp::{SccpAnalysis, sccp};
+pub use dataflow::sccp::SccpAnalysis;
 pub use dataflow::ssa::{
     DominanceFrontiers, PhiPlacement, PhiPlacements, SsaBlock, SsaForm, SsaInstruction, SsaPhi,
     SsaValue, SsaVersion,
@@ -191,7 +191,7 @@ pub use graph::call_graph::{
     propagate_summaries,
 };
 pub use graph::cdg::control_dependence_graph;
-pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff, cfg_diff};
+pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff};
 pub use graph::directed::{DirectedEdge, DirectedGraph, NodeId};
 pub use graph::dominator::DominatorTree;
 pub use graph::dot::write_view_dot;

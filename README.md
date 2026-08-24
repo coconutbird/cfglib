@@ -134,7 +134,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Reducibility transform | `make_reducible` | Node splitting for irreducible CFGs |
 | Reverse CFG | `reverse_cfg` | Flip all edges, swap entry/exits |
 | Call graph | `call_graph` + `CallInfo`, `propagate_summaries` (callee-first SCC fixpoint) | Consumer-typed callees; interprocedural summary scaffold |
-| CFG diff | `cfg_diff` | Structural comparison (bindiff-style fingerprinting), no trait bounds |
+| CFG diff | `CfgDiff::compute` | Structural comparison (bindiff-style fingerprinting), no trait bounds |
 | Exception handling model | `EhModel::compute` | Payload-generic CFG input; stable source `EdgeId`, exact handler/unwind/leave/resume/continue kinds, landing pads, cleanup/resume blocks, handler identities, protected-by mapping, and cleanup continuations |
 | Integrity verification | `verify`, `verify_view`, `verify_edge_view`; `verify_with` + `SemanticValidator` | Structural node/edge-view checks plus deterministic typed consumer hooks for cardinality, ordering, and provenance rules |
 | DOT export | `to_dot` (`DisplayInstr`), `to_dot_with` (bound-free), `write_view_dot` (any view) | Graphviz output with escaped labels |
@@ -156,7 +156,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | SSA deconstruction | `eliminate_phis`, `copies_by_predecessor` | φ-to-copy lowering |
 | Phi webs | `PhiWebs::compute` | Congruence classes for register coalescing |
 | Constant propagation | `constant_propagation`, `ConstantFolder` (associated `Const`) | Top/Const/Bottom lattice over a consumer constant domain — machine words, strings, bools, float bits |
-| Sparse conditional constant propagation | `sccp` → `SccpAnalysis<V, C>` | SSA-based, marks unreachable edges |
+| Sparse conditional constant propagation | `SccpAnalysis::compute` | SSA-based, marks unreachable edges |
 | Copy propagation | `copy_propagation`, `CopySource` trait | Chain resolution + dead copy removal |
 | Memory SSA | `MemorySSA::compute`, `MemoryEffect` trait | Memory versioning with φ-nodes |
 | Abstract interpretation | `abstract_interpret`, `AbstractDomain` trait | Generic abstract domain framework |
@@ -173,7 +173,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Purity classification | `cfg_purity`, `block_purity`, `EffectInfo` (associated `Effect`) | Consumer effect vocabularies — machine memory/IO, allocation, panics |
 | Metrics | `GraphMetrics::compute` (any rooted view); `CfgMetrics::compute` | Node/edge counts, cyclomatic complexity, nesting depth, instruction density |
 | Pattern detection | `detect_patterns` (any view), `detect_cfg_patterns` (adds trampolines + arm orientation) | Diamond, chain, self-loop, empty trampoline |
-| Profiling | `CfgProfile`, `set_uniform_weights` | Edge-weight-based hot/cold block analysis |
+| Profiling | `CfgProfile::from_edge_weights`, `set_uniform_edge_weights` | Edge-weight-based hot/cold block analysis |
 | Tail call detection | `detect_tail_calls` (heuristic), `detect_explicit_tail_calls` (`CallInfo` markers) | |
 | Switch table recovery | `detect_switch_tables` (`SwitchSource`), `recover_switch_tables` | Consumer-typed targets: addresses, syntax nodes; dispatch → structured switch |
 

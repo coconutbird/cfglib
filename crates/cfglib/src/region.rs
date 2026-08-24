@@ -60,21 +60,27 @@ use crate::cfg::Cfg;
 pub struct RegionId(pub(crate) u32);
 
 impl RegionId {
-    pub(crate) fn from_index(index: usize) -> Self {
+    /// Create a `RegionId` from a dense zero-based index.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `index` exceeds `u32::MAX`.
+    #[must_use]
+    pub fn from_index(index: usize) -> Self {
         Self(u32::try_from(index).expect("region index exceeds u32::MAX"))
     }
 
     /// Create a `RegionId` from a raw index.
     #[inline]
     #[must_use]
-    pub fn from_raw(raw: u32) -> Self {
+    pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
     /// Returns the raw index.
     #[inline]
     #[must_use]
-    pub fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         self.0 as usize
     }
 }
@@ -170,7 +176,7 @@ impl HandlerRef {
     /// The handler's position in [`Region::handlers`].
     #[inline]
     #[must_use]
-    pub fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         self.handler as usize
     }
 }

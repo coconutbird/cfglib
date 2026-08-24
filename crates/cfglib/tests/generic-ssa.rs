@@ -150,7 +150,7 @@ fn shader_register_components_are_independent_ssa_variables() {
     let output_w = shader_variable(ShaderRegisterFile::Output, 0, Component::W);
 
     let mut cfg = Cfg::<ShaderInstruction>::new();
-    cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+    cfg.block_mut(cfg.entry()).instructions_mut().extend([
         ShaderInstruction {
             sources: vec![input_x.clone()],
             destinations: vec![temporary_x.clone()],

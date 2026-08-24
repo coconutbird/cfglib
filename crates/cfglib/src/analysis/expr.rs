@@ -219,7 +219,7 @@ mod tests {
         // mul t0, r1, r2    (t0 = r1 * r2)
         // add t1, r0, t0    (t1 = r0 + t0 = r0 + r1 * r2)
         let mut cfg: Cfg<DfInst> = Cfg::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             df_op("mul", "mul", 10, &[1, 2]),  // t0(loc10) = r1 * r2
             df_op("add", "add", 11, &[0, 10]), // t1(loc11) = r0 + t0
         ]);
@@ -257,7 +257,7 @@ mod tests {
         // const t0 = 42; add t1, r0, t0 → add(Leaf(r0), Const(42))
         let mut cfg: Cfg<DfInst> = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .extend([df_const("ldc", 10, 42), df_op("add", "add", 11, &[0, 10])]);
 
         let trees = recover_block_expressions(&cfg, cfg.entry());
@@ -276,7 +276,7 @@ mod tests {
         // mul t0, r1, r2; add t1, r0, t0; sub t2, t0, r3
         // t0 has 2 uses → should NOT be inlined, stays as Leaf.
         let mut cfg: Cfg<DfInst> = Cfg::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             df_op("mul", "mul", 10, &[1, 2]),
             df_op("add", "add", 11, &[0, 10]),
             df_op("sub", "sub", 12, &[10, 3]),

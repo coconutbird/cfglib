@@ -109,9 +109,7 @@ fn split_redirect_bypass_and_clone_report_metadata_preserving_mappings() {
     let mut cfg = Cfg::<u8, Route>::with_edge_payload();
     let exit = cfg.new_block();
     let entry = cfg.entry();
-    cfg.block_mut(entry)
-        .instructions_vec_mut()
-        .extend([10, 20, 30]);
+    cfg.block_mut(entry).instructions_mut().extend([10, 20, 30]);
     let outgoing = cfg.add_edge_with_payload(entry, exit, EdgeKind::Jump, Route::SwitchCase(9));
 
     let (parts, split) = split_node_at_points(

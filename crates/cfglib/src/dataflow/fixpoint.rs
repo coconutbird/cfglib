@@ -47,13 +47,13 @@ pub trait Problem<I> {
     fn transfer(&self, cfg: &Cfg<I>, block: BlockId, input: &Self::Fact) -> Self::Fact;
 }
 
-/// Result of a fixpoint computation.
+/// Per-block facts computed by a fixpoint solve.
 #[derive(Debug, Clone)]
 pub struct Facts<F> {
     /// The IN fact for each block (indexed by `BlockId::index()`).
-    pub block_in: Vec<F>,
+    block_in: Vec<F>,
     /// The OUT fact for each block (indexed by `BlockId::index()`).
-    pub block_out: Vec<F>,
+    block_out: Vec<F>,
 }
 
 impl<F> Facts<F> {

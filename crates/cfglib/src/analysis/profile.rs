@@ -27,13 +27,13 @@ impl CfgProfile {
     /// # Examples
     ///
     /// ```
-    /// use cfglib::{Cfg, EdgeKind, CfgProfile};
+    /// use cfglib::{Cfg, CfgProfile, EdgeKind, set_uniform_edge_weights};
     ///
     /// let mut cfg = Cfg::<u32>::new();
     /// let b1 = cfg.new_block();
     /// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
     ///
-    /// CfgProfile::set_uniform_weights(&mut cfg);
+    /// set_uniform_edge_weights(&mut cfg);
     /// let profile = CfgProfile::from_edge_weights(&cfg);
     /// assert!(profile.hottest_block().is_some());
     /// ```
@@ -72,25 +72,6 @@ impl CfgProfile {
         }
     }
 
-    /// Set uniform edge weights (equal probability for all successors).
-    pub fn set_uniform_weights<I>(cfg: &mut Cfg<I>) {
-        let block_ids: Vec<BlockId> = cfg
-            .blocks()
-            .iter()
-            .map(super::super::block::BasicBlock::id)
-            .collect();
-        for bid in block_ids {
-            let succs = cfg.successor_edges(bid).to_vec();
-            if succs.is_empty() {
-                continue;
-            }
-            let w = 1.0 / crate::usize_to_f64(succs.len());
-            for eid in succs {
-                cfg.edge_mut(eid).set_weight(Some(w));
-            }
-        }
-    }
-
     /// Get the hottest block (highest frequency).
     #[must_use]
     pub fn hottest_block(&self) -> Option<(BlockId, f64)> {
@@ -120,6 +101,25 @@ impl CfgProfile {
     }
 }
 
+/// Set uniform edge weights on `cfg` (equal probability for all successors).
+pub fn set_uniform_edge_weights<I>(cfg: &mut Cfg<I>) {
+    let block_ids: Vec<BlockId> = cfg
+        .blocks()
+        .iter()
+        .map(crate::block::BasicBlock::id)
+        .collect();
+    for bid in block_ids {
+        let succs = cfg.successor_edges(bid).to_vec();
+        if succs.is_empty() {
+            continue;
+        }
+        let w = 1.0 / crate::usize_to_f64(succs.len());
+        for eid in succs {
+            cfg.edge_mut(eid).set_weight(Some(w));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,14 +132,12 @@ mod tests {
         let mut cfg = Cfg::new();
         let a = cfg.new_block();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("br"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("br"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
-        CfgProfile::set_uniform_weights(&mut cfg);
+        set_uniform_edge_weights(&mut cfg);
         let profile = CfgProfile::from_edge_weights(&cfg);
         assert_eq!(profile.edge_weights.len(), 2);
         for &w in profile.edge_weights.values() {
