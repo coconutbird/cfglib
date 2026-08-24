@@ -10,12 +10,12 @@ use alloc::vec::Vec;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::dataflow::VariableId;
-use crate::dataflow::constprop::{ConstValue, ConstantFolder};
+use crate::dataflow::constant_propagation::{ConstValue, ConstantFolder};
 use crate::dataflow::ssa::{SsaForm, SsaValue};
 
 /// Result of SCCP analysis.
 #[derive(Debug, Clone)]
-pub struct SccpResult<V, C> {
+pub struct SccpAnalysis<V, C> {
     /// Lattice value computed for each renamed SSA value.
     pub values: BTreeMap<SsaValue<V>, ConstValue<C>>,
     /// CFG edges proven executable.
@@ -131,7 +131,7 @@ fn evaluate_phis<I: ConstantFolder>(
 pub fn sccp<I: ConstantFolder>(
     cfg: &Cfg<I>,
     ssa: &SsaForm<I::Variable>,
-) -> SccpResult<I::Variable, I::Const> {
+) -> SccpAnalysis<I::Variable, I::Const> {
     let mut values = BTreeMap::new();
     let mut executable_edges = BTreeSet::new();
     let mut reachable_blocks = BTreeSet::new();
@@ -182,7 +182,7 @@ pub fn sccp<I: ConstantFolder>(
         }
     }
 
-    SccpResult {
+    SccpAnalysis {
         values,
         executable_edges,
         reachable_blocks,
@@ -192,21 +192,21 @@ pub fn sccp<I: ConstantFolder>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataflow::ssa::build_ssa;
+
     use crate::edge::EdgeKind;
     use crate::graph::dominator::DominatorTree;
     use crate::test_util::{DfInst, df_const, df_def, df_use};
 
-    fn analyse(cfg: &Cfg<DfInst>) -> SccpResult<u16, i64> {
+    fn analyze(cfg: &Cfg<DfInst>) -> SccpAnalysis<u16, i64> {
         let dom = DominatorTree::compute(cfg);
-        let ssa = build_ssa(cfg, &dom);
+        let ssa = SsaForm::compute(cfg, &dom);
         sccp(cfg, &ssa)
     }
 
     #[test]
     fn entry_is_reachable() {
         let cfg = Cfg::<DfInst>::new();
-        assert!(analyse(&cfg).reachable_blocks.contains(&cfg.entry()));
+        assert!(analyze(&cfg).reachable_blocks.contains(&cfg.entry()));
     }
 
     #[test]
@@ -216,7 +216,7 @@ mod tests {
         cfg.block_mut(cfg.entry()).push(df_def("def", 0));
         cfg.block_mut(next).push(df_use("use", 0));
         cfg.add_edge(cfg.entry(), next, EdgeKind::Fallthrough);
-        assert!(analyse(&cfg).reachable_blocks.contains(&next));
+        assert!(analyze(&cfg).reachable_blocks.contains(&next));
     }
 
     #[test]
@@ -224,7 +224,7 @@ mod tests {
         let mut cfg = Cfg::<DfInst>::new();
         cfg.block_mut(cfg.entry()).push(df_const("constant", 0, 42));
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
+        let ssa = SsaForm::compute(&cfg, &dom);
         let definition = ssa.block(cfg.entry()).instructions[0].defs[0].clone();
         let result = sccp(&cfg, &ssa);
         assert_eq!(result.values[&definition], ConstValue::Const(42));
@@ -236,7 +236,7 @@ mod tests {
         let reachable = cfg.new_block();
         let unreachable = cfg.new_block();
         cfg.add_edge(cfg.entry(), reachable, EdgeKind::Fallthrough);
-        let result = analyse(&cfg);
+        let result = analyze(&cfg);
         assert!(result.reachable_blocks.contains(&reachable));
         assert!(!result.reachable_blocks.contains(&unreachable));
     }
@@ -261,7 +261,7 @@ mod tests {
         cfg.add_edge(arm_b, merge, EdgeKind::Fallthrough);
 
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
+        let ssa = SsaForm::compute(&cfg, &dom);
         let result = sccp(&cfg, &ssa);
         let phi = &ssa.block(merge).phis[0];
         assert_eq!(
@@ -295,7 +295,7 @@ mod tests {
         cfg.add_edge(body, header, EdgeKind::Back);
 
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
+        let ssa = SsaForm::compute(&cfg, &dom);
         let result = sccp(&cfg, &ssa);
         let phi = &ssa.block(header).phis[0];
         assert_eq!(

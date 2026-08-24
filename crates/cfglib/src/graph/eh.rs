@@ -123,39 +123,34 @@ pub struct EhModel {
 }
 
 mod build;
-pub use build::build_eh_model;
 
-/// Returns all landing pad blocks.
-#[must_use]
-pub fn landing_pads(model: &EhModel) -> Vec<BlockId> {
-    model
-        .block_kinds
-        .iter()
-        .filter(|&(_, k)| *k == EhBlockKind::LandingPad)
-        .map(|(&bid, _)| bid)
-        .collect()
-}
+impl EhModel {
+    /// All blocks classified as `kind`.
+    fn blocks_of_kind(&self, kind: EhBlockKind) -> Vec<BlockId> {
+        self.block_kinds
+            .iter()
+            .filter(|&(_, k)| *k == kind)
+            .map(|(&block, _)| block)
+            .collect()
+    }
 
-/// Returns all cleanup blocks.
-#[must_use]
-pub fn cleanup_blocks(model: &EhModel) -> Vec<BlockId> {
-    model
-        .block_kinds
-        .iter()
-        .filter(|&(_, k)| *k == EhBlockKind::Cleanup)
-        .map(|(&bid, _)| bid)
-        .collect()
-}
+    /// Returns all landing pad blocks.
+    #[must_use]
+    pub fn landing_pads(&self) -> Vec<BlockId> {
+        self.blocks_of_kind(EhBlockKind::LandingPad)
+    }
 
-/// Returns blocks that resume, rethrow, or continue an exception.
-#[must_use]
-pub fn resume_blocks(model: &EhModel) -> Vec<BlockId> {
-    model
-        .block_kinds
-        .iter()
-        .filter(|&(_, kind)| *kind == EhBlockKind::Resume)
-        .map(|(&block, _)| block)
-        .collect()
+    /// Returns all cleanup blocks.
+    #[must_use]
+    pub fn cleanup_blocks(&self) -> Vec<BlockId> {
+        self.blocks_of_kind(EhBlockKind::Cleanup)
+    }
+
+    /// Returns blocks that resume, rethrow, or continue an exception.
+    #[must_use]
+    pub fn resume_blocks(&self) -> Vec<BlockId> {
+        self.blocks_of_kind(EhBlockKind::Resume)
+    }
 }
 
 #[cfg(test)]
@@ -197,7 +192,7 @@ mod tests {
             .push(ff("a"));
         cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
-        let model = build_eh_model(&cfg);
+        let model = EhModel::compute(&cfg);
         assert!(model.eh_edges.is_empty());
         assert!(
             model
@@ -218,7 +213,7 @@ mod tests {
             .instructions_vec_mut()
             .push(ff("catch"));
         cfg.add_edge(cfg.entry(), handler, EdgeKind::ExceptionHandler);
-        let model = build_eh_model(&cfg);
+        let model = EhModel::compute(&cfg);
         assert_eq!(model.eh_edges.len(), 1);
         assert_eq!(model.block_kinds[&handler], EhBlockKind::LandingPad);
         assert!(model.protected_by[&handler].contains(&cfg.entry()));
@@ -252,7 +247,7 @@ mod tests {
         });
 
         // Without records the model is exactly what it always was.
-        assert!(build_eh_model(&cfg).cleanups.is_empty());
+        assert!(EhModel::compute(&cfg).cleanups.is_empty());
 
         let handler = HandlerRef::new(region, 0);
         cfg.set_cleanup_resume(handler, cleanup);
@@ -274,7 +269,7 @@ mod tests {
         cfg.add_edge(cleanup, after, EdgeKind::Fallthrough);
         cfg.add_edge(cleanup, exit, EdgeKind::Fallthrough);
 
-        let model = build_eh_model(&cfg);
+        let model = EhModel::compute(&cfg);
         assert_eq!(model.block_kinds[&cleanup], EhBlockKind::Cleanup);
         let recorded = &model.cleanups[&cleanup];
         assert_eq!(recorded.handler, handler);
@@ -309,8 +304,8 @@ mod tests {
             .push(ff("try"));
         cfg.block_mut(lp).instructions_vec_mut().push(ff("handler"));
         cfg.add_edge(cfg.entry(), lp, EdgeKind::ExceptionHandler);
-        let model = build_eh_model(&cfg);
-        let pads = landing_pads(&model);
+        let model = EhModel::compute(&cfg);
+        let pads = model.landing_pads();
         assert_eq!(pads.len(), 1);
         assert_eq!(pads[0], lp);
     }
@@ -319,7 +314,7 @@ mod tests {
     fn payload_cfg_retains_every_exception_transfer_and_edge_identity() {
         use crate::exception::{ExceptionDisposition, ExceptionFlow, ExceptionPhase};
 
-        let mut cfg = Cfg::<(), ExceptionFlow<u32>>::new_with_edge_payload();
+        let mut cfg = Cfg::<(), ExceptionFlow<u32>>::with_edge_payload();
         let handler = cfg.new_block();
         let leave = cfg.new_block();
         let rethrow = cfg.new_block();
@@ -365,7 +360,7 @@ mod tests {
             ),
         );
 
-        let model = build_eh_model(&cfg);
+        let model = EhModel::compute(&cfg);
         assert_eq!(
             model
                 .eh_edges
@@ -382,7 +377,7 @@ mod tests {
         assert_eq!(model.eh_edges[0].edge_id, handler_edge);
         assert_eq!(cfg[model.eh_edges[0].edge_id].payload().metadata(), &11);
         assert_eq!(
-            resume_blocks(&model),
+            model.resume_blocks(),
             alloc::vec![rethrow, continue_decision]
         );
     }
@@ -406,7 +401,7 @@ mod tests {
             parent: None,
         });
 
-        let model = build_eh_model(&cfg);
+        let model = EhModel::compute(&cfg);
         assert_eq!(model.block_kinds[&cleanup], EhBlockKind::Cleanup);
         assert_eq!(
             model.handlers[&cleanup],

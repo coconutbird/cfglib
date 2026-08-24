@@ -1,4 +1,4 @@
-use cfglib::{DominatorTree, EffectInfo, InstrInfo, ProgramPoint, build_ssa};
+use cfglib::{DominatorTree, EffectInfo, InstrInfo, ProgramPoint, SsaForm};
 use cfglib_dxbc::Sm4Effect;
 use cfglib_dxbc::{Sm4Component, Sm4Index, Sm4Instruction, Sm4Register, Sm4Variable, build_cfg};
 use dxbc::shex::{
@@ -179,7 +179,7 @@ fn decoded_shex_builds_renamed_ssa_across_a_branch() {
     let program = decode(&bytes).unwrap();
     let cfg = build_cfg(&program).unwrap();
     let dominators = DominatorTree::compute(&cfg);
-    let ssa = build_ssa(&cfg, &dominators);
+    let ssa = SsaForm::compute(&cfg, &dominators);
     let temporary = variable(RegisterType::Temp, 0, Sm4Component::X);
     let output = variable(RegisterType::Output, 0, Sm4Component::X);
 

@@ -49,14 +49,14 @@ pub trait Problem<I> {
 
 /// Result of a fixpoint computation.
 #[derive(Debug, Clone)]
-pub struct FixpointResult<F> {
+pub struct Facts<F> {
     /// The IN fact for each block (indexed by `BlockId::index()`).
     pub block_in: Vec<F>,
     /// The OUT fact for each block (indexed by `BlockId::index()`).
     pub block_out: Vec<F>,
 }
 
-impl<F> FixpointResult<F> {
+impl<F> Facts<F> {
     /// Get the IN fact for a block.
     #[must_use]
     pub fn fact_in(&self, block: BlockId) -> &F {
@@ -95,8 +95,8 @@ impl<F> FixpointResult<F> {
 /// let live = Liveness::compute(&cfg);
 /// assert!(live.live_in(cfg.entry()).is_empty()); // r0 defined, not used
 /// ```
-pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::Fact> {
-    let n = cfg.num_blocks();
+pub fn solve_problem<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> Facts<P::Fact> {
+    let n = cfg.block_count();
     let bottom = problem.bottom();
 
     let mut block_in: Vec<P::Fact> = vec![bottom.clone(); n];
@@ -110,7 +110,7 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
                 problem.transfer(cfg, cfg.entry(), &block_in[cfg.entry().index()]);
         }
         Direction::Backward => {
-            // For backward analysis, initialise all exit blocks.
+            // For backward analysis, initialize all exit blocks.
             for b in cfg.blocks() {
                 if cfg.successor_edges(b.id()).is_empty() {
                     block_out[b.id().index()] = problem.entry_fact();
@@ -182,7 +182,7 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
         }
     }
 
-    FixpointResult {
+    Facts {
         block_in,
         block_out,
     }

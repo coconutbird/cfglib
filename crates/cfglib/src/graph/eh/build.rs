@@ -1,3 +1,5 @@
+//! Construction of [`EhModel`] from a CFG's edges and regions.
+
 extern crate alloc;
 
 use alloc::collections::{BTreeMap, BTreeSet};
@@ -9,37 +11,40 @@ use crate::region::{Cleanup, HandlerRef};
 
 use super::{EhBlockKind, EhEdge, EhEdgeKind, EhModel};
 
-/// Build an EH model by analysing edge kinds and region metadata.
-///
-/// Targets of handler/unwind edges are classified as landing pads. Sources of
-/// resume/continue edges are classified as resume points. Explicit [`Region`]
-/// metadata is authoritative, so a `finally` or `fault` target remains a
-/// cleanup even when an unwind edge also reaches it.
-///
-/// [`Region`]: crate::Region
-///
-/// Cleanup records the frontend attached to a handler
-/// ([`Cfg::add_continuation`]) are carried into [`EhModel::cleanups`], keyed
-/// by that handler's entry block, so an analysis reads cleanup-then-continue
-/// structure instead of a fan of indistinguishable out-edges.
-///
-/// # Examples
-///
-/// ```
-/// use cfglib::{Cfg, EdgeKind, build_eh_model};
-///
-/// let mut cfg = Cfg::<u32>::new();
-/// let b0 = cfg.entry();
-/// let b1 = cfg.new_block();
-/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
-///
-/// let model = build_eh_model(&cfg);
-/// // No exception edges, so no landing pads.
-/// assert!(model.eh_edges.is_empty());
-/// ```
-#[must_use]
-pub fn build_eh_model<I, E>(cfg: &Cfg<I, E>) -> EhModel {
-    EhModelBuilder::from_cfg(cfg).finish()
+impl EhModel {
+    /// Compute an EH model by analyzing edge kinds and region metadata.
+    ///
+    /// Targets of handler/unwind edges are classified as landing pads. Sources
+    /// of resume/continue edges are classified as resume points. Explicit
+    /// [`Region`] metadata is authoritative, so a `finally` or `fault` target
+    /// remains a cleanup even when an unwind edge also reaches it.
+    ///
+    /// [`Region`]: crate::Region
+    ///
+    /// Cleanup records the frontend attached to a handler
+    /// ([`Cfg::add_continuation`]) are carried into [`EhModel::cleanups`],
+    /// keyed by that handler's entry block, so an analysis reads
+    /// cleanup-then-continue structure instead of a fan of indistinguishable
+    /// out-edges.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind, EhModel};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b0 = cfg.entry();
+    /// let b1 = cfg.new_block();
+    /// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
+    ///
+    /// let model = EhModel::compute(&cfg);
+    /// // No exception edges, so no landing pads.
+    /// assert!(model.eh_edges.is_empty());
+    /// ```
+    #[must_use]
+    pub fn compute<I, E>(cfg: &Cfg<I, E>) -> Self {
+        EhModelBuilder::from_cfg(cfg).finish()
+    }
 }
 
 #[derive(Default)]

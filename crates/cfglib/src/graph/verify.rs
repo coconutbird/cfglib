@@ -30,12 +30,12 @@ impl core::fmt::Display for VerifyError {
 
 /// Result of running [`verify`] on a CFG.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerifyResult {
+pub struct VerifyReport {
     /// All detected violations (empty = valid).
     pub errors: Vec<VerifyError>,
 }
 
-impl VerifyResult {
+impl VerifyReport {
     /// True when the CFG passes all invariant checks.
     #[must_use]
     pub fn is_ok(&self) -> bool {
@@ -71,14 +71,14 @@ pub trait SemanticValidator<I, E> {
 
 /// Structural and consumer-semantic verification results.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SemanticVerifyResult<E> {
+pub struct SemanticVerifyReport<E> {
     /// Storage and adjacency invariants checked by [`verify`].
-    pub structural: VerifyResult,
+    pub structural: VerifyReport,
     /// Typed errors emitted by the consumer validator.
     pub semantic_errors: Vec<E>,
 }
 
-impl<E> SemanticVerifyResult<E> {
+impl<E> SemanticVerifyReport<E> {
     /// Whether both structural and semantic validation succeeded.
     #[must_use]
     pub fn is_ok(&self) -> bool {
@@ -97,7 +97,7 @@ fn verify_edge_endpoints<I, E>(cfg: &Cfg<I, E>, block_count: usize, errors: &mut
         if edge.source().index() >= block_count {
             errors.push(VerifyError {
                 message: alloc::format!(
-                    "edge {} source {} out of bounds (num_blocks={})",
+                    "edge {} source {} out of bounds (block_count={})",
                     edge.id(),
                     edge.source(),
                     block_count
@@ -107,7 +107,7 @@ fn verify_edge_endpoints<I, E>(cfg: &Cfg<I, E>, block_count: usize, errors: &mut
         if edge.target().index() >= block_count {
             errors.push(VerifyError {
                 message: alloc::format!(
-                    "edge {} target {} out of bounds (num_blocks={})",
+                    "edge {} target {} out of bounds (block_count={})",
                     edge.id(),
                     edge.target(),
                     block_count
@@ -194,7 +194,7 @@ fn verify_unique_adjacency<I, E>(cfg: &Cfg<I, E>, errors: &mut Vec<VerifyError>)
 /// 4. Every reachable non-entry block has at least one predecessor.
 /// 5. No duplicate edges in adjacency lists.
 ///
-/// Returns a [`VerifyResult`] containing all violations found.
+/// Returns a [`VerifyReport`] containing all violations found.
 ///
 /// # Examples
 ///
@@ -209,21 +209,21 @@ fn verify_unique_adjacency<I, E>(cfg: &Cfg<I, E>, errors: &mut Vec<VerifyError>)
 /// assert!(result.is_ok());
 /// ```
 #[must_use]
-pub fn verify<I, E>(cfg: &Cfg<I, E>) -> VerifyResult {
+pub fn verify<I, E>(cfg: &Cfg<I, E>) -> VerifyReport {
     let mut errors = Vec::new();
-    let n = cfg.num_blocks();
+    let n = cfg.block_count();
 
     // 1. Entry in bounds.
     if cfg.entry().index() >= n {
         errors.push(VerifyError {
             message: alloc::format!(
-                "entry block {} out of bounds (num_blocks={})",
+                "entry block {} out of bounds (block_count={})",
                 cfg.entry(),
                 n
             ),
         });
         // Can't do much more if entry is invalid.
-        return VerifyResult { errors };
+        return VerifyReport { errors };
     }
 
     verify_edge_endpoints(cfg, n, &mut errors);
@@ -244,14 +244,14 @@ pub fn verify<I, E>(cfg: &Cfg<I, E>) -> VerifyResult {
 
     verify_unique_adjacency(cfg, &mut errors);
 
-    VerifyResult { errors }
+    VerifyReport { errors }
 }
 
 /// Validate structural invariants and consumer semantics in stable order.
 #[must_use]
-pub fn verify_with<I, E, V>(cfg: &Cfg<I, E>, validator: &V) -> SemanticVerifyResult<V::Error>
+pub fn verify_with<I, E, S>(cfg: &Cfg<I, E>, validator: &S) -> SemanticVerifyReport<S::Error>
 where
-    V: SemanticValidator<I, E>,
+    S: SemanticValidator<I, E>,
 {
     let structural = verify(cfg);
     let mut semantic_errors = Vec::new();
@@ -262,7 +262,7 @@ where
         validator.validate_edge(cfg, edge.id(), &mut semantic_errors);
     }
     validator.finish(cfg, &mut semantic_errors);
-    SemanticVerifyResult {
+    SemanticVerifyReport {
         structural,
         semantic_errors,
     }
@@ -280,7 +280,7 @@ where
 /// its own graph store — the counterpart of [`verify`], which checks the
 /// storage invariants of [`Cfg`] itself.
 #[must_use]
-pub fn verify_view<G: RootedGraphView>(graph: &G) -> VerifyResult {
+pub fn verify_view<G: RootedGraphView>(graph: &G) -> VerifyReport {
     let mut errors = Vec::new();
     let node_count = graph.node_count();
 
@@ -292,7 +292,7 @@ pub fn verify_view<G: RootedGraphView>(graph: &G) -> VerifyResult {
                 root.index()
             ),
         });
-        return VerifyResult { errors };
+        return VerifyReport { errors };
     }
 
     // Forward and reverse adjacency must agree as multisets of (source, target).
@@ -350,7 +350,7 @@ pub fn verify_view<G: RootedGraphView>(graph: &G) -> VerifyResult {
         }
     }
 
-    VerifyResult { errors }
+    VerifyReport { errors }
 }
 
 /// Validate the node and stable-edge contracts of an edge-aware rooted view.
@@ -360,7 +360,7 @@ pub fn verify_view<G: RootedGraphView>(graph: &G) -> VerifyResult {
 /// target adjacency, and adjacency endpoint orientation. Parallel edges are
 /// valid because their identities remain distinct.
 #[must_use]
-pub fn verify_edge_view<G>(graph: &G) -> VerifyResult
+pub fn verify_edge_view<G>(graph: &G) -> VerifyReport
 where
     G: EdgeGraphView + RootedGraphView,
 {
@@ -625,7 +625,7 @@ mod tests {
 
     #[test]
     fn semantic_hooks_return_typed_cardinality_and_order_errors() {
-        let mut cfg = Cfg::<(), Route>::new_with_edge_payload();
+        let mut cfg = Cfg::<(), Route>::with_edge_payload();
         let branch = cfg.new_block();
         let handler_a = cfg.new_block();
         let handler_b = cfg.new_block();

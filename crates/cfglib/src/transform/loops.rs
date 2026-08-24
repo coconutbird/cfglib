@@ -15,7 +15,7 @@ use crate::graph::structure::NaturalLoop;
 
 /// Result of loop rotation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RotationResult {
+pub struct LoopRotation {
     /// The new header block (was the first body block).
     pub new_header: BlockId,
     /// The duplicated test block (copy of original header at bottom).
@@ -37,7 +37,7 @@ pub struct RotationResult {
 /// not applicable.
 ///
 /// Requires `I: Clone` to duplicate the header block's instructions.
-pub fn rotate_loop<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<RotationResult> {
+pub fn rotate_loop<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<LoopRotation> {
     // Only rotate loops with exactly one latch.
     if lp.latches.len() != 1 {
         return None;
@@ -84,7 +84,7 @@ pub fn rotate_loop<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<Rotat
     // Bottom test loops back to body_succ (not header) on continue.
     cfg.add_edge(bottom_test, body_succ, EdgeKind::Back);
 
-    Some(RotationResult {
+    Some(LoopRotation {
         new_header: body_succ,
         bottom_test,
     })

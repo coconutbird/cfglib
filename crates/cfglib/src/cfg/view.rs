@@ -1,3 +1,5 @@
+//! Allocation-free successor and predecessor iterators of [`Cfg`].
+
 use core::ops::Index;
 use core::slice;
 
@@ -10,7 +12,7 @@ impl<I, E> crate::graph::view::DirectedGraphView for Cfg<I, E> {
     type NodeId = BlockId;
 
     fn node_count(&self) -> usize {
-        self.num_blocks()
+        self.block_count()
     }
 
     fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {

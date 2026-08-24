@@ -54,7 +54,7 @@ impl crate::graph::view::DenseNodeId for BlockId {
 /// Predication (ARM IT blocks, GPU wave predication, CMOV sequences) is not
 /// block state: instructions declare their guards through
 /// [`Predicated`](crate::Predicated), and
-/// [`lift_predicated`](crate::lift_predicated) regionises them.
+/// [`lift_predicated`](crate::lift_predicated) regionizes them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BasicBlock<I> {

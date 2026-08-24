@@ -1,6 +1,6 @@
 //! Graph algorithms — traversals, dominators, structural analysis, and export.
 
-pub mod callgraph;
+pub mod call_graph;
 pub mod cdg;
 pub mod diff;
 pub mod directed;
@@ -10,10 +10,10 @@ pub mod edge_traverse;
 pub mod edge_view;
 pub mod eh;
 pub mod horn;
-pub mod inc_dom;
+pub mod incremental_dominators;
 pub mod interval;
 pub mod keyed;
-pub mod loopnest;
+pub mod loop_nest;
 pub mod open;
 pub mod pdg;
 pub mod reducible;

@@ -46,7 +46,7 @@ fn connect_clique<V: VariableId>(
 /// together. Each undirected relation is stored once; [`color_graph`] treats
 /// both incoming and outgoing adjacency as conflicts.
 #[must_use]
-pub fn build_interference_graph<I, V>(cfg: &Cfg<I>, live: &Liveness<V>) -> DirectedGraph<V, ()>
+pub fn interference_graph<I, V>(cfg: &Cfg<I>, live: &Liveness<V>) -> DirectedGraph<V, ()>
 where
     I: InstrInfo<Variable = V>,
     V: VariableId,
@@ -105,7 +105,7 @@ pub struct ColorAssignment<N> {
 ///
 /// Edge orientation is ignored: both successors and predecessors are treated
 /// as neighbors. The function therefore works with an interference graph
-/// emitted by [`build_interference_graph`] and with consumer-owned graph views.
+/// emitted by [`interference_graph`] and with consumer-owned graph views.
 #[must_use]
 pub fn color_graph<G: DirectedGraphView>(graph: &G) -> ColorAssignment<G::NodeId> {
     let mut neighbors = BTreeMap::new();
@@ -190,7 +190,7 @@ mod tests {
             .push(df_op("sum", "add", 2, &[0, 1]));
         let live = Liveness::compute(&cfg);
 
-        let graph = build_interference_graph(&cfg, &live);
+        let graph = interference_graph(&cfg, &live);
         let left = graph.node_ids().find(|&node| graph[node] == 0).unwrap();
         let right = graph.node_ids().find(|&node| graph[node] == 1).unwrap();
         let result = color_graph(&graph);

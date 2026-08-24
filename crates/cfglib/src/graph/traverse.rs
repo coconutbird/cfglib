@@ -25,7 +25,7 @@ pub enum TraversalDirection {
 /// reading it *inside* a walk costs more than the branch it looks like:
 /// `successors` and `predecessors` are distinct opaque iterator types, so a
 /// core that decides per expanded node cannot hold either of them. It has to
-/// materialise the adjacency into a buffer first and then test and push out of
+/// materialize the adjacency into a buffer first and then test and push out of
 /// that copy. Owning one buffer per walk removed the copy's *allocation*; the
 /// copy itself is what was left.
 ///

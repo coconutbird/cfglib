@@ -1,3 +1,5 @@
+//! Configurable search over an open node space.
+
 extern crate alloc;
 
 use alloc::collections::{BTreeSet, VecDeque};

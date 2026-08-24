@@ -79,6 +79,37 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
 - Keep workspace-only tooling outside package `src/` trees unless it is an actual
   Cargo target.
 
+## Naming and Layout Conventions
+
+- Module files use the named-file style — `parent.rs` beside a `parent/`
+  directory. `mod.rs` is forbidden (enforced by the policy script).
+- Top-level namespace modules (`analysis`, `dataflow`, `graph`, `transform`)
+  declare `pub mod` children and hoist nothing; the crate root is the single
+  flat facade that re-exports every public item, one `pub use` per module,
+  alphabetized. Domain modules with a narrow API (`cfg`, `ast`, `exception`,
+  and split coordinators such as `graph/search/events`) keep children private
+  and re-export their public surface.
+- Compound words in file and identifier names are underscore-separated and
+  spelled in full (`constant_propagation`, `value_numbering`, `call_graph`);
+  domain-standard acronyms (`ssa`, `scc`, `sccp`, `dce`, `pre`, `cdg`, `pdg`,
+  `eh`, `seh`, `veh`, `clr`, `expr`) stay.
+- A derived analysis or index is constructed with `Type::compute(...)`
+  (`DominatorTree::compute`, `SsaForm::compute`, `EhModel::compute`).
+  `build` is reserved for fallible builder entry points (`CfgBuilder::build`).
+  Functions returning raw graphs use noun names (`condensation`, `call_graph`,
+  `interference_graph`).
+- `*Result` names are reserved for types used in `Result` positions; plain
+  outputs are named for what they are (`Facts`, `VerifyReport`,
+  `SccpAnalysis`, `CopyPropagationStats`). Error types end in `Error` and
+  implement `core::error::Error`.
+- Counting accessors use the `*_count` suffix (`block_count`, `edge_count`,
+  `value_count`); do not introduce `num_*` names.
+- Use American English spelling in identifiers, documentation, and comments
+  (`analyze`, `color`, `normalize`, `initialize`).
+- Unit tests live inline in a `#[cfg(test)] mod tests` in the file they test;
+  split them into `<parent>/tests.rs` when the file approaches the 1,000-line
+  cap. Test modules are always named `tests`.
+
 ## Clean and Ergonomic Code
 
 - Keep functions focused and control flow shallow. Prefer guard clauses when they

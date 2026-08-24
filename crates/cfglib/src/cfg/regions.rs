@@ -1,3 +1,5 @@
+//! Exception-region accessors of [`Cfg`].
+
 use crate::block::BlockId;
 use crate::region::{Region, RegionId};
 

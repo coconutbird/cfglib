@@ -1,3 +1,5 @@
+//! Subgraph extraction from a [`Cfg`].
+
 extern crate alloc;
 
 use alloc::vec::Vec;
@@ -30,8 +32,8 @@ impl<I: Clone, E: Clone> Cfg<I, E> {
     /// cfg.add_edge(b1, b2, EdgeKind::Fallthrough);
     ///
     /// let sub = cfg.subgraph(&[b0, b1]);
-    /// assert_eq!(sub.num_blocks(), 2);
-    /// assert_eq!(sub.num_edges(), 1); // b1→b2 dropped
+    /// assert_eq!(sub.block_count(), 2);
+    /// assert_eq!(sub.edge_count(), 1); // b1→b2 dropped
     /// ```
     #[must_use]
     pub fn subgraph(&self, blocks: &[BlockId]) -> Self {
@@ -49,15 +51,15 @@ impl<I: Clone, E: Clone> Cfg<I, E> {
             for edge in self.edges() {
                 mapping.record_edge(edge.id(), []);
             }
-            let empty = Self::new_with_edge_payload();
+            let empty = Self::with_edge_payload();
             mapping.record_created_block(empty.entry());
             return (empty, mapping);
         }
 
-        let mut new_cfg = Self::new_with_edge_payload();
+        let mut new_cfg = Self::with_edge_payload();
 
         // Map old BlockId → new BlockId via dense Vec (O(1) lookup).
-        let mut id_map: Vec<Option<BlockId>> = alloc::vec![None; self.num_blocks()];
+        let mut id_map: Vec<Option<BlockId>> = alloc::vec![None; self.block_count()];
         id_map[blocks[0].index()] = Some(new_cfg.entry());
         mapping.record_block(blocks[0], [new_cfg.entry()]);
         mapping.record_created_block(new_cfg.entry());

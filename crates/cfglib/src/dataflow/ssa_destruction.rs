@@ -64,7 +64,7 @@ pub fn copies_by_predecessor<V>(copies: &[PhiCopy<V>]) -> Vec<(BlockId, Vec<&Phi
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::ssa::build_ssa;
+
     use crate::edge::EdgeKind;
     use crate::graph::dominator::DominatorTree;
     use crate::test_util::{DfInst, df_def, df_use};
@@ -85,7 +85,7 @@ mod tests {
         cfg.add_edge(right, merge, EdgeKind::Fallthrough);
 
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
+        let ssa = SsaForm::compute(&cfg, &dom);
         let copies = eliminate_phis(&ssa);
         let merge_copies: Vec<_> = copies
             .iter()

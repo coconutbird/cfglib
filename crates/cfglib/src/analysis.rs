@@ -7,5 +7,5 @@ pub mod pattern;
 pub mod profile;
 pub mod purity;
 pub mod switch_table;
-pub mod tailcall;
-pub mod valuenumber;
+pub mod tail_call;
+pub mod value_numbering;

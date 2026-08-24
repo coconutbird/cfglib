@@ -75,7 +75,7 @@ pub struct SwitchRecovery {
     /// Block that was converted from indirect jump to switch.
     pub block: BlockId,
     /// Number of case edges added.
-    pub num_cases: usize,
+    pub case_count: usize,
 }
 
 /// Reconstruct switch tables from detected jump-table patterns.
@@ -105,12 +105,12 @@ pub fn recover_switch_tables<I, T>(
             cfg.remove_edge(eid);
         }
 
-        let mut num_cases = 0;
+        let mut case_count = 0;
 
         for target in &table.targets {
             if let Some(target_block) = resolve(target) {
                 cfg.add_edge(table.block, target_block, EdgeKind::SwitchCase);
-                num_cases += 1;
+                case_count += 1;
             }
         }
 
@@ -122,7 +122,7 @@ pub fn recover_switch_tables<I, T>(
 
         results.push(SwitchRecovery {
             block: table.block,
-            num_cases,
+            case_count,
         });
     }
 
@@ -171,7 +171,7 @@ mod tests {
         let recovered =
             recover_switch_tables(&mut cfg, &tables, |addr| address_map.get(addr).copied());
         assert_eq!(recovered.len(), 1);
-        assert_eq!(recovered[0].num_cases, 2);
+        assert_eq!(recovered[0].case_count, 2);
         // The IndirectJump edge is gone; SwitchCase + default edges exist.
         assert!(cfg.edges().all(|e| e.kind() != EdgeKind::IndirectJump));
         assert_eq!(
@@ -212,7 +212,7 @@ mod tests {
         let tables = detect_switch_tables(&cfg);
         let recovered =
             recover_switch_tables(&mut cfg, &tables, |node| (*node == 7).then_some(arm));
-        assert_eq!(recovered[0].num_cases, 1);
+        assert_eq!(recovered[0].case_count, 1);
         assert!(cfg.edges().any(|e| e.kind() == EdgeKind::SwitchCase));
     }
 }

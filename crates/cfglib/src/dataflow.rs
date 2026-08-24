@@ -20,20 +20,20 @@
 //! of the provided analyses. Variables are supplied by the IR adapter;
 //! the framework does not impose a register numbering scheme.
 
-pub mod abs_int;
-pub mod constprop;
-pub mod copyprop;
-pub mod defuse;
+pub mod abstract_interpretation;
+pub mod constant_propagation;
+pub mod copy_propagation;
+pub mod def_use;
 pub mod edge_fixpoint;
 pub mod fixpoint;
 pub mod liveness;
-pub mod memssa;
+pub mod memory_ssa;
 pub mod node_fixpoint;
 pub mod phi_web;
 pub mod reaching;
 pub mod sccp;
 pub mod ssa;
-pub mod ssa_destruct;
+pub mod ssa_destruction;
 
 use crate::block::BlockId;
 
@@ -59,7 +59,7 @@ impl<T: Clone + Ord> VariableId for T {}
 /// Returns slices rather than `Vec`s to avoid heap allocations in
 /// hot-path fixpoint iteration. The instruction is expected to own (or
 /// borrow from its own storage) the def/use sets it reports; adapters over
-/// external structures typically materialise them once at construction.
+/// external structures typically materialize them once at construction.
 pub trait InstrInfo {
     /// IR variable identity used by this instruction representation.
     type Variable: VariableId;
@@ -76,9 +76,9 @@ pub trait InstrInfo {
 /// statements).
 ///
 /// The predicate is expressed in the consumer's own variable domain.
-/// [`lift_predicated`](crate::lift_predicated) regionises maximal runs of
+/// [`lift_predicated`](crate::lift_predicated) regionizes maximal runs of
 /// same-predicate instructions into
-/// [`AstNode::Guarded`](crate::ast::node::AstNode::Guarded) nodes.
+/// [`AstNode::Guarded`](crate::AstNode::Guarded) nodes.
 ///
 /// # Contract
 ///

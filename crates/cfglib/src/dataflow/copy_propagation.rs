@@ -14,7 +14,7 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 
 use super::InstrInfo;
-use super::defuse::DefUseChains;
+use super::def_use::DefUseChains;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 
@@ -38,7 +38,7 @@ pub trait CopySource: InstrInfo {
 
 /// Result of copy propagation.
 #[derive(Debug, Clone)]
-pub struct CopyPropResult {
+pub struct CopyPropagationStats {
     /// Number of uses rewritten.
     pub uses_rewritten: usize,
     /// Number of copy instructions removed.
@@ -53,7 +53,7 @@ pub struct CopyPropResult {
 /// 4. Remove dead copies (whose defs have no remaining uses).
 ///
 /// Returns the number of rewrites and removals.
-pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropResult {
+pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropagationStats {
     // Phase 1: identify copies and build a substitution map.
     // We iterate to a fixpoint in case of copy chains: a = b; c = a → c = b.
     let mut substitutions: BTreeMap<I::Variable, I::Variable> = BTreeMap::new();
@@ -76,7 +76,7 @@ pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropResu
     }
 
     if substitutions.is_empty() {
-        return CopyPropResult {
+        return CopyPropagationStats {
             uses_rewritten: 0,
             copies_removed: 0,
         };
@@ -125,7 +125,7 @@ pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropResu
         *cfg.block_mut(bid).instructions_vec_mut() = new_insts;
     }
 
-    CopyPropResult {
+    CopyPropagationStats {
         uses_rewritten,
         copies_removed,
     }

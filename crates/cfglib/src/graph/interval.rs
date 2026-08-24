@@ -12,7 +12,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
-use crate::graph::view::RootedGraphView;
+use crate::graph::view::{DenseNodeId, DirectedGraphView, RootedGraphView};
 
 /// An interval in the derived graph, over node identity `N`.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -119,39 +119,44 @@ fn build_adjacency<G: RootedGraphView>(
     (succs, preds)
 }
 
-/// Perform interval analysis on a rooted graph view.
-///
-/// Iteratively computes derived graphs until either a single interval
-/// remains (reducible) or no further reduction is possible (irreducible).
-///
-/// # Examples
-///
-/// ```
-/// use cfglib::{Cfg, EdgeKind, interval_analysis};
-///
-/// let mut cfg = Cfg::<u32>::new();
-/// let b1 = cfg.new_block();
-/// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
-///
-/// let result = interval_analysis(&cfg);
-/// assert!(result.is_reducible);
-/// ```
-#[must_use]
-pub fn interval_analysis<G: RootedGraphView>(graph: &G) -> IntervalAnalysis<G::NodeId> {
-    let all_blocks: BTreeSet<G::NodeId> = graph.node_ids().collect();
-    let (succs, preds) = build_adjacency(graph, &all_blocks);
-    let mut levels = Vec::new();
+impl<N: DenseNodeId> IntervalAnalysis<N> {
+    /// Perform interval analysis on a rooted graph view.
+    ///
+    /// Iteratively computes derived graphs until either a single interval
+    /// remains (reducible) or no further reduction is possible (irreducible).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, EdgeKind, IntervalAnalysis};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b1 = cfg.new_block();
+    /// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
+    ///
+    /// let result = IntervalAnalysis::compute(&cfg);
+    /// assert!(result.is_reducible);
+    /// ```
+    #[must_use]
+    pub fn compute<G>(graph: &G) -> Self
+    where
+        G: RootedGraphView + DirectedGraphView<NodeId = N>,
+    {
+        let all_blocks: BTreeSet<N> = graph.node_ids().collect();
+        let (succs, preds) = build_adjacency(graph, &all_blocks);
+        let mut levels = Vec::new();
 
-    let intervals = compute_intervals_from_graph(graph.root(), &all_blocks, &succs, &preds);
-    let num_intervals = intervals.len();
-    levels.push(intervals);
+        let intervals = compute_intervals_from_graph(graph.root(), &all_blocks, &succs, &preds);
+        let num_intervals = intervals.len();
+        levels.push(intervals);
 
-    // A single interval means the CFG is trivially reducible.
-    // Multi-level derived-graph iteration can be added when needed;
-    // for now use `is_reducible()` from structure.rs for the full check.
-    IntervalAnalysis {
-        is_reducible: num_intervals <= 1,
-        levels,
+        // A single interval means the CFG is trivially reducible.
+        // Multi-level derived-graph iteration can be added when needed;
+        // for now use `is_reducible()` from structure.rs for the full check.
+        IntervalAnalysis {
+            is_reducible: num_intervals <= 1,
+            levels,
+        }
     }
 }
 
@@ -166,7 +171,7 @@ mod tests {
     #[test]
     fn single_block_is_one_interval() {
         let cfg = CfgBuilder::build(vec![ff("a")]).unwrap();
-        let result = interval_analysis(&cfg);
+        let result = IntervalAnalysis::compute(&cfg);
         assert_eq!(result.levels.len(), 1);
         assert_eq!(result.levels[0].len(), 1);
         assert!(result.is_reducible);
@@ -175,7 +180,7 @@ mod tests {
     #[test]
     fn linear_cfg_is_one_interval() {
         let cfg = CfgBuilder::build(vec![ff("a"), ff("b"), ff("c")]).unwrap();
-        let result = interval_analysis(&cfg);
+        let result = IntervalAnalysis::compute(&cfg);
         assert_eq!(result.levels.len(), 1);
         // All blocks should be in a single interval since each block
         // has only one predecessor from within the interval.
@@ -196,7 +201,7 @@ mod tests {
         cfg.add_edge(b1, b3, crate::edge::EdgeKind::Fallthrough);
         cfg.add_edge(b2, b3, crate::edge::EdgeKind::Fallthrough);
 
-        let result = interval_analysis(&cfg);
+        let result = IntervalAnalysis::compute(&cfg);
         assert_eq!(result.levels.len(), 1);
         assert!(!result.levels[0].is_empty());
     }
@@ -210,7 +215,7 @@ mod tests {
             MockInst(FlowEffect::Return, "ret"),
         ])
         .unwrap();
-        let result = interval_analysis(&cfg);
+        let result = IntervalAnalysis::compute(&cfg);
         assert_eq!(result.levels.len(), 1);
         assert!(!result.levels[0].is_empty());
     }

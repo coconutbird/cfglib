@@ -1,3 +1,5 @@
+//! Out-degree ≤ 1 chases with hop bounds and cycle guards.
+
 extern crate alloc;
 
 use alloc::vec::Vec;

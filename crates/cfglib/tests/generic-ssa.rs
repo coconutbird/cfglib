@@ -1,4 +1,4 @@
-use cfglib::{Cfg, DominatorTree, EdgeKind, InstrInfo, SsaValue, build_ssa};
+use cfglib::{Cfg, DominatorTree, EdgeKind, InstrInfo, SsaForm, SsaValue};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum X86Register {
@@ -74,7 +74,7 @@ fn x86_registers_flags_and_stack_slots_keep_native_identities() {
         .push(x86_instruction(vec![rax.clone()], vec![]));
 
     let dominators = DominatorTree::compute(&cfg);
-    let ssa = build_ssa(&cfg, &dominators);
+    let ssa = SsaForm::compute(&cfg, &dominators);
     let phi = &ssa.block(merge).phis[0];
 
     assert_eq!(phi.result.variable, rax);
@@ -166,7 +166,7 @@ fn shader_register_components_are_independent_ssa_variables() {
     ]);
 
     let dominators = DominatorTree::compute(&cfg);
-    let ssa = build_ssa(&cfg, &dominators);
+    let ssa = SsaForm::compute(&cfg, &dominators);
     let instructions = &ssa.block(cfg.entry()).instructions;
 
     assert_eq!(instructions[0].uses[0], SsaValue::live_in(input_x));

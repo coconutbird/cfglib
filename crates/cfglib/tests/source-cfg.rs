@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use cfglib::{
     Cfg, CfgBuilder, ConstValue, ConstantFolder, DisplayInstr, DominatorTree, EdgeKind, ExprInstr,
     ExprNode, FlowControl, FlowEffect, InstrInfo, JumpTable, JumpTargets, Liveness, ReachingDefs,
-    build_ssa, constant_propagation, detect_switch_tables, recover_block_expressions,
+    SsaForm, constant_propagation, detect_switch_tables, recover_block_expressions,
     recover_switch_tables, resolve_jump_edges, verify,
 };
 
@@ -179,7 +179,7 @@ fn direct_construction_dominators_reaching_and_liveness_over_symbols() {
     assert!(liveness.live_in(ret).contains(&sym("x")));
     assert!(!liveness.live_out(ret).contains(&sym("x")));
 
-    let ssa = build_ssa(&cfg, &dominators);
+    let ssa = SsaForm::compute(&cfg, &dominators);
     assert_eq!(ssa.block(cfg.entry()).instructions.len(), 2);
 }
 
@@ -310,6 +310,6 @@ fn switch_recovery_over_cst_node_tokens() {
         [(100, arm_a), (200, arm_b)].into_iter().collect();
     let recovered =
         recover_switch_tables(&mut cfg, &tables, |node| node_to_block.get(node).copied());
-    assert_eq!(recovered[0].num_cases, 2);
+    assert_eq!(recovered[0].case_count, 2);
     assert!(cfg.edges().all(|e| e.kind() != EdgeKind::IndirectJump));
 }

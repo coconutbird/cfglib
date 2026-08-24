@@ -259,7 +259,7 @@ impl DominatorTree<BlockId> {
     /// the view-generic entry point with caller-chosen exits.
     #[must_use]
     pub fn compute_post<I>(cfg: &Cfg<I>) -> Self {
-        let node_count = cfg.num_blocks();
+        let node_count = cfg.block_count();
         if node_count == 0 {
             return DominatorTree {
                 idom: Vec::new(),

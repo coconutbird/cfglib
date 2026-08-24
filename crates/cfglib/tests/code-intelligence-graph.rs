@@ -167,7 +167,7 @@ fn existing_consumer_graph_can_adopt_algorithms_without_storage_migration() {
 #[test]
 fn widened_algorithms_run_on_rooted_consumer_views() {
     use cfglib::{
-        Rooted, control_dependence_graph, detect_loops, detect_patterns, graph_metrics, verify_view,
+        GraphMetrics, Rooted, control_dependence_graph, detect_loops, detect_patterns, verify_view,
     };
 
     // A value-flow graph with a diamond and a cycle, in consumer storage.
@@ -187,7 +187,7 @@ fn widened_algorithms_run_on_rooted_consumer_views() {
     let rooted = Rooted::new(&graph, seed);
     assert!(verify_view(&rooted).is_ok());
 
-    let metrics = graph_metrics(&rooted);
+    let metrics = GraphMetrics::compute(&rooted);
     assert_eq!(metrics.node_count, 5);
     assert_eq!(metrics.edge_count, 6);
     assert_eq!(metrics.reachable_node_count, 5);

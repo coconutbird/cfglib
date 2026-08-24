@@ -1,3 +1,5 @@
+//! Structural mutation of [`Cfg`] — edge removal, redirection, and block splitting.
+
 extern crate alloc;
 
 use alloc::vec::Vec;
@@ -116,10 +118,10 @@ impl<I, E> Cfg<I, E> {
     /// let b1 = cfg.new_block();
     /// let eid = cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
     ///
-    /// assert_eq!(cfg.num_edges(), 1);
+    /// assert_eq!(cfg.edge_count(), 1);
     /// let removed = cfg.remove_edge(eid).unwrap();
     /// assert_eq!(removed.kind(), EdgeKind::Fallthrough);
-    /// assert_eq!(cfg.num_edges(), 0);
+    /// assert_eq!(cfg.edge_count(), 0);
     /// // Double-remove returns None.
     /// assert!(cfg.remove_edge(eid).is_none());
     /// ```

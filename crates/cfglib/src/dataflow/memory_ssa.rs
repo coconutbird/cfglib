@@ -60,77 +60,79 @@ pub struct MemorySSA {
     /// All memory accesses in program order per block.
     pub accesses: BTreeMap<BlockId, Vec<MemoryAccess>>,
     /// Next available version number.
-    pub num_versions: MemoryVersion,
+    pub version_count: MemoryVersion,
 }
 
-/// Build Memory SSA for a CFG.
-///
-/// Assigns memory version numbers to all memory-accessing instructions
-/// and inserts memory phis at join points where memory versions differ.
-#[must_use]
-pub fn build_memory_ssa<I: MemoryEffect>(cfg: &Cfg<I>, dom: &DominatorTree) -> MemorySSA {
-    let rpo = cfg.reverse_postorder();
-    let mut next_ver: MemoryVersion = 1; // version 0 = initial (entry) memory
-    let mut accesses: BTreeMap<BlockId, Vec<MemoryAccess>> = BTreeMap::new();
-    let mut block_out_ver: BTreeMap<BlockId, MemoryVersion> = BTreeMap::new();
+impl MemorySSA {
+    /// Compute Memory SSA for a CFG.
+    ///
+    /// Assigns memory version numbers to all memory-accessing instructions
+    /// and inserts memory phis at join points where memory versions differ.
+    #[must_use]
+    pub fn compute<I: MemoryEffect>(cfg: &Cfg<I>, dom: &DominatorTree) -> Self {
+        let rpo = cfg.reverse_postorder();
+        let mut next_ver: MemoryVersion = 1; // version 0 = initial (entry) memory
+        let mut accesses: BTreeMap<BlockId, Vec<MemoryAccess>> = BTreeMap::new();
+        let mut block_out_ver: BTreeMap<BlockId, MemoryVersion> = BTreeMap::new();
 
-    // First pass: assign versions within each block.
-    for &bid in &rpo {
-        let mut cur_ver: MemoryVersion = if let Some(idom) = dom.idom(bid) {
-            block_out_ver.get(&idom).copied().unwrap_or(0)
-        } else {
-            0 // entry block starts with version 0
-        };
-
-        // Check if we need a memory phi (multiple preds with different versions).
-        let preds: Vec<BlockId> = cfg.predecessors(bid).collect();
-        if preds.len() > 1 {
-            let pred_vers: Vec<(BlockId, MemoryVersion)> = preds
-                .iter()
-                .map(|&p| (p, block_out_ver.get(&p).copied().unwrap_or(0)))
-                .collect();
-            let all_same = pred_vers.windows(2).all(|w| w[0].1 == w[1].1);
-            if !all_same {
-                let phi_ver = next_ver;
-                next_ver += 1;
-                accesses.entry(bid).or_default().push(MemoryAccess::Phi {
-                    version: phi_ver,
-                    operands: pred_vers,
-                    block: bid,
-                });
-                cur_ver = phi_ver;
-            }
-        }
-
-        let block_accesses = accesses.entry(bid).or_default();
-        for (idx, inst) in cfg.block(bid).instructions().iter().enumerate() {
-            let point = ProgramPoint {
-                block: bid,
-                inst_idx: idx,
+        // First pass: assign versions within each block.
+        for &bid in &rpo {
+            let mut cur_ver: MemoryVersion = if let Some(idom) = dom.idom(bid) {
+                block_out_ver.get(&idom).copied().unwrap_or(0)
+            } else {
+                0 // entry block starts with version 0
             };
-            if inst.writes_memory() {
-                let new_ver = next_ver;
-                next_ver += 1;
-                block_accesses.push(MemoryAccess::Def {
-                    version: new_ver,
-                    clobbers: cur_ver,
-                    point,
-                });
-                cur_ver = new_ver;
-            } else if inst.reads_memory() {
-                block_accesses.push(MemoryAccess::Use {
-                    version: cur_ver,
-                    point,
-                });
+
+            // Check if we need a memory phi (multiple preds with different versions).
+            let preds: Vec<BlockId> = cfg.predecessors(bid).collect();
+            if preds.len() > 1 {
+                let pred_vers: Vec<(BlockId, MemoryVersion)> = preds
+                    .iter()
+                    .map(|&p| (p, block_out_ver.get(&p).copied().unwrap_or(0)))
+                    .collect();
+                let all_same = pred_vers.windows(2).all(|w| w[0].1 == w[1].1);
+                if !all_same {
+                    let phi_ver = next_ver;
+                    next_ver += 1;
+                    accesses.entry(bid).or_default().push(MemoryAccess::Phi {
+                        version: phi_ver,
+                        operands: pred_vers,
+                        block: bid,
+                    });
+                    cur_ver = phi_ver;
+                }
             }
+
+            let block_accesses = accesses.entry(bid).or_default();
+            for (idx, inst) in cfg.block(bid).instructions().iter().enumerate() {
+                let point = ProgramPoint {
+                    block: bid,
+                    inst_idx: idx,
+                };
+                if inst.writes_memory() {
+                    let new_ver = next_ver;
+                    next_ver += 1;
+                    block_accesses.push(MemoryAccess::Def {
+                        version: new_ver,
+                        clobbers: cur_ver,
+                        point,
+                    });
+                    cur_ver = new_ver;
+                } else if inst.reads_memory() {
+                    block_accesses.push(MemoryAccess::Use {
+                        version: cur_ver,
+                        point,
+                    });
+                }
+            }
+
+            block_out_ver.insert(bid, cur_ver);
         }
 
-        block_out_ver.insert(bid, cur_ver);
-    }
-
-    MemorySSA {
-        accesses,
-        num_versions: next_ver,
+        MemorySSA {
+            accesses,
+            version_count: next_ver,
+        }
     }
 }
 
@@ -181,7 +183,7 @@ mod tests {
                 writes: true,
             });
         let dom = DominatorTree::compute(&cfg);
-        let mssa = build_memory_ssa(&cfg, &dom);
+        let mssa = MemorySSA::compute(&cfg, &dom);
         let accs = mssa.accesses.get(&cfg.entry()).unwrap();
         assert_eq!(accs.len(), 1);
         assert!(matches!(
@@ -204,7 +206,7 @@ mod tests {
                 writes: false,
             });
         let dom = DominatorTree::compute(&cfg);
-        let mssa = build_memory_ssa(&cfg, &dom);
+        let mssa = MemorySSA::compute(&cfg, &dom);
         let accs = mssa.accesses.get(&cfg.entry()).unwrap();
         assert_eq!(accs.len(), 1);
         assert!(matches!(accs[0], MemoryAccess::Use { version: 0, .. }));
@@ -229,7 +231,7 @@ mod tests {
         cfg.add_edge(a, merge, EdgeKind::Fallthrough);
         cfg.add_edge(b, merge, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);
-        let mssa = build_memory_ssa(&cfg, &dom);
+        let mssa = MemorySSA::compute(&cfg, &dom);
         let merge_accs = mssa.accesses.get(&merge).unwrap();
         assert!(
             merge_accs

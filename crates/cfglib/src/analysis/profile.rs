@@ -12,13 +12,6 @@ use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::edge::EdgeId;
 
-/// Block execution frequency or count.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct BlockWeight {
-    /// Estimated execution count or frequency.
-    pub frequency: f64,
-}
-
 /// Profile data for a CFG.
 #[derive(Debug, Clone)]
 pub struct CfgProfile {

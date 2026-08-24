@@ -2,7 +2,7 @@
 
 Generic, `no_std` graph and dataflow framework for code intelligence, program analysis, decompilation, and compiler infrastructure.
 
-`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph colouring, and structured AST recovery.
+`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
 
 Everything is `no_std + alloc` and the core graph structure uses `SmallVec` adjacency lists with tombstone-based edge removal for cache-friendly, arena-stable IDs.
 
@@ -10,7 +10,7 @@ Everything is `no_std + alloc` and the core graph structure uses `SmallVec` adja
 
 ### Direct construction (the primary front door)
 
-No trait is required to build, verify, analyse, or render a CFG. Source
+No trait is required to build, verify, analyze, or render a CFG. Source
 frontends lower their syntax trees straight into blocks:
 
 ```rust
@@ -96,7 +96,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Native handler state | `SehRegistrationChain<F, H>` models per-thread x86 frame registrations; `VehModel<H>` separately models ordered process-wide vectored exception/continue handlers |
 | Subgraph extraction | `subgraph()` or `subgraph_mapped()` with dense O(1) block-id remapping and payload cloning |
 | Block splitting | `split_block()`, mapped payload-aware variants, and validated multi-point splitting with automatic stable edge transfer |
-| `serde` feature | Optional serialisation support |
+| `serde` feature | Optional serialization support |
 
 ### Graph algorithms
 
@@ -122,20 +122,20 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Post-dominator tree | `DominatorTree::compute_post` (CFG), `compute_post_from` (any view + explicit exits) | Virtual-exit handling built in |
 | Dominance frontiers | `DominanceFrontiers::compute` | For SSA φ-placement |
 | Incremental dominators | `update_after_edge_insert`, `update_after_edge_remove` | Recompute + diff |
-| Strongly connected components | `tarjan_scc` → `SccResult<N>`, `condensation` → component DAG | Generic iterative Tarjan algorithm, reverse-topological order (leaves first) |
-| SCC in topological order | `kosaraju_scc` → `SccResult<N>` | The same partition numbered sources first (`index(u) < index(v)` across every edge); the classic deterministic two-pass algorithm, for budgeted forward closures over the condensation |
-| Condensation of a given decomposition | `condensation_of(graph, &SccResult)` → `DirectedGraph<(), ()>` | The component DAG whose node index **is** the given decomposition's component index, either algorithm's; deduplicated edges, and in-degrees plus dependents straight off the graph (the one-pass fixpoint shape) |
-| Back-edge detection | `find_back_edges` (dominance, any view), `find_back_edges_tagged` (CFG, honours `Back` tags) | |
+| Strongly connected components | `tarjan_scc` → `SccDecomposition<N>`, `condensation` → component DAG | Generic iterative Tarjan algorithm, reverse-topological order (leaves first) |
+| SCC in topological order | `kosaraju_scc` → `SccDecomposition<N>` | The same partition numbered sources first (`index(u) < index(v)` across every edge); the classic deterministic two-pass algorithm, for budgeted forward closures over the condensation |
+| Condensation of a given decomposition | `condensation_of(graph, &SccDecomposition)` → `DirectedGraph<(), ()>` | The component DAG whose node index **is** the given decomposition's component index, either algorithm's; deduplicated edges, and in-degrees plus dependents straight off the graph (the one-pass fixpoint shape) |
+| Back-edge detection | `find_back_edges` (dominance, any view), `find_back_edges_tagged` (CFG, honors `Back` tags) | |
 | Natural loop detection | `detect_loops` / `detect_loops_tagged` → `Vec<NaturalLoop<N>>` | Header, body, latches, nesting depth |
-| Loop nesting tree | `LoopNestingTree::build` | Parent/child loop hierarchy |
+| Loop nesting tree | `LoopNestingTree::compute` | Parent/child loop hierarchy |
 | Control dependence graph | `control_dependence_graph` → `DirectedGraph<N, ()>` | From post-dominator tree, over any view |
 | Program dependence graph | `program_dependence_graph` → `DirectedGraph<DependenceNode, DependenceKind>` | Control + def-use edges; reverse traversal performs backward slicing |
-| Interval analysis | `interval_analysis` | T1-T2 reduction over rooted views; reducibility test |
+| Interval analysis | `IntervalAnalysis::compute` | T1-T2 reduction over rooted views; reducibility test |
 | Reducibility transform | `make_reducible` | Node splitting for irreducible CFGs |
 | Reverse CFG | `reverse_cfg` | Flip all edges, swap entry/exits |
-| Call graph | `build_call_graph` + `CallInfo`, `propagate_summaries` (callee-first SCC fixpoint) | Consumer-typed callees; interprocedural summary scaffold |
+| Call graph | `call_graph` + `CallInfo`, `propagate_summaries` (callee-first SCC fixpoint) | Consumer-typed callees; interprocedural summary scaffold |
 | CFG diff | `cfg_diff` | Structural comparison (bindiff-style fingerprinting), no trait bounds |
-| Exception handling model | `build_eh_model` | Payload-generic CFG input; stable source `EdgeId`, exact handler/unwind/leave/resume/continue kinds, landing pads, cleanup/resume blocks, handler identities, protected-by mapping, and cleanup continuations |
+| Exception handling model | `EhModel::compute` | Payload-generic CFG input; stable source `EdgeId`, exact handler/unwind/leave/resume/continue kinds, landing pads, cleanup/resume blocks, handler identities, protected-by mapping, and cleanup continuations |
 | Integrity verification | `verify`, `verify_view`, `verify_edge_view`; `verify_with` + `SemanticValidator` | Structural node/edge-view checks plus deterministic typed consumer hooks for cardinality, ordering, and provenance rules |
 | DOT export | `to_dot` (`DisplayInstr`), `to_dot_with` (bound-free), `write_view_dot` (any view) | Graphviz output with escaped labels |
 
@@ -143,7 +143,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 
 | Analysis | Function / Type | Description |
 |---|---|---|
-| Generic fixpoint solver | `solve`, `Problem` trait | Forward or backward, any lattice type |
+| Generic fixpoint solver | `solve_problem`, `Problem` trait | Forward or backward, any lattice type |
 | Node-level fixpoint | `solve_node_problem`, `NodeProblem` trait | Per-node facts over any graph view (taint, reachability-with-facts) |
 | Seeded node fixpoint | `solve_node_problem_from` | Same solver, worklist seeded from a subset — incremental / dirty-region re-solves |
 | Edge-sensitive fixpoint | `solve_edge_problem`, `solve_edge_problem_from`, `EdgeProblem` trait | Full or seeded per-edge transfer over any edge view; stable id/data plus physical node pre/post states and deterministic bounded-solve errors |
@@ -151,14 +151,14 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
 | Liveness | `Liveness::compute` | Live-in / live-out at each block |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |
-| SSA construction | `build_ssa`, `SsaForm<V>` | IDF phi placement plus full dominator-tree renaming |
-| Phi placement | `place_phis`, `PhiPlacements<V>` | Structural IDF phase for consumers that only need placement |
+| SSA construction | `SsaForm::compute` | IDF phi placement plus full dominator-tree renaming |
+| Phi placement | `PhiPlacements::compute` | Structural IDF phase for consumers that only need placement |
 | SSA deconstruction | `eliminate_phis`, `copies_by_predecessor` | φ-to-copy lowering |
-| Phi webs | `compute_phi_webs` | Congruence classes for register coalescing |
+| Phi webs | `PhiWebs::compute` | Congruence classes for register coalescing |
 | Constant propagation | `constant_propagation`, `ConstantFolder` (associated `Const`) | Top/Const/Bottom lattice over a consumer constant domain — machine words, strings, bools, float bits |
-| Sparse conditional constant propagation | `sccp` → `SccpResult<V, C>` | SSA-based, marks unreachable edges |
+| Sparse conditional constant propagation | `sccp` → `SccpAnalysis<V, C>` | SSA-based, marks unreachable edges |
 | Copy propagation | `copy_propagation`, `CopySource` trait | Chain resolution + dead copy removal |
-| Memory SSA | `build_memory_ssa`, `MemoryEffect` trait | Memory versioning with φ-nodes |
+| Memory SSA | `MemorySSA::compute`, `MemoryEffect` trait | Memory versioning with φ-nodes |
 | Abstract interpretation | `abstract_interpret`, `AbstractDomain` trait | Generic abstract domain framework |
 
 ### Higher-level analyses
@@ -166,12 +166,12 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Analysis | Function / Type | Description |
 |---|---|---|
 | Expression tree recovery | `recover_expressions`, `ExprInstr` (associated `Operator` + `Const`) | Rebuild expression DAGs from flat instructions |
-| Value numbering (local) | `local_value_numbering` | Per-block hash-consing |
-| Value numbering (global) | `global_value_numbering`, `ValueNumberInfo` (associated `Operation`) | Dominator-scoped GVN over any operation identity |
-| Redundancy counting | `count_redundant` | From GVN results |
-| Alias analysis | `alias_analysis`, `MemoryInfo` trait | Union-find based alias sets |
+| Value numbering (local) | `BlockValueNumbers::compute` | Per-block hash-consing |
+| Value numbering (global) | `ValueNumbering::compute`, `ValueNumberInfo` (associated `Operator`) | Dominator-scoped GVN over any operation identity |
+| Redundancy counting | `ValueNumbering::redundant_count` | From GVN results |
+| Alias analysis | `AliasSets::compute`, `MemoryInfo` trait | Union-find based alias sets |
 | Purity classification | `cfg_purity`, `block_purity`, `EffectInfo` (associated `Effect`) | Consumer effect vocabularies — machine memory/IO, allocation, panics |
-| Metrics | `graph_metrics` (any rooted view) → `GraphMetrics`; `cfg_metrics` → `CfgMetrics` | Node/edge counts, cyclomatic complexity, nesting depth, instruction density |
+| Metrics | `GraphMetrics::compute` (any rooted view); `CfgMetrics::compute` | Node/edge counts, cyclomatic complexity, nesting depth, instruction density |
 | Pattern detection | `detect_patterns` (any view), `detect_cfg_patterns` (adds trampolines + arm orientation) | Diamond, chain, self-loop, empty trampoline |
 | Profiling | `CfgProfile`, `set_uniform_weights` | Edge-weight-based hot/cold block analysis |
 | Tail call detection | `detect_tail_calls` (heuristic), `detect_explicit_tail_calls` (`CallInfo` markers) | |
@@ -191,16 +191,16 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Node splitting | `split_node`, `split_node_at_points` | Split at one or several validated consumer-selected instruction boundaries |
 | Loop rotation | `rotate_loop` | Top-tested → bottom-tested loop form |
 | Loop invariant detection | `find_loop_invariants` | Identify hoistable instructions |
-| Partial redundancy elimination | `analyse_pre`, `eliminate_pre` | GVN-based PRE |
-| Graph colouring | `build_interference_graph`, `color_graph` | Interference builder uses `DirectedGraph`; coloring accepts any graph view |
-| Linearisation | `linearize`, `Emitter` trait, `BlockOrder` | Re-serialise CFG to a flat stream; emitters speak `BlockId`, naming is theirs |
+| Partial redundancy elimination | `analyze_pre`, `eliminate_pre` | GVN-based PRE |
+| Graph coloring | `interference_graph`, `color_graph` | Interference builder uses `DirectedGraph`; coloring accepts any graph view |
+| Linearization | `linearize`, `Emitter` trait, `BlockOrder` | Re-serialize CFG to a flat stream; emitters speak `BlockId`, naming is theirs |
 
 ### AST recovery
 
 | Feature | Description |
 |---|---|
 | `lift()` → `AstNode<I>` | Recover structured control flow from a CFG |
-| `lift_predicated()` | Additionally regionise `Predicated` instruction runs into `Guarded` nodes (ARM IT, GPU wavefront, CMOV) |
+| `lift_predicated()` | Additionally regionize `Predicated` instruction runs into `Guarded` nodes (ARM IT, GPU wavefront, CMOV) |
 | If/then/else | Diamond and triangle patterns |
 | Loops | While, do-while, infinite; with `break` and `continue` |
 | Switch/case | Multi-way branches with fallthrough |
@@ -227,7 +227,7 @@ InstrInfo<Variable = V>   (optional — native IR variables, defs/uses)
 ├── CopySource            (copy propagation)
 ├── ConstantFolder        (constant propagation, SCCP — associated Const)
 ├── ExprInstr             (expression trees — associated Operator, Const)
-├── ValueNumberInfo       (value numbering, PRE — associated Operation)
+├── ValueNumberInfo       (value numbering, PRE — associated Operator)
 ├── MemoryInfo            (alias analysis)
 └── MemoryEffect          (memory SSA)
 
@@ -249,7 +249,7 @@ For symbol, reference, value-flow, type-relation, import, or grammar graphs, sto
 
 For a control-flow and SSA adapter:
 
-1. Build `Cfg<I>` directly with `new_block()` / `add_edge()`, or use `Cfg<I, E>::new_with_edge_payload()` plus `add_edge_with_payload()` when branch labels, handler order, continuation/call-site identity, or source provenance must survive. Structured unit-payload streams can instead implement `FlowControl` and use `CfgBuilder::build()`.
+1. Build `Cfg<I>` directly with `new_block()` / `add_edge()`, or use `Cfg<I, E>::with_edge_payload()` plus `add_edge_with_payload()` when branch labels, handler order, continuation/call-site identity, or source provenance must survive. Structured unit-payload streams can instead implement `FlowControl` and use `CfgBuilder::build()`.
 2. Optionally implement `InstrInfo` with a native `Variable` identity (and its sub-traits) for dataflow analyses.
 3. Implement `DisplayInstr` when you want DOT or pseudocode output.
 
@@ -258,7 +258,7 @@ Existing `Cfg<I>` callers remain source-compatible: `E` defaults to `()`, and th
 The variable type only needs `Clone + Ord` — never `Copy`, never numeric. It can be an architecture enum such as `Register(Rax)` / `Flag(Zero)`, a shader structure such as `(register file, index, component)`, an interned source symbol, or an existing IR value handle. Adapters decide the atomic aliasing unit; for overlapping resources such as x86 subregisters, expose canonical units or every affected unit.
 
 ```rust
-use cfglib::{Cfg, DominatorTree, InstrInfo, build_ssa};
+use cfglib::{Cfg, DominatorTree, InstrInfo, SsaForm};
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum X86Variable { Register(u8), Flag(u8), StackSlot(i32) }
@@ -277,7 +277,7 @@ impl InstrInfo for X86Instruction {
 
 let cfg = Cfg::<X86Instruction>::new();
 let dominators = DominatorTree::compute(&cfg);
-let ssa = build_ssa(&cfg, &dominators);
+let ssa = SsaForm::compute(&cfg, &dominators);
 ```
 
 `SsaForm<V>` is a non-mutating view over the source CFG. It stores renamed phi results, operands, instruction uses, and instruction definitions as `SsaValue<V>`, while each `SsaInstruction` keeps a `ProgramPoint` back to the native instruction. Version `0` denotes a live-in or otherwise undefined incoming value.
@@ -293,6 +293,15 @@ The `tests/source-cfg.rs` integration test is the executable specification of
 the source-language side: interned symbol variables, string/bool constants
 through constant propagation, enum operators in expression trees, goto wiring
 by label token, and switch recovery over syntax-node targets.
+
+## Development
+
+Install the git hooks once with `prek install` (or `pre-commit install`); both
+tools read the same `.pre-commit-config.yaml`. Hygiene checks, the repository
+policy script, `cargo fmt`, and pedantic Clippy run at commit time; the full
+test and documentation suites run at push time. CI runs the same gates plus an
+MSRV (1.85) check and a `no_std` target build. The complete gate list and the
+workspace's naming and layout conventions live in `AGENTS.md`.
 
 ## License
 

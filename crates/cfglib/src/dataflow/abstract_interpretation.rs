@@ -3,7 +3,7 @@
 //! Generalises the fixpoint engine to work over arbitrary lattices,
 //! enabling interval analysis, sign analysis, taint tracking, etc.
 //!
-//! Internally delegates to [`fixpoint::solve`]
+//! Internally delegates to [`fixpoint::solve_problem`]
 //! so there is a single worklist implementation in the crate.
 
 extern crate alloc;
@@ -38,11 +38,11 @@ pub trait AbstractDomain<I>: Lattice {
 
 /// Result of abstract interpretation.
 #[derive(Debug, Clone)]
-pub struct AbstractResult<L> {
+pub struct AbstractFacts<D> {
     /// Abstract state at each block entry.
-    pub block_in: BTreeMap<BlockId, L>,
+    pub block_in: BTreeMap<BlockId, D>,
     /// Abstract state at each block exit.
-    pub block_out: BTreeMap<BlockId, L>,
+    pub block_out: BTreeMap<BlockId, D>,
 }
 
 /// Bridge that adapts an [`AbstractDomain`] into a [`Problem`] so we
@@ -85,11 +85,11 @@ impl<I, D: AbstractDomain<I>> Problem<I> for AbstractProblem<D> {
 /// The abstract domain `D` determines both the lattice and the
 /// per-instruction transfer function.
 #[must_use]
-pub fn abstract_interpret<I, D: AbstractDomain<I>>(cfg: &Cfg<I>) -> AbstractResult<D> {
+pub fn abstract_interpret<I, D: AbstractDomain<I>>(cfg: &Cfg<I>) -> AbstractFacts<D> {
     let problem = AbstractProblem::<D> {
         _marker: core::marker::PhantomData,
     };
-    let result = fixpoint::solve(cfg, &problem);
+    let result = fixpoint::solve_problem(cfg, &problem);
 
     // Convert Vec-indexed results to BTreeMap-keyed results.
     let mut block_in = BTreeMap::new();
@@ -99,7 +99,7 @@ pub fn abstract_interpret<I, D: AbstractDomain<I>>(cfg: &Cfg<I>) -> AbstractResu
         block_out.insert(b.id(), result.fact_out(b.id()).clone());
     }
 
-    AbstractResult {
+    AbstractFacts {
         block_in,
         block_out,
     }
@@ -173,7 +173,7 @@ mod tests {
             .push(ff("a"));
         cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
-        let result: AbstractResult<Sign> = abstract_interpret(&cfg);
+        let result: AbstractFacts<Sign> = abstract_interpret(&cfg);
         // Entry block out should be present and equal to entry value
         // (identity transfer).
         assert!(result.block_out.contains_key(&cfg.entry()));

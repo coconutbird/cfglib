@@ -1,3 +1,5 @@
+//! Cleanup-record and continuation accessors of [`Cfg`].
+
 extern crate alloc;
 
 use alloc::vec::Vec;
@@ -39,8 +41,8 @@ impl<I, E> Cfg<I, E> {
     ///
     /// ```
     /// use cfglib::{
-    ///     Cfg, CompletionReason, Continuation, Handler, HandlerKind, HandlerRef, Region,
-    ///     RegionId, build_eh_model,
+    ///     Cfg, CompletionReason, Continuation, EhModel, Handler, HandlerKind, HandlerRef, Region,
+    ///     RegionId,
     /// };
     ///
     /// let mut cfg = Cfg::<&'static str>::new();
@@ -71,7 +73,7 @@ impl<I, E> Cfg<I, E> {
     /// });
     ///
     /// // Both routes leave the same block, and each one is identifiable.
-    /// let model = build_eh_model(&cfg);
+    /// let model = EhModel::compute(&cfg);
     /// let recorded = &model.cleanups[&cleanup_block];
     /// assert_eq!(recorded.resume_from, Some(cleanup_block));
     /// assert_eq!(

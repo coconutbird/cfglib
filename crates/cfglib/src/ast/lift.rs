@@ -192,7 +192,7 @@ fn lift_region<I: Clone>(
         }
 
         // The builder creates empty blocks with a single Unconditional
-        // edge for `break` statements. Recognise these and emit Break.
+        // edge for `break` statements. Recognize these and emit Break.
         if cfg.block(block).is_empty()
             && successor_edges.len() == 1
             && cfg.edge(successor_edges[0]).kind() == EdgeKind::Unconditional
@@ -219,7 +219,7 @@ fn lift_region<I: Clone>(
     result
 }
 
-/// Lift a [`Cfg`] and regionise predicated instructions into
+/// Lift a [`Cfg`] and regionize predicated instructions into
 /// [`AstNode::Guarded`] nodes.
 ///
 /// Runs [`lift`], then wraps every maximal run of instructions sharing the
@@ -230,7 +230,7 @@ fn lift_region<I: Clone>(
 /// guarded segments before the node. Two ledgered limits: a predicate on
 /// the branch/dispatch instruction itself stays inline (unrepresentable as
 /// a region), and predicated runs inside a
-/// [`SwitchCase`]'s `header_instructions` are not regionised (the case
+/// [`SwitchCase`]'s `header_instructions` are not regionized (the case
 /// structure has no place to hoist them to).
 #[must_use]
 pub fn lift_predicated<I: Clone + Predicated>(cfg: &Cfg<I>) -> AstNode<I> {
@@ -437,7 +437,7 @@ fn split_header_runs<I: Clone + Predicated>(
         return (Vec::new(), Vec::new());
     };
     if runs.iter().all(|(predicate, _)| predicate.is_none()) {
-        // Nothing to regionise: reassemble the original instruction list.
+        // Nothing to regionize: reassemble the original instruction list.
         let mut rest: Vec<I> = runs.into_iter().flat_map(|(_, run)| run).collect();
         rest.extend(last);
         return (Vec::new(), rest);

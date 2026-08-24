@@ -1,10 +1,12 @@
+//! Full-featured mock instruction for dataflow tests.
+
 extern crate alloc;
 
 use alloc::borrow::Cow;
 use alloc::vec::Vec;
 
 use crate::analysis::expr::ExprInstr;
-use crate::dataflow::copyprop::CopySource;
+use crate::dataflow::copy_propagation::CopySource;
 use crate::dataflow::{EffectInfo, InstrInfo};
 use crate::display::DisplayInstr;
 use crate::flow::{FlowControl, FlowEffect};
@@ -127,7 +129,7 @@ impl crate::flow::CallInfo for DfInst {
     }
 }
 
-impl crate::dataflow::constprop::ConstantFolder for DfInst {
+impl crate::dataflow::constant_propagation::ConstantFolder for DfInst {
     type Const = i64;
 
     fn fold_constant(&self, _known: &alloc::collections::BTreeMap<u16, i64>) -> Option<(u16, i64)> {

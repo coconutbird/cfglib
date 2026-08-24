@@ -1,3 +1,5 @@
+//! Minimal mock instruction for graph and transform tests.
+
 extern crate alloc;
 
 use alloc::borrow::Cow;
@@ -24,4 +26,23 @@ impl DisplayInstr for MockInst {
 /// Shorthand for a [`MockInst`] with [`FlowEffect::Fallthrough`].
 pub fn ff(name: &'static str) -> MockInst {
     MockInst(FlowEffect::Fallthrough, name)
+}
+
+/// Build a diamond CFG: entry → A, entry → B, A → merge, B → merge.
+pub fn diamond_cfg() -> crate::cfg::Cfg<MockInst> {
+    use crate::edge::EdgeKind;
+
+    let mut cfg = crate::cfg::Cfg::new();
+    let a = cfg.new_block();
+    let b = cfg.new_block();
+    let merge = cfg.new_block();
+    cfg.block_mut(cfg.entry()).push(ff("entry"));
+    cfg.block_mut(a).push(ff("a"));
+    cfg.block_mut(b).push(ff("b"));
+    cfg.block_mut(merge).push(ff("merge"));
+    cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
+    cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
+    cfg.add_edge(a, merge, EdgeKind::Fallthrough);
+    cfg.add_edge(b, merge, EdgeKind::Fallthrough);
+    cfg
 }

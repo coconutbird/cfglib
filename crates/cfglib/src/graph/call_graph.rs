@@ -37,7 +37,7 @@ pub struct CallMetadata {
 /// inter-procedural edge; calls to unknown targets remain represented in the
 /// source CFG but do not create an edge.
 #[must_use]
-pub fn build_call_graph<I: CallInfo>(
+pub fn call_graph<I: CallInfo>(
     functions: &[(I::Callee, &Cfg<I>)],
 ) -> DirectedGraph<FunctionNode<I::Callee>, CallMetadata> {
     let mut graph = DirectedGraph::with_capacity(functions.len(), functions.len());
@@ -102,7 +102,7 @@ pub fn is_recursive_function<C>(
 /// reading its callees' current summaries out of the slice (indexed by
 /// [`NodeId::index`]). Acyclic call graphs get exactly one `compute` per
 /// function with every callee already final; recursive components iterate
-/// until their summaries stabilise, so `compute` must be monotone over a
+/// until their summaries stabilize, so `compute` must be monotone over a
 /// finite-height summary domain for termination.
 ///
 /// Generic over any [`DirectedGraph`] — the same shape serves module
@@ -155,7 +155,7 @@ mod tests {
         let mut helper_cfg: Cfg<DfInst> = Cfg::new();
         helper_cfg.block_mut(helper_cfg.entry()).push(df_ff("ret"));
 
-        let graph = build_call_graph(&[("main", &main_cfg), ("helper", &helper_cfg)]);
+        let graph = call_graph(&[("main", &main_cfg), ("helper", &helper_cfg)]);
         let main = find_function(&graph, &"main").unwrap();
         let helper = find_function(&graph, &"helper").unwrap();
         assert!(graph.successors(main).any(|callee| callee == helper));

@@ -119,7 +119,7 @@ pub struct BlockExprTrees<V, Op, C> {
     /// **intra-block** use count alone (this is a per-block recovery with
     /// no cross-block liveness), so a def used once here and again in
     /// another block is inlined and absent from `roots` — consumers
-    /// needing every cross-block-live def materialised should consult
+    /// needing every cross-block-live def materialized should consult
     /// [`Liveness`](crate::Liveness) or
     /// [`DefUseChains`](crate::DefUseChains) alongside.
     pub roots: Vec<(V, ExprNode<V, Op, C>)>,

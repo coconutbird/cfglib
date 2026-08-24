@@ -1,3 +1,5 @@
+//! Event-stream walks over open node spaces — breadth-first and depth-first siblings.
+
 mod breadth_first;
 mod depth_first;
 

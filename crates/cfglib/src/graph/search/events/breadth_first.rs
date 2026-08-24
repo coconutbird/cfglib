@@ -1,3 +1,5 @@
+//! Breadth-first traversal events over dense graph views.
+
 extern crate alloc;
 
 use alloc::collections::VecDeque;

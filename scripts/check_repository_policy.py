@@ -216,6 +216,12 @@ def check_package_source(
     label = path.relative_to(REPOSITORY_ROOT).as_posix()
     parts = relative.parts
 
+    if relative.name == "mod.rs":
+        violations.append(
+            f"{label}: mod.rs is forbidden; use the named-file module style "
+            "(parent.rs beside a parent/ directory)"
+        )
+
     if len(parts) == 1 and relative.name == "build.rs":
         return
     if not parts or parts[0] not in ("src", *CARGO_TARGET_DIRECTORIES):

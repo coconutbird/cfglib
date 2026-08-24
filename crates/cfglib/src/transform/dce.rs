@@ -50,7 +50,7 @@ pub fn dead_code_elimination<I: crate::dataflow::EffectInfo + Clone>(cfg: &mut C
     use crate::dataflow::fixpoint;
     use crate::dataflow::liveness::LivenessProblem;
 
-    let liveness = fixpoint::solve(cfg, &LivenessProblem);
+    let liveness = fixpoint::solve_problem(cfg, &LivenessProblem);
     let mut removed = 0;
 
     // Phase 1: compute which instructions to keep per block.
@@ -101,4 +101,32 @@ pub fn dead_code_elimination<I: crate::dataflow::EffectInfo + Clone>(cfg: &mut C
     }
 
     removed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::edge::EdgeKind;
+    use crate::test_util::{DfInst, df_def, df_use};
+
+    #[test]
+    fn dead_code_elimination_removes_unused_def() {
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        let exit = cfg.new_block();
+
+        cfg.block_mut(cfg.entry())
+            .instructions_vec_mut()
+            .extend([df_def("dead_def", 0), df_def("live_def", 1)]);
+
+        cfg.block_mut(exit)
+            .instructions_vec_mut()
+            .push(df_use("use1", 1));
+
+        cfg.add_edge(cfg.entry(), exit, EdgeKind::Fallthrough);
+
+        let removed = dead_code_elimination(&mut cfg);
+        assert_eq!(removed, 1, "should remove the dead def of loc0");
+        assert_eq!(cfg.block(cfg.entry()).instructions().len(), 1);
+        assert_eq!(cfg.block(cfg.entry()).instructions()[0].name, "live_def");
+    }
 }

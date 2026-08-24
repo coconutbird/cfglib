@@ -14,7 +14,7 @@ use crate::cfg::Cfg;
 use crate::edge::EdgeKind;
 use crate::graph::view::DirectedGraphView;
 
-/// A recognised structural pattern, over node identity `N`.
+/// A recognized structural pattern, over node identity `N`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CfgPattern<N = BlockId> {
     /// Diamond: entry branches to two arms that reconverge at merge.

@@ -69,10 +69,39 @@ pub fn split_critical_edges_with<I, E>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_util::{diamond_cfg, ff};
+
+    #[test]
+    fn split_critical_edges_on_diamond() {
+        let mut cfg = diamond_cfg();
+        let split = split_critical_edges(&mut cfg);
+        assert_eq!(split, 0, "basic diamond has no critical edges");
+    }
+
+    #[test]
+    fn split_critical_edges_inserts_block() {
+        let mut cfg = crate::cfg::Cfg::new();
+        let a = cfg.new_block();
+        let b = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(ff("entry"));
+        cfg.block_mut(a).push(ff("a"));
+        cfg.block_mut(b).push(ff("b"));
+        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
+        let c = cfg.new_block();
+        cfg.block_mut(c).push(ff("c"));
+        cfg.add_edge(c, a, EdgeKind::ConditionalTrue);
+        cfg.add_edge(c, b, EdgeKind::ConditionalFalse);
+
+        let orig_blocks = cfg.block_count();
+        let split = split_critical_edges(&mut cfg);
+        assert_eq!(split, 4);
+        assert_eq!(cfg.block_count(), orig_blocks + 4);
+    }
 
     #[test]
     fn split_preserves_original_metadata_and_maps_both_halves() {
-        let mut cfg = Cfg::<(), &'static str>::new_with_edge_payload();
+        let mut cfg = Cfg::<(), &'static str>::with_edge_payload();
         let left = cfg.new_block();
         let right = cfg.new_block();
         let other_source = cfg.new_block();

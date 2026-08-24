@@ -13,7 +13,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 
 use super::InstrInfo;
-use super::fixpoint::{self, Direction, FixpointResult, Problem};
+use super::fixpoint::{self, Direction, Facts, Problem};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 
@@ -155,8 +155,8 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
 #[must_use]
 pub fn constant_propagation<I: ConstantFolder>(
     cfg: &Cfg<I>,
-) -> FixpointResult<ConstFact<I::Variable, I::Const>> {
-    fixpoint::solve(cfg, &ConstPropProblem)
+) -> Facts<ConstFact<I::Variable, I::Const>> {
+    fixpoint::solve_problem(cfg, &ConstPropProblem)
 }
 
 #[cfg(test)]

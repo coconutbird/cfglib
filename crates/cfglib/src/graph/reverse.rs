@@ -38,12 +38,12 @@ use crate::edge::EdgeKind;
 /// ```
 #[must_use]
 pub fn reverse_cfg<I: Clone>(cfg: &Cfg<I>) -> Cfg<I> {
-    assert!(cfg.num_blocks() > 0, "cannot reverse an empty CFG");
+    assert!(cfg.block_count() > 0, "cannot reverse an empty CFG");
 
     let mut rev = Cfg::new();
 
     // Copy block contents (block 0 already exists from Cfg::new).
-    for _i in 1..cfg.num_blocks() {
+    for _i in 1..cfg.block_count() {
         rev.new_block();
     }
     for src in cfg.blocks() {

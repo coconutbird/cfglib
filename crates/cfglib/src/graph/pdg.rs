@@ -11,7 +11,7 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dataflow::defuse::DefUseChains;
+use crate::dataflow::def_use::DefUseChains;
 use crate::dataflow::{InstrInfo, ProgramPoint};
 use crate::graph::cdg::control_dependence_graph;
 use crate::graph::directed::{DirectedGraph, NodeId};
@@ -56,8 +56,8 @@ pub fn program_dependence_graph<I: InstrInfo>(
         .map(|block| block.instructions().len())
         .sum::<usize>();
     let mut graph = DirectedGraph::with_capacity(
-        cfg.num_blocks().saturating_add(instruction_count),
-        cfg.num_edges().saturating_add(instruction_count),
+        cfg.block_count().saturating_add(instruction_count),
+        cfg.edge_count().saturating_add(instruction_count),
     );
 
     let block_nodes: Vec<NodeId> = cfg

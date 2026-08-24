@@ -8,21 +8,21 @@ use alloc::collections::BTreeMap;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use crate::analysis::valuenumber::{ValueNumber, ValueNumberInfo, global_value_numbering};
+use crate::analysis::value_numbering::{ValueNumber, ValueNumberInfo, ValueNumbering};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::graph::dominator::DominatorTree;
 
 /// Result of PRE analysis (which instructions are fully redundant).
 #[derive(Debug, Clone)]
-pub struct PreResult {
+pub struct PreAnalysis {
     /// Map of (block, instruction index) → the value number that is redundant.
     pub redundant: Vec<(BlockId, usize, ValueNumber)>,
     /// Number of eliminated instructions.
     pub eliminated: usize,
 }
 
-/// Analyse the CFG for partially redundant expressions.
+/// Analyze the CFG for partially redundant expressions.
 ///
 /// This implements a simplified "lazy code motion" style PRE:
 /// 1. Run local value numbering per block.
@@ -30,9 +30,9 @@ pub struct PreResult {
 /// 3. Mark as redundant any expression whose VN is already available
 ///    from a dominating block.
 #[must_use]
-pub fn analyse_pre<I: ValueNumberInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PreResult {
+pub fn analyze_pre<I: ValueNumberInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PreAnalysis {
     let rpo = cfg.reverse_postorder();
-    let gvn = global_value_numbering(cfg, dom);
+    let gvn = ValueNumbering::compute(cfg, dom);
 
     let mut available: BTreeMap<BlockId, BTreeSet<ValueNumber>> = BTreeMap::new();
     let mut redundant = Vec::new();
@@ -61,7 +61,7 @@ pub fn analyse_pre<I: ValueNumberInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> Pre
     }
 
     let eliminated = redundant.len();
-    PreResult {
+    PreAnalysis {
         redundant,
         eliminated,
     }
@@ -71,7 +71,7 @@ pub fn analyse_pre<I: ValueNumberInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> Pre
 ///
 /// Returns the number of instructions removed.
 pub fn eliminate_pre<I: ValueNumberInfo + Clone>(cfg: &mut Cfg<I>, dom: &DominatorTree) -> usize {
-    let result = analyse_pre(cfg, dom);
+    let result = analyze_pre(cfg, dom);
 
     // Collect removals per block (reverse order to preserve indices).
     let mut per_block: BTreeMap<BlockId, Vec<usize>> = BTreeMap::new();
@@ -93,7 +93,7 @@ pub fn eliminate_pre<I: ValueNumberInfo + Clone>(cfg: &mut Cfg<I>, dom: &Dominat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::valuenumber::ValueNumberInfo;
+    use crate::analysis::value_numbering::ValueNumberInfo;
     use crate::cfg::Cfg;
     use crate::dataflow::InstrInfo;
     use crate::edge::EdgeKind;
@@ -122,9 +122,9 @@ mod tests {
         }
     }
     impl ValueNumberInfo for PreInst {
-        type Operation = u32;
+        type Operator = u32;
 
-        fn operation(&self) -> u32 {
+        fn operator(&self) -> u32 {
             self.op
         }
         fn is_pure(&self) -> bool {
@@ -147,7 +147,7 @@ mod tests {
             .instructions_vec_mut()
             .extend([pi(1, &[0, 1], &[2]), pi(1, &[0, 1], &[3])]);
         let dom = DominatorTree::compute(&cfg);
-        let result = analyse_pre(&cfg, &dom);
+        let result = analyze_pre(&cfg, &dom);
         assert_eq!(result.eliminated, 1);
     }
 
@@ -165,7 +165,7 @@ mod tests {
             .push(pi(1, &[0, 1], &[3]));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);
-        let result = analyse_pre(&cfg, &dom);
+        let result = analyze_pre(&cfg, &dom);
         assert_eq!(result.eliminated, 1);
     }
 
@@ -181,7 +181,7 @@ mod tests {
             .push(pi(2, &[0, 1], &[3]));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);
-        let result = analyse_pre(&cfg, &dom);
+        let result = analyze_pre(&cfg, &dom);
         assert_eq!(result.eliminated, 0);
     }
 }

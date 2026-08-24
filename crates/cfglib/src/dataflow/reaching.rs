@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use super::fixpoint::{self, Direction, FixpointResult, Problem};
+use super::fixpoint::{self, Direction, Facts, Problem};
 use super::{DefSite, InstrInfo, VariableId};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
@@ -102,14 +102,14 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
 /// assert!(!rd.reaching_in(b1).is_empty());
 /// ```
 pub struct ReachingDefs<V> {
-    inner: FixpointResult<BTreeSet<ReachingDef<V>>>,
+    inner: Facts<BTreeSet<ReachingDef<V>>>,
 }
 
 impl<V: VariableId> ReachingDefs<V> {
     /// Run reaching definitions on the given CFG.
     #[must_use]
     pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
-        let result = fixpoint::solve(cfg, &ReachingDefsProblem);
+        let result = fixpoint::solve_problem(cfg, &ReachingDefsProblem);
         Self { inner: result }
     }
 

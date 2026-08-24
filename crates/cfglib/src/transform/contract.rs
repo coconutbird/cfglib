@@ -82,7 +82,7 @@ pub fn split_node_with_payload_mapped<I, E>(
 
 /// Split a block at several original instruction boundaries.
 ///
-/// This frontend-neutral primitive is suitable for materialising individual
+/// This frontend-neutral primitive is suitable for materializing individual
 /// throwing instructions, invoke sites, or any other consumer-selected
 /// program points without encoding instruction semantics in cfglib.
 ///
@@ -106,7 +106,7 @@ mod tests {
 
     #[test]
     fn contract_retains_outgoing_identity_and_payload() {
-        let mut cfg = Cfg::<_, &'static str>::new_with_edge_payload();
+        let mut cfg = Cfg::<_, &'static str>::with_edge_payload();
         let target = cfg.new_block();
         let exit = cfg.new_block();
         cfg.block_mut(cfg.entry()).push(ff("a"));
@@ -129,7 +129,7 @@ mod tests {
 
     #[test]
     fn split_points_are_atomic_and_instruction_neutral() {
-        let mut cfg = Cfg::<_, u8>::new_with_edge_payload();
+        let mut cfg = Cfg::<_, u8>::with_edge_payload();
         let entry = cfg.entry();
         cfg.block_mut(entry)
             .instructions_vec_mut()
@@ -143,7 +143,7 @@ mod tests {
                 point: 1
             }
         ));
-        assert_eq!(cfg.num_blocks(), 1, "validation precedes mutation");
+        assert_eq!(cfg.block_count(), 1, "validation precedes mutation");
 
         let (blocks, mapping) = split_node_at_points(&mut cfg, entry, [(1, 10), (2, 20)]).unwrap();
         assert_eq!(blocks.len(), 3);

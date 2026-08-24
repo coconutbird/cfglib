@@ -62,7 +62,7 @@ fn leading_label_and_conditional_continuation_stay_connected() {
     ])
     .unwrap();
     let reachable = cfg.depth_first_preorder();
-    assert_eq!(reachable.len(), cfg.num_blocks(), "all blocks reachable");
+    assert_eq!(reachable.len(), cfg.block_count(), "all blocks reachable");
 
     // A label directly after a conditional jump IS the false-path
     // continuation; the edge must exist.
@@ -77,7 +77,7 @@ fn leading_label_and_conditional_continuation_stay_connected() {
     ])
     .unwrap();
     let reachable = cfg.depth_first_preorder();
-    assert_eq!(reachable.len(), cfg.num_blocks(), "false path connected");
+    assert_eq!(reachable.len(), cfg.block_count(), "false path connected");
 }
 
 #[test]
@@ -161,8 +161,8 @@ fn resolve_reports_unresolved_and_is_idempotent() {
 #[test]
 fn linear_block() {
     let cfg = CfgBuilder::build(vec![ff("a"), ff("b"), ff("c")]).unwrap();
-    assert_eq!(cfg.num_blocks(), 1);
-    assert_eq!(cfg.num_edges(), 0);
+    assert_eq!(cfg.block_count(), 1);
+    assert_eq!(cfg.edge_count(), 0);
     assert_eq!(cfg.block(cfg.entry()).instructions().len(), 3);
 }
 
@@ -170,7 +170,7 @@ fn linear_block() {
 fn single_return() {
     let cfg = CfgBuilder::build(vec![ff("a"), MockInst(FlowEffect::Return, "ret")]).unwrap();
     // One block with instructions, trailing empty block trimmed.
-    assert_eq!(cfg.num_blocks(), 1);
+    assert_eq!(cfg.block_count(), 1);
     assert_eq!(cfg.block(cfg.entry()).instructions().len(), 2);
 }
 
@@ -189,7 +189,7 @@ fn if_endif_no_else() {
     // bb0: [a, if]
     // bb1: [b]  (true arm)
     // bb2: []   (merge — c, ret)
-    assert!(cfg.num_blocks() >= 3);
+    assert!(cfg.block_count() >= 3);
     // Entry has two successors: true arm + false arm (merge).
     assert_eq!(cfg.successor_edges(cfg.entry()).len(), 2);
 }
@@ -212,7 +212,7 @@ fn if_else_endif() {
     // bb1: [b]     → merge(bb3)
     // bb2: [else, c] → merge(bb3)
     // bb3: [d, ret]
-    assert!(cfg.num_blocks() >= 4);
+    assert!(cfg.block_count() >= 4);
     assert_eq!(cfg.successor_edges(cfg.entry()).len(), 2);
 }
 
@@ -229,7 +229,7 @@ fn simple_loop() {
     // bb0: [loop]       → fallthrough to bb1 (header)
     // bb1: [a]          → back to bb1 (header)
     // bb2: [ret]        (post-loop, unreachable without break)
-    assert!(cfg.num_blocks() >= 2);
+    assert!(cfg.block_count() >= 2);
 }
 
 #[test]
@@ -244,7 +244,7 @@ fn loop_with_break() {
     ])
     .unwrap();
     // post-loop block should be reachable from the break.
-    assert!(cfg.num_blocks() >= 3);
+    assert!(cfg.block_count() >= 3);
 }
 
 #[test]
@@ -262,7 +262,7 @@ fn loop_with_conditional_break() {
     // The breakc block should have two successors:
     // - true → break_block (which goes to post-loop)
     // - false → continue block (with b)
-    assert!(cfg.num_blocks() >= 4);
+    assert!(cfg.block_count() >= 4);
 }
 
 #[test]
@@ -274,7 +274,7 @@ fn declarations_are_stored() {
     ])
     .unwrap();
     // Declarations are included in the block.
-    assert_eq!(cfg.num_blocks(), 1);
+    assert_eq!(cfg.block_count(), 1);
     assert_eq!(cfg.block(cfg.entry()).instructions().len(), 3);
 }
 
@@ -344,7 +344,7 @@ fn continue_jumps_to_header() {
     // The continue should create a back-edge to the header.
     let has_back = cfg.edges().any(|e| e.kind() == EdgeKind::Back);
     assert!(has_back);
-    assert!(cfg.num_blocks() >= 3);
+    assert!(cfg.block_count() >= 3);
 }
 
 #[test]
@@ -364,7 +364,7 @@ fn conditional_continue() {
     let has_cond_false = cfg.edges().any(|e| e.kind() == EdgeKind::ConditionalFalse);
     assert!(has_cond_true);
     assert!(has_cond_false);
-    assert!(cfg.num_blocks() >= 4);
+    assert!(cfg.block_count() >= 4);
 }
 
 #[test]
@@ -382,7 +382,7 @@ fn conditional_return() {
     let has_cond_false = cfg.edges().any(|e| e.kind() == EdgeKind::ConditionalFalse);
     assert!(has_cond_true);
     assert!(has_cond_false);
-    assert!(cfg.num_blocks() >= 3);
+    assert!(cfg.block_count() >= 3);
 }
 
 #[test]
@@ -396,7 +396,7 @@ fn terminate_ends_block() {
     ])
     .unwrap();
     // abort terminates the block; b starts a new (unreachable) block.
-    assert!(cfg.num_blocks() >= 2);
+    assert!(cfg.block_count() >= 2);
 }
 
 #[test]
@@ -410,7 +410,7 @@ fn label_splits_block() {
     ])
     .unwrap();
     // The label should split into two blocks with a fallthrough edge.
-    assert!(cfg.num_blocks() >= 2);
+    assert!(cfg.block_count() >= 2);
     let has_fallthrough = cfg.edges().any(|e| e.kind() == EdgeKind::Fallthrough);
     assert!(has_fallthrough);
 }
@@ -436,7 +436,7 @@ fn switch_with_cases() {
         .filter(|e| e.kind() == EdgeKind::SwitchCase)
         .collect();
     assert!(switch_edges.len() >= 2); // at least first case + case + default
-    assert!(cfg.num_blocks() >= 5);
+    assert!(cfg.block_count() >= 5);
 }
 
 #[test]
@@ -459,7 +459,7 @@ fn switch_break_exits_switch() {
         .filter(|e| e.kind() == EdgeKind::Unconditional)
         .collect();
     assert!(!unconditional_edges.is_empty());
-    assert!(cfg.num_blocks() >= 4);
+    assert!(cfg.block_count() >= 4);
 }
 
 #[test]
@@ -476,7 +476,7 @@ fn nested_if_in_loop() {
         MockInst(FlowEffect::Return, "ret"),
     ])
     .unwrap();
-    assert!(cfg.num_blocks() >= 5);
+    assert!(cfg.block_count() >= 5);
     let has_back = cfg.edges().any(|e| e.kind() == EdgeKind::Back);
     assert!(has_back);
 }
@@ -494,7 +494,7 @@ fn nested_loop_in_if() {
         MockInst(FlowEffect::Return, "ret"),
     ])
     .unwrap();
-    assert!(cfg.num_blocks() >= 5);
+    assert!(cfg.block_count() >= 5);
     let has_back = cfg.edges().any(|e| e.kind() == EdgeKind::Back);
     assert!(has_back);
 }
@@ -517,7 +517,7 @@ fn switch_inside_loop_break_exits_switch() {
     .unwrap();
     // The break inside the switch should exit the switch.
     // The breakc after endswitch should exit the loop.
-    assert!(cfg.num_blocks() >= 6);
+    assert!(cfg.block_count() >= 6);
     let has_back = cfg.edges().any(|e| e.kind() == EdgeKind::Back);
     assert!(has_back);
 }

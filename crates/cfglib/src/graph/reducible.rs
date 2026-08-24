@@ -70,7 +70,7 @@ fn find_irreducible_entries<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BlockId
     const GRAY: u8 = 1;
     const BLACK: u8 = 2;
 
-    let n = cfg.num_blocks();
+    let n = cfg.block_count();
     if n == 0 {
         return Vec::new();
     }
@@ -108,7 +108,7 @@ fn find_irreducible_entries<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BlockId
 
 /// Check if `from` can reach `to` by following edges in the CFG.
 fn can_reach<I>(cfg: &Cfg<I>, from: BlockId, to: BlockId) -> bool {
-    let n = cfg.num_blocks();
+    let n = cfg.block_count();
     let mut visited = alloc::vec![false; n];
     let mut stack = alloc::vec![from];
     while let Some(node) = stack.pop() {

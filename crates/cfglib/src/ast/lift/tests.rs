@@ -5,7 +5,7 @@ use crate::test_util::{MockInst, df_ff, df_pred, ff};
 use alloc::vec;
 
 #[test]
-fn lift_predicated_regionises_same_predicate_runs() {
+fn lift_predicated_regionizes_same_predicate_runs() {
     let cfg = CfgBuilder::build(vec![
         df_ff("plain"),
         df_pred("guarded_a", 3, true),

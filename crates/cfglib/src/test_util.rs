@@ -18,4 +18,4 @@ pub(crate) use dataflow_inst::{
     DfInst, TestEffect, df_call, df_const, df_copy, df_def, df_ff, df_impure, df_op, df_pred,
     df_pure, df_use, df_with_effect,
 };
-pub(crate) use mock_inst::{MockInst, ff};
+pub(crate) use mock_inst::{MockInst, diamond_cfg, ff};

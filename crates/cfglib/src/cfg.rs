@@ -54,6 +54,8 @@ impl core::fmt::Display for SplitPointError {
     }
 }
 
+impl core::error::Error for SplitPointError {}
+
 /// A control-flow graph over instruction type `I` and edge payload `E`.
 ///
 /// `E = ()` retains the compact unannotated form. A frontend can instead use
@@ -95,11 +97,11 @@ impl<I, E> Cfg<I, E> {
     /// let entry = cfg.entry();
     /// let b1 = cfg.new_block();
     /// cfg.add_edge(entry, b1, EdgeKind::Fallthrough);
-    /// assert_eq!(cfg.num_blocks(), 2);
-    /// assert_eq!(cfg.num_edges(), 1);
+    /// assert_eq!(cfg.block_count(), 2);
+    /// assert_eq!(cfg.edge_count(), 1);
     /// ```
     #[must_use]
-    pub fn new_with_edge_payload() -> Self {
+    pub fn with_edge_payload() -> Self {
         let entry = BlockId(0);
         Self {
             blocks: alloc::vec![BasicBlock {
@@ -132,7 +134,7 @@ impl<I, E> Cfg<I, E> {
     pub fn set_entry(&mut self, id: BlockId) {
         debug_assert!(
             id.index() < self.blocks.len(),
-            "BlockId {} out of range (num_blocks = {})",
+            "BlockId {} out of range (block_count = {})",
             id,
             self.blocks.len(),
         );
@@ -149,7 +151,7 @@ impl<I, E> Cfg<I, E> {
     pub fn block(&self, id: BlockId) -> &BasicBlock<I> {
         debug_assert!(
             id.index() < self.blocks.len(),
-            "BlockId {} out of range (num_blocks = {})",
+            "BlockId {} out of range (block_count = {})",
             id,
             self.blocks.len(),
         );
@@ -165,7 +167,7 @@ impl<I, E> Cfg<I, E> {
     pub fn block_mut(&mut self, id: BlockId) -> &mut BasicBlock<I> {
         debug_assert!(
             id.index() < self.blocks.len(),
-            "BlockId {} out of range (num_blocks = {})",
+            "BlockId {} out of range (block_count = {})",
             id,
             self.blocks.len(),
         );
@@ -216,7 +218,7 @@ impl<I, E> Cfg<I, E> {
     pub fn successor_edges(&self, id: BlockId) -> &[EdgeId] {
         debug_assert!(
             id.index() < self.succs.len(),
-            "BlockId {} out of range for successor lookup (num_blocks = {})",
+            "BlockId {} out of range for successor lookup (block_count = {})",
             id,
             self.succs.len(),
         );
@@ -233,7 +235,7 @@ impl<I, E> Cfg<I, E> {
     pub fn predecessor_edges(&self, id: BlockId) -> &[EdgeId] {
         debug_assert!(
             id.index() < self.preds.len(),
-            "BlockId {} out of range for predecessor lookup (num_blocks = {})",
+            "BlockId {} out of range for predecessor lookup (block_count = {})",
             id,
             self.preds.len(),
         );
@@ -277,14 +279,14 @@ impl<I, E> Cfg<I, E> {
     /// Number of basic blocks.
     #[inline]
     #[must_use]
-    pub fn num_blocks(&self) -> usize {
+    pub fn block_count(&self) -> usize {
         self.blocks.len()
     }
 
     /// Number of live edges (excludes tombstones).
     #[inline]
     #[must_use]
-    pub fn num_edges(&self) -> usize {
+    pub fn edge_count(&self) -> usize {
         self.edges.iter().filter(|e| e.is_some()).count()
     }
 
@@ -315,31 +317,18 @@ impl<I, E> Cfg<I, E> {
 
 impl<I, E> Default for Cfg<I, E> {
     fn default() -> Self {
-        Self::new_with_edge_payload()
+        Self::with_edge_payload()
     }
 }
 
 impl<I> Cfg<I> {
     /// Create an empty CFG with a single entry block and unit edge payloads.
     ///
-    /// Use [`Cfg::new_with_edge_payload`] when edge metadata has a
+    /// Use [`Cfg::with_edge_payload`] when edge metadata has a
     /// consumer-defined type.
     #[must_use]
     pub fn new() -> Self {
-        Self::new_with_edge_payload()
-    }
-}
-
-impl<I> Cfg<I> {
-    /// Run a fixpoint dataflow analysis on this CFG.
-    ///
-    /// This is a thin convenience wrapper around
-    /// [`dataflow::fixpoint::solve`](crate::dataflow::fixpoint::solve).
-    pub fn solve_dataflow<P: crate::dataflow::fixpoint::Problem<I>>(
-        &self,
-        problem: &P,
-    ) -> crate::dataflow::fixpoint::FixpointResult<P::Fact> {
-        crate::dataflow::fixpoint::solve(self, problem)
+        Self::with_edge_payload()
     }
 }
 

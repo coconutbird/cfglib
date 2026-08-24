@@ -55,6 +55,8 @@ impl fmt::Display for BuildError {
     }
 }
 
+impl core::error::Error for BuildError {}
+
 /// Scope frames pushed onto the builder's stack to track structured regions.
 enum Scope {
     /// An `if` / `else` / `endif` region.
@@ -465,7 +467,7 @@ impl CfgBuilder {
     ///     Inst(FlowEffect::Return),
     /// ]).unwrap();
     ///
-    /// assert!(cfg.num_blocks() >= 4); // entry, then, else, merge
+    /// assert!(cfg.block_count() >= 4); // entry, then, else, merge
     /// ```
     pub fn build<I: FlowControl>(
         instructions: impl IntoIterator<Item = I>,

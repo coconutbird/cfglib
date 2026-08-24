@@ -114,7 +114,7 @@ pub trait FlowControl {
 /// target — the callee is consumer-typed (a raw address, a symbol id, a
 /// mangled name, a CST node), never a library-imposed string or address
 /// field. Used by
-/// [`build_call_graph`](crate::build_call_graph) and explicit tail-call
+/// [`call_graph`](crate::call_graph) and explicit tail-call
 /// detection.
 pub trait CallInfo {
     /// Consumer-defined callee identity.

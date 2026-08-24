@@ -28,7 +28,7 @@ fn subgraph_extraction() {
 
     // Extract first two blocks.
     let sub = cfg.subgraph(&[b0, b1]);
-    assert_eq!(sub.num_blocks(), 2);
+    assert_eq!(sub.block_count(), 2);
     // The subgraph should have an edge from block 0 to block 1.
     let succs: Vec<BlockId> = sub.successors(sub.entry()).collect();
     assert_eq!(succs.len(), 1);
@@ -37,7 +37,7 @@ fn subgraph_extraction() {
 #[test]
 fn subgraph_empty_input() {
     let sub = Cfg::<MockInst>::new().subgraph(&[]);
-    assert_eq!(sub.num_blocks(), 1); // Cfg::new() always has an entry
+    assert_eq!(sub.block_count(), 1); // Cfg::new() always has an entry
 }
 
 #[test]
@@ -50,7 +50,7 @@ fn remove_edge_tombstones_correctly() {
     let e2 = cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
 
     // Both edges are live.
-    assert_eq!(cfg.num_edges(), 2);
+    assert_eq!(cfg.edge_count(), 2);
     assert_eq!(cfg.edges().count(), 2);
 
     // Remove one edge.

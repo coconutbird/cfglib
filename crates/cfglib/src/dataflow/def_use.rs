@@ -38,7 +38,7 @@ impl DefUseChains {
     /// #     fn uses(&self) -> &[u16] { &self.uses }
     /// #     fn defs(&self) -> &[u16] { &self.defs }
     /// # }
-    /// use cfglib::dataflow::defuse::DefUseChains;
+    /// use cfglib::dataflow::def_use::DefUseChains;
     ///
     /// let mut cfg = Cfg::<Inst>::new();
     /// let b0 = cfg.entry();

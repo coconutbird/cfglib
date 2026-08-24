@@ -140,7 +140,7 @@ fn fingerprint<I>(cfg: &Cfg<I>, block: BlockId) -> BlockFingerprint {
 /// }
 /// ```
 #[must_use]
-pub fn cfg_diff<I, J>(left: &Cfg<I>, right: &Cfg<J>) -> CfgDiff {
+pub fn cfg_diff<I, I2>(left: &Cfg<I>, right: &Cfg<I2>) -> CfgDiff {
     let left_blocks = left.depth_first_preorder();
     let right_blocks = right.depth_first_preorder();
 
@@ -220,8 +220,8 @@ pub fn cfg_diff<I, J>(left: &Cfg<I>, right: &Cfg<J>) -> CfgDiff {
         matched,
         left_only,
         right_only,
-        left_block_count: left.num_blocks(),
-        right_block_count: right.num_blocks(),
+        left_block_count: left.block_count(),
+        right_block_count: right.block_count(),
         left_edge_count,
         right_edge_count,
     }

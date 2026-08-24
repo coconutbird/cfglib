@@ -1,3 +1,5 @@
+//! Traversal event streams — breadth-first and depth-first siblings.
+
 macro_rules! emit_or_break {
     ($on_event:expr, $event:expr) => {
         if let core::ops::ControlFlow::Break(value) = $on_event($event) {

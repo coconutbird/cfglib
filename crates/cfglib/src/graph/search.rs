@@ -256,7 +256,7 @@ enum PathStep {
 /// across graphs whose ids differ.
 #[derive(Debug, Clone, Default)]
 struct SearchBuffers {
-    /// The seeds, materialised so they can be validated once and pushed in
+    /// The seeds, materialized so they can be validated once and pushed in
     /// reverse.
     seeds: Vec<usize>,
     /// The frontier of the two globally marked cores: popped from the back as

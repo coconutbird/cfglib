@@ -29,7 +29,7 @@ fn is_normal(_: EdgeId, edge: &Edge<Route>) -> bool {
 
 #[test]
 fn normal_and_full_flow_algorithms_share_storage_but_not_reachability() {
-    let mut cfg = Cfg::<(), Route>::new_with_edge_payload();
+    let mut cfg = Cfg::<(), Route>::with_edge_payload();
     let then_block = cfg.new_block();
     let else_block = cfg.new_block();
     let merge = cfg.new_block();
@@ -61,7 +61,7 @@ fn normal_and_full_flow_algorithms_share_storage_but_not_reachability() {
 
 #[test]
 fn parallel_switch_and_continuation_edges_keep_identity_and_order() {
-    let mut cfg = Cfg::<(), Route>::new_with_edge_payload();
+    let mut cfg = Cfg::<(), Route>::with_edge_payload();
     let target = cfg.new_block();
     let resume = cfg.new_block();
     let entry = cfg.entry();
@@ -106,7 +106,7 @@ fn parallel_switch_and_continuation_edges_keep_identity_and_order() {
 
 #[test]
 fn split_redirect_bypass_and_clone_report_metadata_preserving_mappings() {
-    let mut cfg = Cfg::<u8, Route>::new_with_edge_payload();
+    let mut cfg = Cfg::<u8, Route>::with_edge_payload();
     let exit = cfg.new_block();
     let entry = cfg.entry();
     cfg.block_mut(entry)
@@ -135,7 +135,7 @@ fn split_redirect_bypass_and_clone_report_metadata_preserving_mappings() {
     assert_eq!(clone.edge(cloned_outgoing).payload(), &Route::SwitchCase(9));
     assert!(cloned.created_edges().contains(&cloned_outgoing));
 
-    let mut bypass = Cfg::<(), Route>::new_with_edge_payload();
+    let mut bypass = Cfg::<(), Route>::with_edge_payload();
     let empty = bypass.new_block();
     let target = bypass.new_block();
     let entry = bypass.entry();
@@ -156,7 +156,7 @@ fn split_redirect_bypass_and_clone_report_metadata_preserving_mappings() {
 
 #[test]
 fn handler_and_unwind_payloads_remain_distinct_and_ordered() {
-    let mut cfg = Cfg::<(), Route>::new_with_edge_payload();
+    let mut cfg = Cfg::<(), Route>::with_edge_payload();
     let first = cfg.new_block();
     let second = cfg.new_block();
     let unwind = cfg.new_block();

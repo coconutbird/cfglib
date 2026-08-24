@@ -17,17 +17,17 @@ use crate::graph::dominator::DominatorTree;
 /// A value number — opaque identifier for a computed value.
 pub type ValueNumber = u32;
 
-/// An expression key used for hash-consing, over a consumer operation
+/// An expression key used for hash-consing, over a consumer operator
 /// identity `Op`.
 ///
 /// Uses `SmallVec` to avoid heap allocation for expressions with ≤ 4
 /// operands (the vast majority of real instructions).
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct ExprKey<Op> {
-    /// The operation performed (raw opcode, mnemonic enum, interned symbol).
-    pub operation: Op,
+struct ExprKey<Op> {
+    /// The operator applied (raw opcode, mnemonic enum, interned symbol).
+    operation: Op,
     /// Value numbers of the operands.
-    pub operands: SmallVec<[ValueNumber; 4]>,
+    operands: SmallVec<[ValueNumber; 4]>,
 }
 
 /// Result of value numbering for one block.
@@ -46,7 +46,7 @@ pub struct ValueNumbering {
     /// Per-block results.
     pub blocks: BTreeMap<BlockId, BlockValueNumbers>,
     /// Total value numbers assigned.
-    pub num_values: u32,
+    pub value_count: u32,
 }
 
 /// Trait for instructions to provide an operation identity for value
@@ -55,113 +55,117 @@ pub trait ValueNumberInfo: InstrInfo {
     /// Operation identity for hash-consing. Two pure instructions with equal
     /// operation and operand value numbers compute the same value. `Ord`
     /// because expression keys live in a `BTreeMap`.
-    type Operation: Clone + Ord;
+    type Operator: Clone + Ord;
 
     /// The operation this instruction performs.
-    fn operation(&self) -> Self::Operation;
+    fn operator(&self) -> Self::Operator;
 
     /// Whether this instruction is pure (no side effects).
     /// Only pure instructions can be value-numbered.
     fn is_pure(&self) -> bool;
 }
 
-/// Run local value numbering on a single block.
-#[must_use]
-pub fn local_value_numbering<I: ValueNumberInfo>(
-    cfg: &Cfg<I>,
-    block: BlockId,
-    start_vn: ValueNumber,
-) -> (BlockValueNumbers, ValueNumber) {
-    let mut next_vn = start_vn;
-    let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
-    let mut expr_to_vn: BTreeMap<ExprKey<I::Operation>, ValueNumber> = BTreeMap::new();
-    let insts = cfg.block(block).instructions();
-    let mut inst_vn = Vec::with_capacity(insts.len());
-    let mut redundant = Vec::new();
+impl BlockValueNumbers {
+    /// Run local value numbering on a single block.
+    ///
+    /// Returns the block's numbering together with the next unassigned value
+    /// number, so successive blocks can thread a shared counter.
+    #[must_use]
+    pub fn compute<I: ValueNumberInfo>(
+        cfg: &Cfg<I>,
+        block: BlockId,
+        start_vn: ValueNumber,
+    ) -> (Self, ValueNumber) {
+        let mut next_vn = start_vn;
+        let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
+        let mut expr_to_vn: BTreeMap<ExprKey<I::Operator>, ValueNumber> = BTreeMap::new();
+        let insts = cfg.block(block).instructions();
+        let mut inst_vn = Vec::with_capacity(insts.len());
+        let mut redundant = Vec::new();
 
-    for (idx, inst) in insts.iter().enumerate() {
-        if !inst.is_pure() || inst.defs().is_empty() {
-            // A skipped instruction still REDEFINES its defs: give each a
-            // fresh value number so later expressions over them are not
-            // falsely matched against pre-redefinition keys.
-            for variable in inst.defs() {
-                let vn = next_vn;
-                next_vn += 1;
-                variable_values.insert(variable.clone(), vn);
-            }
-            inst_vn.push(None);
-            continue;
-        }
-
-        // Build expression key from operand value numbers.
-        let operands: SmallVec<[ValueNumber; 4]> = inst
-            .uses()
-            .iter()
-            .map(|variable| {
-                *variable_values.entry(variable.clone()).or_insert_with(|| {
+        for (idx, inst) in insts.iter().enumerate() {
+            if !inst.is_pure() || inst.defs().is_empty() {
+                // A skipped instruction still REDEFINES its defs: give each a
+                // fresh value number so later expressions over them are not
+                // falsely matched against pre-redefinition keys.
+                for variable in inst.defs() {
                     let vn = next_vn;
                     next_vn += 1;
-                    vn
-                })
-            })
-            .collect();
-
-        let key = ExprKey {
-            operation: inst.operation(),
-            operands,
-        };
-
-        if let Some(&existing_vn) = expr_to_vn.get(&key) {
-            // Redundant — same expression already computed.
-            inst_vn.push(Some(existing_vn));
-            redundant.push(idx);
-            for variable in inst.defs() {
-                variable_values.insert(variable.clone(), existing_vn);
+                    variable_values.insert(variable.clone(), vn);
+                }
+                inst_vn.push(None);
+                continue;
             }
-        } else {
-            let vn = next_vn;
-            next_vn += 1;
-            expr_to_vn.insert(key, vn);
-            inst_vn.push(Some(vn));
-            for variable in inst.defs() {
-                variable_values.insert(variable.clone(), vn);
+
+            // Build expression key from operand value numbers.
+            let operands: SmallVec<[ValueNumber; 4]> = inst
+                .uses()
+                .iter()
+                .map(|variable| {
+                    *variable_values.entry(variable.clone()).or_insert_with(|| {
+                        let vn = next_vn;
+                        next_vn += 1;
+                        vn
+                    })
+                })
+                .collect();
+
+            let key = ExprKey {
+                operation: inst.operator(),
+                operands,
+            };
+
+            if let Some(&existing_vn) = expr_to_vn.get(&key) {
+                // Redundant — same expression already computed.
+                inst_vn.push(Some(existing_vn));
+                redundant.push(idx);
+                for variable in inst.defs() {
+                    variable_values.insert(variable.clone(), existing_vn);
+                }
+            } else {
+                let vn = next_vn;
+                next_vn += 1;
+                expr_to_vn.insert(key, vn);
+                inst_vn.push(Some(vn));
+                for variable in inst.defs() {
+                    variable_values.insert(variable.clone(), vn);
+                }
             }
         }
-    }
 
-    (BlockValueNumbers { inst_vn, redundant }, next_vn)
+        (BlockValueNumbers { inst_vn, redundant }, next_vn)
+    }
 }
 
-/// Run global value numbering over the dominator tree.
-///
-/// Performs a single DFS walk over the dominator tree, maintaining
-/// scoped `loc → VN` and `expr → VN` tables that are pushed on
-/// entry and popped on exit. This avoids cloning maps for every
-/// block and runs in O(n · α) time per instruction (where α is the
-/// `BTreeMap` operation cost).
-#[must_use]
-pub fn global_value_numbering<I: ValueNumberInfo>(
-    cfg: &Cfg<I>,
-    dom: &DominatorTree,
-) -> ValueNumbering {
-    let mut blocks = BTreeMap::new();
-    let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
-    let mut expr_to_vn: BTreeMap<ExprKey<I::Operation>, ValueNumber> = BTreeMap::new();
-    let mut next_vn: ValueNumber = 0;
+impl ValueNumbering {
+    /// Run global value numbering over the dominator tree.
+    ///
+    /// Performs a single DFS walk over the dominator tree, maintaining
+    /// scoped `loc → VN` and `expr → VN` tables that are pushed on
+    /// entry and popped on exit. This avoids cloning maps for every
+    /// block and runs in O(n · α) time per instruction (where α is the
+    /// `BTreeMap` operation cost).
+    #[must_use]
+    pub fn compute<I: ValueNumberInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> Self {
+        let mut blocks = BTreeMap::new();
+        let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
+        let mut expr_to_vn: BTreeMap<ExprKey<I::Operator>, ValueNumber> = BTreeMap::new();
+        let mut next_vn: ValueNumber = 0;
 
-    gvn_dfs(
-        cfg,
-        dom,
-        cfg.entry(),
-        &mut variable_values,
-        &mut expr_to_vn,
-        &mut next_vn,
-        &mut blocks,
-    );
+        gvn_dfs(
+            cfg,
+            dom,
+            cfg.entry(),
+            &mut variable_values,
+            &mut expr_to_vn,
+            &mut next_vn,
+            &mut blocks,
+        );
 
-    ValueNumbering {
-        blocks,
-        num_values: next_vn,
+        ValueNumbering {
+            blocks,
+            value_count: next_vn,
+        }
     }
 }
 
@@ -171,13 +175,13 @@ fn gvn_dfs<I: ValueNumberInfo>(
     dom: &DominatorTree,
     bid: BlockId,
     variable_values: &mut BTreeMap<I::Variable, ValueNumber>,
-    expr_to_vn: &mut BTreeMap<ExprKey<I::Operation>, ValueNumber>,
+    expr_to_vn: &mut BTreeMap<ExprKey<I::Operator>, ValueNumber>,
     next_vn: &mut ValueNumber,
     blocks: &mut BTreeMap<BlockId, BlockValueNumbers>,
 ) {
     // Snapshot the current scope so we can restore on exit.
     let mut saved_variables: BTreeMap<I::Variable, Option<ValueNumber>> = BTreeMap::new();
-    let mut expr_added: Vec<ExprKey<I::Operation>> = Vec::new();
+    let mut expr_added: Vec<ExprKey<I::Operator>> = Vec::new();
 
     // Process instructions in this block.
     let insts = cfg.block(bid).instructions();
@@ -219,7 +223,7 @@ fn gvn_dfs<I: ValueNumberInfo>(
             .collect();
 
         let key = ExprKey {
-            operation: inst.operation(),
+            operation: inst.operator(),
             operands,
         };
 
@@ -276,10 +280,12 @@ fn gvn_dfs<I: ValueNumberInfo>(
     }
 }
 
-/// Count total redundant instructions across all blocks.
-#[must_use]
-pub fn count_redundant(vn: &ValueNumbering) -> usize {
-    vn.blocks.values().map(|b| b.redundant.len()).sum()
+impl ValueNumbering {
+    /// Count total redundant instructions across all blocks.
+    #[must_use]
+    pub fn redundant_count(&self) -> usize {
+        self.blocks.values().map(|b| b.redundant.len()).sum()
+    }
 }
 
 #[cfg(test)]
@@ -315,9 +321,9 @@ mod tests {
     }
 
     impl ValueNumberInfo for VnInst {
-        type Operation = u32;
+        type Operator = u32;
 
-        fn operation(&self) -> u32 {
+        fn operator(&self) -> u32 {
             self.op
         }
         fn is_pure(&self) -> bool {
@@ -351,7 +357,7 @@ mod tests {
             vn_inst(2, &[10, 2], &[12]),
         ]);
 
-        let (numbers, _) = local_value_numbering(&cfg, cfg.entry(), 0);
+        let (numbers, _) = BlockValueNumbers::compute(&cfg, cfg.entry(), 0);
         assert!(
             numbers.redundant.is_empty(),
             "y reads the RELOADED t and is not redundant: {numbers:?}"
@@ -366,7 +372,7 @@ mod tests {
             vn_inst(1, &[0, 1], &[2]), // t2 = op1(loc0, loc1)
             vn_inst(1, &[0, 1], &[3]), // t3 = op1(loc0, loc1) → redundant
         ]);
-        let (bvn, _) = local_value_numbering(&cfg, cfg.entry(), 0);
+        let (bvn, _) = BlockValueNumbers::compute(&cfg, cfg.entry(), 0);
         assert_eq!(bvn.redundant.len(), 1);
         assert_eq!(bvn.redundant[0], 1);
     }
@@ -378,7 +384,7 @@ mod tests {
             vn_inst(1, &[0, 1], &[2]),
             vn_inst(2, &[0, 1], &[3]), // different opcode
         ]);
-        let (bvn, _) = local_value_numbering(&cfg, cfg.entry(), 0);
+        let (bvn, _) = BlockValueNumbers::compute(&cfg, cfg.entry(), 0);
         assert!(bvn.redundant.is_empty());
     }
 
@@ -396,7 +402,7 @@ mod tests {
             .push(vn_inst(1, &[0, 1], &[3]));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);
-        let vn = global_value_numbering(&cfg, &dom);
+        let vn = ValueNumbering::compute(&cfg, &dom);
         // The instruction in block b should be marked redundant.
         let b_vn = &vn.blocks[&b];
         assert_eq!(
@@ -427,7 +433,7 @@ mod tests {
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         let dom = DominatorTree::compute(&cfg);
-        let vn = global_value_numbering(&cfg, &dom);
+        let vn = ValueNumbering::compute(&cfg, &dom);
         assert!(vn.blocks[&a].redundant.is_empty());
         assert!(vn.blocks[&b].redundant.is_empty());
     }

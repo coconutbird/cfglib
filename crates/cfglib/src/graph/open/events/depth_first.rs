@@ -1,3 +1,5 @@
+//! Depth-first event walk — the fold-shaped counterpart — over an open node space.
+
 extern crate alloc;
 
 use alloc::collections::BTreeSet;

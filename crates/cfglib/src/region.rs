@@ -389,12 +389,12 @@ pub struct RegionIndex {
 }
 
 impl RegionIndex {
-    /// Build the index from a CFG's current regions.
+    /// Compute the index from a CFG's current regions.
     ///
-    /// The index is a snapshot: rebuild after adding regions or blocks.
+    /// The index is a snapshot: recompute after adding regions or blocks.
     #[must_use]
-    pub fn build<I>(cfg: &Cfg<I>) -> Self {
-        let mut innermost = vec![None; cfg.num_blocks()];
+    pub fn compute<I>(cfg: &Cfg<I>) -> Self {
+        let mut innermost = vec![None; cfg.block_count()];
         for region in cfg.regions() {
             for &block in &region.protected_blocks {
                 if let Some(slot) = innermost.get_mut(block.index()) {
@@ -478,7 +478,7 @@ mod tests {
         assert!(cfg.protecting_region(b3).is_none());
 
         // The precomputed index agrees with the linear scan everywhere.
-        let index = RegionIndex::build(&cfg);
+        let index = RegionIndex::compute(&cfg);
         for block in [0, 1, 2] {
             let block = BlockId::from_raw(block);
             assert_eq!(

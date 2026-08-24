@@ -43,7 +43,7 @@ pub struct LoopNestNode<N = BlockId> {
 ///
 /// let dom = DominatorTree::compute(&cfg);
 /// let loops = detect_loops(&cfg, &dom);
-/// let tree = LoopNestingTree::build(&loops);
+/// let tree = LoopNestingTree::compute(&loops);
 /// assert_eq!(tree.len(), 1);
 /// assert_eq!(tree.innermost_loop(b1), Some(0));
 /// ```
@@ -56,13 +56,13 @@ pub struct LoopNestingTree<N = BlockId> {
 }
 
 impl<N: Copy + Ord> LoopNestingTree<N> {
-    /// Build the nesting tree from a slice of natural loops.
+    /// Compute the nesting tree from a slice of natural loops.
     ///
     /// Loops are assumed to be sorted by depth (outermost first),
     /// which is the order returned by
     /// [`detect_loops`](crate::graph::structure::detect_loops).
     #[must_use]
-    pub fn build(loops: &[NaturalLoop<N>]) -> Self {
+    pub fn compute(loops: &[NaturalLoop<N>]) -> Self {
         let n = loops.len();
         let mut nodes: Vec<LoopNestNode<N>> = loops
             .iter()
@@ -182,7 +182,7 @@ mod tests {
     fn nested_loops() {
         let outer = make_loop(1, &[1, 2, 3], 0);
         let inner = make_loop(2, &[2, 3], 1);
-        let tree = LoopNestingTree::build(&[outer, inner]);
+        let tree = LoopNestingTree::compute(&[outer, inner]);
         assert_eq!(tree.len(), 2);
         assert_eq!(tree.depth(0), 0);
         assert_eq!(tree.depth(1), 1);
@@ -194,7 +194,7 @@ mod tests {
     fn innermost_loop_query() {
         let outer = make_loop(1, &[1, 2, 3], 0);
         let inner = make_loop(2, &[2, 3], 1);
-        let tree = LoopNestingTree::build(&[outer, inner]);
+        let tree = LoopNestingTree::compute(&[outer, inner]);
         // Block 3 is in both loops, innermost is index 1.
         assert_eq!(tree.innermost_loop(BlockId::from_raw(3)), Some(1));
         // Block 1 is only in outer.

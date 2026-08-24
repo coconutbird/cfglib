@@ -23,7 +23,7 @@ pub fn remove_unreachable<I, E>(cfg: &mut Cfg<I, E>) -> usize {
 /// but removed blocks have no instructions or incident edges.
 pub fn remove_unreachable_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
     let reachable = cfg.depth_first_preorder();
-    let mut is_reachable = vec![false; cfg.num_blocks()];
+    let mut is_reachable = vec![false; cfg.block_count()];
     for &id in &reachable {
         is_reachable[id.index()] = true;
     }
@@ -198,4 +198,104 @@ pub fn simplify_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
         total += round;
     }
     (total, mapping)
+}
+
+#[cfg(test)]
+mod tests {
+    use alloc::vec::Vec;
+
+    use super::*;
+    use crate::cfg::Cfg;
+    use crate::edge::EdgeKind;
+    use crate::test_util::{diamond_cfg, ff};
+
+    #[test]
+    fn remove_unreachable_noop_when_all_reachable() {
+        let mut cfg = diamond_cfg();
+        let removed = remove_unreachable(&mut cfg);
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn remove_unreachable_removes_disconnected_block() {
+        let mut cfg = diamond_cfg();
+        let orphan = cfg.new_block();
+        cfg.block_mut(orphan).push(ff("dead"));
+        let removed = remove_unreachable(&mut cfg);
+        assert_eq!(removed, 1);
+        assert!(cfg.block(orphan).instructions().is_empty());
+    }
+
+    #[test]
+    fn merge_blocks_merges_linear_chain() {
+        let mut cfg = Cfg::new();
+        let b = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(ff("a"));
+        cfg.block_mut(b).push(ff("b"));
+        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        let merged = merge_blocks(&mut cfg);
+        assert_eq!(merged, 1);
+        assert_eq!(cfg.block(cfg.entry()).instructions().len(), 2);
+    }
+
+    #[test]
+    fn merge_blocks_does_not_merge_when_multiple_predecessors() {
+        let mut cfg = diamond_cfg();
+        let merged = merge_blocks(&mut cfg);
+        assert_eq!(merged, 0);
+    }
+
+    #[test]
+    fn merge_blocks_skips_self_loop() {
+        let mut cfg = Cfg::new();
+        cfg.block_mut(cfg.entry()).push(ff("a"));
+        cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
+        let merged = merge_blocks(&mut cfg);
+        assert_eq!(merged, 0);
+    }
+
+    #[test]
+    fn remove_empty_blocks_bypasses_empty_block() {
+        let mut cfg = Cfg::new();
+        let empty = cfg.new_block();
+        let target = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(ff("entry"));
+        cfg.block_mut(target).push(ff("target"));
+        cfg.add_edge(cfg.entry(), empty, EdgeKind::Fallthrough);
+        cfg.add_edge(empty, target, EdgeKind::Fallthrough);
+        let removed = remove_empty_blocks(&mut cfg);
+        assert_eq!(removed, 1);
+        let succs: Vec<_> = cfg.successors(cfg.entry()).collect();
+        assert_eq!(succs.len(), 1);
+        assert_eq!(succs[0], target);
+    }
+
+    #[test]
+    fn remove_empty_blocks_does_not_remove_entry() {
+        let mut cfg = Cfg::new();
+        let b = cfg.new_block();
+        cfg.block_mut(b).push(ff("b"));
+        cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
+        let removed = remove_empty_blocks(&mut cfg);
+        assert_eq!(removed, 0);
+    }
+
+    #[test]
+    fn simplify_runs_all_passes() {
+        let mut cfg = Cfg::new();
+        let empty = cfg.new_block();
+        let b = cfg.new_block();
+        let orphan = cfg.new_block();
+        cfg.block_mut(cfg.entry()).push(ff("entry"));
+        cfg.block_mut(b).push(ff("b"));
+        cfg.block_mut(orphan).push(ff("dead"));
+        cfg.add_edge(cfg.entry(), empty, EdgeKind::Fallthrough);
+        cfg.add_edge(empty, b, EdgeKind::Fallthrough);
+        let total = simplify(&mut cfg);
+        assert!(
+            total > 0,
+            "simplify should perform at least 1 transformation"
+        );
+        assert!(cfg.block(orphan).instructions().is_empty());
+    }
 }
