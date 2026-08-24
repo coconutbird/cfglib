@@ -230,7 +230,7 @@ pub fn verify<I, E>(cfg: &Cfg<I, E>) -> VerifyResult {
     verify_adjacency(cfg, &mut errors);
 
     // 4. Every reachable non-entry block has a predecessor.
-    let reachable = cfg.dfs_preorder();
+    let reachable = cfg.depth_first_preorder();
     for &bid in &reachable {
         if bid == cfg.entry() {
             continue;

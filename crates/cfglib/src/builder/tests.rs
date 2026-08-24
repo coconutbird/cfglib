@@ -61,7 +61,7 @@ fn leading_label_and_conditional_continuation_stay_connected() {
         gi(FlowEffect::Return),
     ])
     .unwrap();
-    let reachable = cfg.dfs_preorder();
+    let reachable = cfg.depth_first_preorder();
     assert_eq!(reachable.len(), cfg.num_blocks(), "all blocks reachable");
 
     // A label directly after a conditional jump IS the false-path
@@ -76,7 +76,7 @@ fn leading_label_and_conditional_continuation_stay_connected() {
         gi(FlowEffect::Return),
     ])
     .unwrap();
-    let reachable = cfg.dfs_preorder();
+    let reachable = cfg.depth_first_preorder();
     assert_eq!(reachable.len(), cfg.num_blocks(), "false path connected");
 }
 
@@ -304,7 +304,7 @@ fn traversal_preorder() {
         MockInst(FlowEffect::Return, "ret"),
     ])
     .unwrap();
-    let pre = cfg.dfs_preorder();
+    let pre = cfg.depth_first_preorder();
     // Entry should be first.
     assert_eq!(pre[0], cfg.entry());
     // All reachable blocks should be visited.

@@ -83,6 +83,12 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
 
 - Keep functions focused and control flow shallow. Prefer guard clauses when they
   make the happy path easier to follow.
+- Keep semantic counterpart APIs parallel in naming, configuration shape, module
+  placement, documentation, and tests. Prefer full-word canonical names; retain
+  abbreviations only as compatibility aliases when existing callers require them.
+- Give sibling implementations matching module paths and names (for example,
+  `breadth_first.rs` and `depth_first.rs`) behind a small coordinator module that
+  exposes their shared public surface.
 - Use descriptive domain names and explicit domain types. Avoid boolean parameters,
   magic values, and ambiguous tuples when a small enum or struct communicates the
   contract better.

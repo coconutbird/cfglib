@@ -22,7 +22,7 @@ pub fn remove_unreachable<I, E>(cfg: &mut Cfg<I, E>) -> usize {
 /// Storage slots remain allocated, matching [`Cfg`]'s stable-identity model,
 /// but removed blocks have no instructions or incident edges.
 pub fn remove_unreachable_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
-    let reachable = cfg.dfs_preorder();
+    let reachable = cfg.depth_first_preorder();
     let mut is_reachable = vec![false; cfg.num_blocks()];
     for &id in &reachable {
         is_reachable[id.index()] = true;
@@ -75,7 +75,7 @@ pub fn merge_blocks_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
     let mut changed = true;
     while changed {
         changed = false;
-        let order = cfg.dfs_preorder();
+        let order = cfg.depth_first_preorder();
         for &source in &order {
             let successor_edges = cfg.successor_edges(source).to_vec();
             if successor_edges.len() != 1 {
@@ -127,7 +127,7 @@ pub fn remove_empty_blocks_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteM
     let mut changed = true;
     while changed {
         changed = false;
-        let order = cfg.dfs_preorder();
+        let order = cfg.depth_first_preorder();
         for &id in &order {
             if id == cfg.entry() || !cfg.block(id).is_empty() {
                 continue;

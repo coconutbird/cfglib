@@ -1,8 +1,14 @@
+extern crate alloc;
+
 use super::*;
 use crate::graph::directed::{DirectedGraph, NodeId};
-use crate::graph::search::{DfsEvent, SearchConfig, depth_first_events, search};
+use crate::graph::search::{
+    DfsEvent, SearchConfig, SearchOrder, Visit, VisitedPolicy, depth_first_events, search,
+};
 use crate::graph::traverse::TraversalDirection;
 use alloc::vec;
+use alloc::vec::Vec;
+use core::ops::ControlFlow;
 
 /// A `(module, name)` node in a re-export space.
 type Export = (u32, &'static str);
@@ -804,5 +810,129 @@ fn the_member_lookup_fold_answers_a_unique_provider_and_reports_the_ambiguity() 
     assert!(
         searched.is_empty(),
         "a class that declares the name hides its bases, so none are read"
+    );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BfsSeen {
+    Discover(u32, usize),
+    Refused(u32, usize),
+}
+
+fn bfs_seen(event: OpenBfsEvent<'_, u32>) -> BfsSeen {
+    match event {
+        OpenBfsEvent::Discover(&node, depth) => BfsSeen::Discover(node, depth),
+        OpenBfsEvent::Refused(&node, depth) => BfsSeen::Refused(node, depth),
+    }
+}
+
+#[test]
+fn events_follow_levels_and_report_every_refused_route() {
+    let mut events = Vec::new();
+    let outcome = open_breadth_first_events(
+        [0],
+        OpenBfsConfig::new(),
+        |node, out| {
+            assert!(out.is_empty());
+            match node {
+                0 => out.extend([1, 2]),
+                1 | 2 => out.push(3),
+                3 => out.push(0),
+                _ => {}
+            }
+        },
+        |event| {
+            events.push(bfs_seen(event));
+            ControlFlow::<(), _>::Continue(Visit::Descend)
+        },
+    );
+
+    assert_eq!(outcome, None);
+    assert_eq!(
+        events,
+        vec![
+            BfsSeen::Discover(0, 0),
+            BfsSeen::Discover(1, 1),
+            BfsSeen::Discover(2, 1),
+            BfsSeen::Discover(3, 2),
+            BfsSeen::Refused(3, 2),
+            BfsSeen::Refused(0, 3),
+        ]
+    );
+}
+
+#[test]
+fn skipping_and_depth_bounds_prevent_successor_discovery() {
+    let mut expanded = Vec::new();
+    let mut events = Vec::new();
+    let outcome = open_breadth_first_events(
+        [0],
+        OpenBfsConfig::new().with_max_depth(2),
+        |node, out| {
+            expanded.push(*node);
+            out.push(node + 1);
+        },
+        |event| {
+            events.push(bfs_seen(event));
+            match event {
+                OpenBfsEvent::Discover(&1, _) => ControlFlow::<(), _>::Continue(Visit::Skip),
+                _ => ControlFlow::Continue(Visit::Descend),
+            }
+        },
+    );
+
+    assert_eq!(outcome, None);
+    assert_eq!(
+        events,
+        vec![BfsSeen::Discover(0, 0), BfsSeen::Discover(1, 1)]
+    );
+    assert_eq!(expanded, vec![0]);
+
+    let mut bounded = Vec::new();
+    let outcome = open_breadth_first_events(
+        [0],
+        OpenBfsConfig::new().with_max_depth(2),
+        |node, out| out.push(node + 1),
+        |event| {
+            bounded.push(bfs_seen(event));
+            ControlFlow::<(), _>::Continue(Visit::Descend)
+        },
+    );
+    assert_eq!(outcome, None);
+    assert_eq!(
+        bounded,
+        vec![
+            BfsSeen::Discover(0, 0),
+            BfsSeen::Discover(1, 1),
+            BfsSeen::Discover(2, 2),
+        ]
+    );
+}
+
+#[test]
+fn duplicate_seeds_and_early_break_are_observable() {
+    let mut events = Vec::new();
+    let outcome = open_breadth_first_events(
+        [0, 0],
+        OpenBfsConfig::new(),
+        |node, out| out.extend([node + 1, node + 2]),
+        |event| {
+            events.push(bfs_seen(event));
+            match event {
+                OpenBfsEvent::Discover(&2, _) => ControlFlow::Break("found"),
+                _ => ControlFlow::Continue(Visit::Descend),
+            }
+        },
+    );
+
+    assert_eq!(outcome, Some("found"));
+    assert_eq!(
+        events,
+        vec![
+            BfsSeen::Discover(0, 0),
+            BfsSeen::Refused(0, 0),
+            BfsSeen::Discover(1, 1),
+            BfsSeen::Discover(2, 1),
+        ]
     );
 }

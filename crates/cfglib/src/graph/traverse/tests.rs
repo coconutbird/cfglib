@@ -15,10 +15,13 @@ fn cfg_traversal_methods_delegate_to_generic_algorithms() {
     cfg.add_edge(cfg.entry(), middle, EdgeKind::Fallthrough);
     cfg.add_edge(middle, last, EdgeKind::Fallthrough);
 
-    assert_eq!(cfg.dfs_preorder(), vec![cfg.entry(), middle, last]);
-    assert_eq!(cfg.dfs_postorder(), vec![last, middle, cfg.entry()]);
+    assert_eq!(cfg.depth_first_preorder(), vec![cfg.entry(), middle, last]);
+    assert_eq!(cfg.depth_first_postorder(), vec![last, middle, cfg.entry()]);
     assert_eq!(cfg.reverse_postorder(), vec![cfg.entry(), middle, last]);
-    assert_eq!(cfg.bfs(), vec![cfg.entry(), middle, last]);
+    assert_eq!(cfg.breadth_first(), vec![cfg.entry(), middle, last]);
+    assert_eq!(cfg.dfs_preorder(), cfg.depth_first_preorder());
+    assert_eq!(cfg.dfs_postorder(), cfg.depth_first_postorder());
+    assert_eq!(cfg.bfs(), cfg.breadth_first());
 }
 
 #[test]

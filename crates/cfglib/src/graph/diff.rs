@@ -141,8 +141,8 @@ fn fingerprint<I>(cfg: &Cfg<I>, block: BlockId) -> BlockFingerprint {
 /// ```
 #[must_use]
 pub fn cfg_diff<I, J>(left: &Cfg<I>, right: &Cfg<J>) -> CfgDiff {
-    let left_blocks = left.dfs_preorder();
-    let right_blocks = right.dfs_preorder();
+    let left_blocks = left.depth_first_preorder();
+    let right_blocks = right.depth_first_preorder();
 
     let left_fps: BTreeMap<BlockId, BlockFingerprint> = left_blocks
         .iter()

@@ -124,7 +124,7 @@ pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::F
     // Build worklist in appropriate traversal order.
     let order = match problem.direction() {
         Direction::Forward => cfg.reverse_postorder(),
-        Direction::Backward => cfg.dfs_postorder(),
+        Direction::Backward => cfg.depth_first_postorder(),
     };
 
     let mut worklist: BTreeSet<u32> = order.iter().map(|b| b.0).collect();

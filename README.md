@@ -102,14 +102,14 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 
 | Algorithm | Function / Type | Description |
 |---|---|---|
-| DFS / BFS | `depth_first_preorder`, `breadth_first`, CFG convenience methods | Direction-selectable traversals over `DirectedGraphView` |
-| Edge-aware traversal | `breadth_first_view_edges`, `walk_view_edges`, `shortest_path_view_edges` plus owned-graph compatibility wrappers | Every distinct edge once with identity + endpoints over any edge view; parallel-edge provenance |
+| DFS / BFS | `depth_first_preorder`, `depth_first_postorder`, `breadth_first`, and matching `Cfg` methods | Direction-selectable traversals over `DirectedGraphView`; abbreviated `Cfg::dfs_*` / `Cfg::bfs` methods remain compatibility aliases |
+| Edge-aware traversal | `breadth_first_view_edges[_with]`, `depth_first_view_edges[_with]`, `shortest_path_view_edges`, and matching owned-graph wrappers | Every distinct edge once with identity + endpoints over any edge view; parallel-edge provenance; `walk_*` names remain breadth-first compatibility aliases |
 | Configurable search | `search` + `SearchConfig` (order, visited policy, direction, depth bound) | First-match, pruning (`Visit::Skip`), early exit (`ControlFlow::Break`), and backtracking as configuration; `VisitedPolicy::Path` un-marks on unwind so every route to a node is reported |
 | Reusable search marks | `search_with_marks` + `EpochMarks` | The same search with its visited marks in a caller-owned epoch-stamped buffer: a per-root pass allocates marks once instead of an O(node count) buffer per root, and each search still starts from a clean set (epoch bump, O(1)) |
 | Reusable search scratch | `search_with_scratch` + `SearchScratch` | The same search with the marks *and* the call's own buffers — seeds, frontier, adjacency — caller-owned, for a pass whose searches are small enough that the call is the cost; marks and buffers both reset on entry |
-| Depth-first events | `depth_first_events` → `DfsEvent` | Discover / tree / back / forward-or-cross / finish in a pinned order — tri-color edge classification, cycle diagnostics in traversal order |
+| Traversal events | `breadth_first_events` → `BfsEvent`; `depth_first_events` → `DfsEvent` | Breadth-first discovery with tree/non-tree edges, or depth-first discover/tree/back/forward-or-cross/finish events in pinned order |
 | Open-graph search | `open_search` + `OpenSearchConfig` | The same disciplines over a lazily discovered node space: successors come from a closure, no dense ids (import/re-export chases, ordered emission walks) |
-| Open-graph events | `open_depth_first_events` → `OpenDfsEvent` | The same open space walked for a fold: discover/finish pairs (plus refused re-entries) in a pinned post-order, with `VisitedPolicy::Path` re-folding a shared node once per route — C++ base-class member lookup, where that re-fold *is* the ambiguity |
+| Open-graph events | `open_breadth_first_events` → `OpenBfsEvent`; `open_depth_first_events` → `OpenDfsEvent` | Breadth-first discovery/refusal events or depth-first discover/finish/refusal events over a lazily discovered node space; path policy can revisit a shared node once per route |
 | Alias chase | `follow`, `follow_path` | Out-degree ≤ 1 chase with a hop bound and a full-path cycle guard; the chain, or just its end |
 | Shortest path | `shortest_path` (nodes), `shortest_path_edges` (edge witness) | Forward or reverse unweighted witness path |
 | Minimum-label relaxation | `min_label_relaxation` | Edge-defined label transfer to a minimum fixpoint; nodes re-expand when their label improves |

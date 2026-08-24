@@ -182,7 +182,9 @@ pub use graph::directed::{DirectedEdge, DirectedGraph, NodeId};
 pub use graph::dominator::DominatorTree;
 pub use graph::dot::write_view_dot;
 pub use graph::edge_traverse::{
-    EdgeStep, breadth_first_edges, breadth_first_view_edges, shortest_path_edges,
+    EdgeStep, breadth_first_edges, breadth_first_edges_with, breadth_first_view_edges,
+    breadth_first_view_edges_with, depth_first_edges, depth_first_edges_with,
+    depth_first_view_edges, depth_first_view_edges_with, shortest_path_edges,
     shortest_path_view_edges, walk_edges, walk_view_edges,
 };
 pub use graph::edge_view::{DenseEdgeId, EdgeGraphView, EdgeRef, FilteredEdges};

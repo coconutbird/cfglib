@@ -713,26 +713,52 @@ pub fn topological_sort<G: DirectedGraphView>(graph: &G) -> Option<Vec<G::NodeId
 impl<I, E> Cfg<I, E> {
     /// Depth-first preorder traversal starting from the entry block.
     #[must_use]
-    pub fn dfs_preorder(&self) -> Vec<BlockId> {
-        depth_first_preorder(self, self.entry(), TraversalDirection::Outgoing)
+    pub fn depth_first_preorder(&self) -> Vec<BlockId> {
+        crate::graph::traverse::depth_first_preorder(
+            self,
+            self.entry(),
+            TraversalDirection::Outgoing,
+        )
     }
 
     /// Depth-first postorder traversal starting from the entry block.
     #[must_use]
-    pub fn dfs_postorder(&self) -> Vec<BlockId> {
-        depth_first_postorder(self, self.entry(), TraversalDirection::Outgoing)
+    pub fn depth_first_postorder(&self) -> Vec<BlockId> {
+        crate::graph::traverse::depth_first_postorder(
+            self,
+            self.entry(),
+            TraversalDirection::Outgoing,
+        )
+    }
+
+    /// Breadth-first traversal starting from the entry block.
+    #[must_use]
+    pub fn breadth_first(&self) -> Vec<BlockId> {
+        crate::graph::traverse::breadth_first(self, self.entry(), TraversalDirection::Outgoing)
     }
 
     /// Reverse postorder starting from the entry block.
     #[must_use]
     pub fn reverse_postorder(&self) -> Vec<BlockId> {
-        reverse_postorder(self, self.entry(), TraversalDirection::Outgoing)
+        crate::graph::traverse::reverse_postorder(self, self.entry(), TraversalDirection::Outgoing)
     }
 
-    /// Breadth-first traversal starting from the entry block.
+    /// Short compatibility alias for [`Self::depth_first_preorder`].
+    #[must_use]
+    pub fn dfs_preorder(&self) -> Vec<BlockId> {
+        self.depth_first_preorder()
+    }
+
+    /// Short compatibility alias for [`Self::depth_first_postorder`].
+    #[must_use]
+    pub fn dfs_postorder(&self) -> Vec<BlockId> {
+        self.depth_first_postorder()
+    }
+
+    /// Short compatibility alias for [`Self::breadth_first`].
     #[must_use]
     pub fn bfs(&self) -> Vec<BlockId> {
-        breadth_first(self, self.entry(), TraversalDirection::Outgoing)
+        self.breadth_first()
     }
 }
 
