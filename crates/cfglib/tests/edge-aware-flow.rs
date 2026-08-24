@@ -1,6 +1,6 @@
 use cfglib::{
     Cfg, Direction, DominatorTree, Edge, EdgeGraphView, EdgeId, EdgeKind, FilteredEdges,
-    KeyedGraph, NodeId, RootedGraphView, TraversalDirection, TryEdgeProblem, TryEdgeSolveError,
+    KeyedGraph, NodeId, RootedGraphView, TraversalDirection, TryEdgeProblem, TrySolveError,
     breadth_first_view_edges, remove_empty_blocks_mapped, split_node_at_points,
     try_solve_edge_problem_from, verify_edge_view,
 };
@@ -266,6 +266,6 @@ fn keyed_seeded_dataflow_preserves_bottom_and_consumer_errors() {
     .unwrap_err();
     assert_eq!(
         error,
-        TryEdgeSolveError::Problem("node rejected its incoming fact")
+        TrySolveError::Problem("node rejected its incoming fact")
     );
 }

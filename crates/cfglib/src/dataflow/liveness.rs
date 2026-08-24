@@ -96,9 +96,15 @@ pub struct Liveness<V> {
 
 impl<V: VariableId> Liveness<V> {
     /// Run liveness analysis on the given CFG.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the unbounded fixpoint solve reports a step-limit
+    /// error, which the unbounded configuration cannot produce.
     #[must_use]
     pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
-        let result = fixpoint::solve_problem(cfg, &LivenessProblem);
+        let result = fixpoint::solve_problem(cfg, &LivenessProblem)
+            .expect("an unbounded solve cannot exceed a step limit");
         Self { inner: result }
     }
 

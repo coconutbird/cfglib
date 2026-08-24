@@ -121,7 +121,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Dominator tree | `DominatorTree::compute` (rooted views), `compute_from` (explicit root) | Cooper-Harvey-Kennedy over any graph view |
 | Post-dominator tree | `DominatorTree::compute_post` (CFG), `compute_post_from` (any view + explicit exits) | Virtual-exit handling built in |
 | Dominance frontiers | `DominanceFrontiers::compute` | For SSA φ-placement |
-| Incremental dominators | `update_after_edge_insert`, `update_after_edge_remove` | Recompute + diff |
+| Dominator recompute diff | `DominatorTree::compute_with_diff` | Recompute after a graph edit, reporting the nodes whose idom changed |
 | Strongly connected components | `tarjan_scc` → `SccDecomposition<N>`, `condensation` → component DAG | Generic iterative Tarjan algorithm, reverse-topological order (leaves first) |
 | SCC in topological order | `kosaraju_scc` → `SccDecomposition<N>` | The same partition numbered sources first (`index(u) < index(v)` across every edge); the classic deterministic two-pass algorithm, for budgeted forward closures over the condensation |
 | Condensation of a given decomposition | `condensation_of(graph, &SccDecomposition)` → `DirectedGraph<(), ()>` | The component DAG whose node index **is** the given decomposition's component index, either algorithm's; deduplicated edges, and in-degrees plus dependents straight off the graph (the one-pass fixpoint shape) |
@@ -137,15 +137,14 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | CFG diff | `CfgDiff::compute` | Structural comparison (bindiff-style fingerprinting), no trait bounds |
 | Exception handling model | `EhModel::compute` | Payload-generic CFG input; stable source `EdgeId`, exact handler/unwind/leave/resume/continue kinds, landing pads, cleanup/resume blocks, handler identities, protected-by mapping, and cleanup continuations |
 | Integrity verification | `verify`, `verify_view`, `verify_edge_view`; `verify_with` + `SemanticValidator` | Structural node/edge-view checks plus deterministic typed consumer hooks for cardinality, ordering, and provenance rules |
-| DOT export | `to_dot` (`DisplayInstr`), `to_dot_with` (bound-free), `write_view_dot` (any view) | Graphviz output with escaped labels |
+| DOT export | `to_dot` (`DisplayInstr`), `to_dot_with` (bound-free), `write_view_dot` / `to_view_dot` (any view) | Graphviz output with escaped labels |
 
 ### Dataflow framework
 
 | Analysis | Function / Type | Description |
 |---|---|---|
-| Generic fixpoint solver | `solve_problem`, `Problem` trait | Forward or backward, any lattice type |
-| Node-level fixpoint | `solve_node_problem`, `NodeProblem` trait | Per-node facts over any graph view (taint, reachability-with-facts) |
-| Seeded node fixpoint | `solve_node_problem_from` | Same solver, worklist seeded from a subset — incremental / dirty-region re-solves |
+| Generic fixpoint solver | `solve_problem[_from][_with_config]`, `Problem` / `TryProblem` traits | Forward or backward, any lattice type; every solver carries the same seeded/bounded/fallible matrix over shared `SolveConfig` and `SolveError` |
+| Node-level fixpoint | `solve_node_problem[_from][_with_config]`, `NodeProblem` / `TryNodeProblem` traits | Per-node facts over any graph view (taint, reachability-with-facts) |
 | Edge-sensitive fixpoint | `solve_edge_problem`, `solve_edge_problem_from`, `EdgeProblem` trait | Full or seeded per-edge transfer over any edge view; stable id/data plus physical node pre/post states and deterministic bounded-solve errors |
 | Fallible edge-sensitive fixpoint | `try_solve_edge_problem`, `try_solve_edge_problem_from`, `TryEdgeProblem` trait | Preserves consumer boundary, merge, node-transfer, and edge-transfer errors separately from solver limits |
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
@@ -191,7 +190,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Node splitting | `split_node`, `split_node_at_points` | Split at one or several validated consumer-selected instruction boundaries |
 | Loop rotation | `rotate_loop` | Top-tested → bottom-tested loop form |
 | Loop invariant detection | `find_loop_invariants` | Identify hoistable instructions |
-| Partial redundancy elimination | `analyze_pre`, `eliminate_pre` | GVN-based PRE |
+| Partial redundancy elimination | `PreAnalysis::compute`, `eliminate_pre` | GVN-based PRE |
 | Graph coloring | `interference_graph`, `color_graph` | Interference builder uses `DirectedGraph`; coloring accepts any graph view |
 | Linearization | `linearize`, `Emitter` trait, `BlockOrder` | Re-serialize CFG to a flat stream; emitters speak `BlockId`, naming is theirs |
 

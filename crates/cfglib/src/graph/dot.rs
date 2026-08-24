@@ -60,6 +60,24 @@ pub fn write_view_dot<G: DirectedGraphView>(
     writeln!(w, "}}")
 }
 
+/// Render any graph view in DOT format with consumer-provided node labels.
+///
+/// The allocating counterpart of [`write_view_dot`], matching
+/// [`Cfg::to_dot_with`].
+///
+/// # Panics
+///
+/// Panics only if writing to an in-memory [`String`] unexpectedly fails.
+#[must_use]
+pub fn to_view_dot<G: DirectedGraphView>(
+    graph: &G,
+    node_label: impl FnMut(G::NodeId) -> String,
+) -> String {
+    let mut out = String::new();
+    write_view_dot(graph, &mut out, node_label).expect("writing DOT to a String cannot fail");
+    out
+}
+
 impl<I, E> Cfg<I, E> {
     /// Write the CFG in DOT format using a caller-supplied instruction label.
     ///

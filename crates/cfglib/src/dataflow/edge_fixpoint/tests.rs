@@ -107,12 +107,12 @@ fn step_limit_failure_is_structured_and_deterministic() {
     let error = solve_edge_problem_with_config(
         &cfg,
         &PreAndPost { entry: cfg.entry() },
-        EdgeSolveConfig::with_step_limit(0),
+        SolveConfig::with_step_limit(0),
     )
     .unwrap_err();
     assert_eq!(
         error,
-        EdgeSolveError::StepLimitExceeded {
+        SolveError::StepLimitExceeded {
             limit: 0,
             steps: 0,
             pending_node: 0,

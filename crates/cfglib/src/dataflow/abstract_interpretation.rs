@@ -98,12 +98,18 @@ impl<I, D: AbstractDomain<I>> Problem<I> for AbstractProblem<D> {
 /// Forward analysis delegating to the generic fixpoint solver.
 /// The abstract domain `D` determines both the lattice and the
 /// per-instruction transfer function.
+///
+/// # Panics
+///
+/// Panics only if the unbounded fixpoint solve reports a step-limit error,
+/// which the unbounded configuration cannot produce.
 #[must_use]
 pub fn abstract_interpret<I, D: AbstractDomain<I>>(cfg: &Cfg<I>) -> AbstractFacts<D> {
     let problem = AbstractProblem::<D> {
         _marker: core::marker::PhantomData,
     };
-    let result = fixpoint::solve_problem(cfg, &problem);
+    let result = fixpoint::solve_problem(cfg, &problem)
+        .expect("an unbounded solve cannot exceed a step limit");
 
     // Convert Vec-indexed results to BTreeMap-keyed results.
     let mut block_in = BTreeMap::new();

@@ -10,7 +10,6 @@ pub mod edge_traverse;
 pub mod edge_view;
 pub mod eh;
 pub mod horn;
-pub mod incremental_dominators;
 pub mod interval;
 pub mod keyed;
 pub mod loop_nest;

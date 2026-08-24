@@ -291,7 +291,7 @@ impl Cleanup {
 /// let mut filters = HandlerFilters::new();
 /// assert!(filters.set(handler, "expr#17").is_none());
 ///
-/// assert_eq!(filters.get(handler), Some(&"expr#17"));
+/// assert_eq!(filters.metadata(handler), Some(&"expr#17"));
 /// assert_eq!(filters.len(), 1);
 /// // Re-registering returns the payload it replaced.
 /// assert_eq!(filters.set(handler, "expr#18"), Some("expr#17"));
@@ -325,7 +325,7 @@ impl<M> HandlerMetadata<M> {
 
     /// The metadata attached to `handler`, if any.
     #[must_use]
-    pub fn get(&self, handler: HandlerRef) -> Option<&M> {
+    pub fn metadata(&self, handler: HandlerRef) -> Option<&M> {
         let at = self
             .entries
             .binary_search_by_key(&handler, |(key, _)| *key)
@@ -334,7 +334,7 @@ impl<M> HandlerMetadata<M> {
     }
 
     /// Mutable access to the metadata attached to `handler`.
-    pub fn get_mut(&mut self, handler: HandlerRef) -> Option<&mut M> {
+    pub fn metadata_mut(&mut self, handler: HandlerRef) -> Option<&mut M> {
         let at = self
             .entries
             .binary_search_by_key(&handler, |(key, _)| *key)
@@ -679,15 +679,15 @@ mod tests {
         assert!(filters.set(catch, "e.Retryable").is_none());
 
         assert_eq!(filters.len(), 2);
-        assert_eq!(filters.get(catch), Some(&"e.Retryable"));
+        assert_eq!(filters.metadata(catch), Some(&"e.Retryable"));
         assert_eq!(
             filters.set(catch, "e.Retryable && !e.Fatal"),
             Some("e.Retryable")
         );
-        if let Some(filter) = filters.get_mut(catch) {
+        if let Some(filter) = filters.metadata_mut(catch) {
             *filter = "e.Fatal";
         }
-        assert_eq!(filters.get(catch), Some(&"e.Fatal"));
+        assert_eq!(filters.metadata(catch), Some(&"e.Fatal"));
         // Iteration is in handler order regardless of insertion order.
         assert_eq!(
             filters.iter().map(|(key, _)| key).collect::<Vec<_>>(),

@@ -7,7 +7,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 
-use crate::dataflow::fixpoint::Direction;
+use crate::dataflow::fixpoint::{
+    Direction, SolveConfig, SolveError, TrySolveError, collapse_infallible,
+};
 use crate::graph::edge_view::{DenseEdgeId, EdgeGraphView, EdgeRef};
 use crate::graph::view::DenseNodeId;
 
@@ -142,98 +144,6 @@ pub trait TryEdgeProblem<G: EdgeGraphView> {
     }
 }
 
-/// Deterministic solver limits.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct EdgeSolveConfig {
-    max_steps: Option<usize>,
-}
-
-impl EdgeSolveConfig {
-    /// An unbounded solve.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self { max_steps: None }
-    }
-
-    /// Stop before processing more than `limit` worklist entries.
-    #[must_use]
-    pub const fn with_step_limit(limit: usize) -> Self {
-        Self {
-            max_steps: Some(limit),
-        }
-    }
-
-    /// Configured worklist-entry limit, if any.
-    #[must_use]
-    pub const fn max_steps(self) -> Option<usize> {
-        self.max_steps
-    }
-}
-
-/// A bounded edge-sensitive solve did not reach a fixpoint.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EdgeSolveError {
-    /// The deterministic worklist still contained a node at the limit.
-    StepLimitExceeded {
-        /// Configured limit.
-        limit: usize,
-        /// Worklist entries already processed.
-        steps: usize,
-        /// Dense index of the next node that would have been processed.
-        pending_node: usize,
-    },
-}
-
-impl core::fmt::Display for EdgeSolveError {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match *self {
-            Self::StepLimitExceeded {
-                limit,
-                steps,
-                pending_node,
-            } => write!(
-                formatter,
-                "edge dataflow step limit {limit} exceeded after {steps} steps; next node is {pending_node}"
-            ),
-        }
-    }
-}
-
-impl core::error::Error for EdgeSolveError {}
-
-/// Failure from a fallible edge-sensitive solve.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TryEdgeSolveError<E> {
-    /// A boundary, merge, node transfer, or edge transfer rejected the input.
-    Problem(E),
-    /// The solver reached its configured deterministic work limit.
-    Solver(EdgeSolveError),
-}
-
-impl<E> From<EdgeSolveError> for TryEdgeSolveError<E> {
-    fn from(error: EdgeSolveError) -> Self {
-        Self::Solver(error)
-    }
-}
-
-impl<E: core::fmt::Display> core::fmt::Display for TryEdgeSolveError<E> {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        match self {
-            Self::Problem(error) => error.fmt(formatter),
-            Self::Solver(error) => error.fmt(formatter),
-        }
-    }
-}
-
-impl<E: core::error::Error + 'static> core::error::Error for TryEdgeSolveError<E> {
-    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
-        match self {
-            Self::Problem(error) => Some(error),
-            Self::Solver(error) => Some(error),
-        }
-    }
-}
-
 /// Node and edge facts at a completed fixpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeFacts<F> {
@@ -283,15 +193,12 @@ impl<F> EdgeFacts<F> {
 /// The unbounded configuration cannot produce a solver-limit error. The
 /// `Result` matches [`solve_edge_problem_with_config`] so callers can switch
 /// configurations without changing result handling.
-pub fn solve_edge_problem<G, P>(
-    graph: &G,
-    problem: &P,
-) -> Result<EdgeFacts<P::Fact>, EdgeSolveError>
+pub fn solve_edge_problem<G, P>(graph: &G, problem: &P) -> Result<EdgeFacts<P::Fact>, SolveError>
 where
     G: EdgeGraphView,
     P: EdgeProblem<G>,
 {
-    solve_edge_problem_with_config(graph, problem, EdgeSolveConfig::new())
+    solve_edge_problem_with_config(graph, problem, SolveConfig::new())
 }
 
 /// Solve an edge-sensitive problem from only the initial `seeds`.
@@ -312,25 +219,25 @@ pub fn solve_edge_problem_from<G, P>(
     graph: &G,
     problem: &P,
     seeds: &[G::NodeId],
-) -> Result<EdgeFacts<P::Fact>, EdgeSolveError>
+) -> Result<EdgeFacts<P::Fact>, SolveError>
 where
     G: EdgeGraphView,
     P: EdgeProblem<G>,
 {
-    solve_edge_problem_from_with_config(graph, problem, seeds, EdgeSolveConfig::new())
+    solve_edge_problem_from_with_config(graph, problem, seeds, SolveConfig::new())
 }
 
 /// Solve an edge-sensitive problem with deterministic bounded iteration.
 ///
 /// # Errors
 ///
-/// Returns [`EdgeSolveError::StepLimitExceeded`] when work remains at the
+/// Returns [`SolveError::StepLimitExceeded`] when work remains at the
 /// configured limit.
 pub fn solve_edge_problem_with_config<G, P>(
     graph: &G,
     problem: &P,
-    config: EdgeSolveConfig,
-) -> Result<EdgeFacts<P::Fact>, EdgeSolveError>
+    config: SolveConfig,
+) -> Result<EdgeFacts<P::Fact>, SolveError>
 where
     G: EdgeGraphView,
     P: EdgeProblem<G>,
@@ -353,14 +260,14 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`EdgeSolveError::StepLimitExceeded`] when work remains at the
+/// Returns [`SolveError::StepLimitExceeded`] when work remains at the
 /// configured limit.
 pub fn solve_edge_problem_from_with_config<G, P>(
     graph: &G,
     problem: &P,
     seeds: &[G::NodeId],
-    config: EdgeSolveConfig,
-) -> Result<EdgeFacts<P::Fact>, EdgeSolveError>
+    config: SolveConfig,
+) -> Result<EdgeFacts<P::Fact>, SolveError>
 where
     G: EdgeGraphView,
     P: EdgeProblem<G>,
@@ -378,17 +285,17 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`TryEdgeSolveError::Problem`] for a consumer error. The unbounded
+/// Returns [`TrySolveError::Problem`] for a consumer error. The unbounded
 /// configuration cannot produce a solver-limit error.
 pub fn try_solve_edge_problem<G, P>(
     graph: &G,
     problem: &P,
-) -> Result<EdgeFacts<P::Fact>, TryEdgeSolveError<P::Error>>
+) -> Result<EdgeFacts<P::Fact>, TrySolveError<P::Error>>
 where
     G: EdgeGraphView,
     P: TryEdgeProblem<G>,
 {
-    try_solve_edge_problem_with_config(graph, problem, EdgeSolveConfig::new())
+    try_solve_edge_problem_with_config(graph, problem, SolveConfig::new())
 }
 
 /// Solve a fallible edge-sensitive problem from only the initial `seeds`.
@@ -399,31 +306,31 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`TryEdgeSolveError::Problem`] for a consumer error. The unbounded
+/// Returns [`TrySolveError::Problem`] for a consumer error. The unbounded
 /// configuration cannot produce a solver-limit error.
 pub fn try_solve_edge_problem_from<G, P>(
     graph: &G,
     problem: &P,
     seeds: &[G::NodeId],
-) -> Result<EdgeFacts<P::Fact>, TryEdgeSolveError<P::Error>>
+) -> Result<EdgeFacts<P::Fact>, TrySolveError<P::Error>>
 where
     G: EdgeGraphView,
     P: TryEdgeProblem<G>,
 {
-    try_solve_edge_problem_from_with_config(graph, problem, seeds, EdgeSolveConfig::new())
+    try_solve_edge_problem_from_with_config(graph, problem, seeds, SolveConfig::new())
 }
 
 /// Solve a fallible edge-sensitive problem with a deterministic step limit.
 ///
 /// # Errors
 ///
-/// Returns [`TryEdgeSolveError::Problem`] for a consumer error or
-/// [`TryEdgeSolveError::Solver`] when work remains at the configured limit.
+/// Returns [`TrySolveError::Problem`] for a consumer error or
+/// [`TrySolveError::Solver`] when work remains at the configured limit.
 pub fn try_solve_edge_problem_with_config<G, P>(
     graph: &G,
     problem: &P,
-    config: EdgeSolveConfig,
-) -> Result<EdgeFacts<P::Fact>, TryEdgeSolveError<P::Error>>
+    config: SolveConfig,
+) -> Result<EdgeFacts<P::Fact>, TrySolveError<P::Error>>
 where
     G: EdgeGraphView,
     P: TryEdgeProblem<G>,
@@ -440,14 +347,14 @@ where
 ///
 /// # Errors
 ///
-/// Returns [`TryEdgeSolveError::Problem`] for a consumer error or
-/// [`TryEdgeSolveError::Solver`] when work remains at the configured limit.
+/// Returns [`TrySolveError::Problem`] for a consumer error or
+/// [`TrySolveError::Solver`] when work remains at the configured limit.
 pub fn try_solve_edge_problem_from_with_config<G, P>(
     graph: &G,
     problem: &P,
     seeds: &[G::NodeId],
-    config: EdgeSolveConfig,
-) -> Result<EdgeFacts<P::Fact>, TryEdgeSolveError<P::Error>>
+    config: SolveConfig,
+) -> Result<EdgeFacts<P::Fact>, TrySolveError<P::Error>>
 where
     G: EdgeGraphView,
     P: TryEdgeProblem<G>,
@@ -472,8 +379,8 @@ fn try_solve_with_worklist<G, P>(
     graph: &G,
     problem: &P,
     mut worklist: BTreeSet<usize>,
-    config: EdgeSolveConfig,
-) -> Result<EdgeFacts<P::Fact>, TryEdgeSolveError<P::Error>>
+    config: SolveConfig,
+) -> Result<EdgeFacts<P::Fact>, TrySolveError<P::Error>>
 where
     G: EdgeGraphView,
     P: TryEdgeProblem<G>,
@@ -488,10 +395,10 @@ where
 
     let mut steps = 0;
     while let Some(node_index) = worklist.pop_first() {
-        if let Some(limit) = config.max_steps
+        if let Some(limit) = config.max_steps()
             && steps >= limit
         {
-            return Err(EdgeSolveError::StepLimitExceeded {
+            return Err(SolveError::StepLimitExceeded {
                 limit,
                 steps,
                 pending_node: node_index,
@@ -523,7 +430,7 @@ where
                 &mut worklist,
             ),
         }
-        .map_err(TryEdgeSolveError::Problem)?;
+        .map_err(TrySolveError::Problem)?;
     }
 
     Ok(EdgeFacts {
@@ -703,16 +610,6 @@ where
             node_input,
             node_output,
         ))
-    }
-}
-
-fn collapse_infallible<F>(
-    result: Result<EdgeFacts<F>, TryEdgeSolveError<Infallible>>,
-) -> Result<EdgeFacts<F>, EdgeSolveError> {
-    match result {
-        Ok(facts) => Ok(facts),
-        Err(TryEdgeSolveError::Solver(error)) => Err(error),
-        Err(TryEdgeSolveError::Problem(error)) => match error {},
     }
 }
 

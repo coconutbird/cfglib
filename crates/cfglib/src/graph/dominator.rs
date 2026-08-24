@@ -49,6 +49,30 @@ impl<N: DenseNodeId> DominatorTree<N> {
         Self::compute_from(graph, graph.root())
     }
 
+    /// Recompute the dominator tree and report which nodes' immediate
+    /// dominators changed relative to `previous`.
+    ///
+    /// A graph edit (edge insertion or removal) invalidates the tree; this
+    /// recomputes it and diffs against `previous`, so downstream analyses can
+    /// be updated selectively instead of from scratch.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `previous` was computed over a smaller node space than
+    /// `graph` currently has.
+    #[must_use]
+    pub fn compute_with_diff<G>(graph: &G, previous: &Self) -> (Self, Vec<N>)
+    where
+        G: RootedGraphView<NodeId = N>,
+    {
+        let next = Self::compute(graph);
+        let changed = (0..graph.node_count())
+            .map(N::from_index)
+            .filter(|&node| previous.idom(node) != next.idom(node))
+            .collect();
+        (next, changed)
+    }
+
     /// Compute dominators for any directed graph view from an explicit root.
     #[must_use]
     pub fn compute_from<G>(graph: &G, root: N) -> Self
@@ -400,5 +424,36 @@ mod tests {
         assert!(entry_children.contains(&a));
         assert!(entry_children.contains(&b));
         assert_eq!(dom.children(a), vec![c]);
+    }
+
+    #[test]
+    fn compute_with_diff_detects_an_idom_change() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let a = cfg.new_block();
+        let b = cfg.new_block();
+        cfg.add_edge(cfg.entry(), a, EdgeKind::Fallthrough);
+        cfg.add_edge(a, b, EdgeKind::Fallthrough);
+
+        let dom = DominatorTree::compute(&cfg);
+        // Add a shortcut edge from entry directly to b.
+        cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalTrue);
+        let (next, changed) = DominatorTree::compute_with_diff(&cfg, &dom);
+
+        // b's idom should have changed from a to entry.
+        assert!(changed.contains(&b));
+        assert_eq!(next.idom(b), Some(cfg.entry()));
+    }
+
+    #[test]
+    fn compute_with_diff_reports_no_change_for_a_redundant_edge() {
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let a = cfg.new_block();
+        cfg.add_edge(cfg.entry(), a, EdgeKind::Fallthrough);
+
+        let dom = DominatorTree::compute(&cfg);
+        // A second entry→a edge doesn't change dominators.
+        cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
+        let (_next, changed) = DominatorTree::compute_with_diff(&cfg, &dom);
+        assert!(changed.is_empty());
     }
 }

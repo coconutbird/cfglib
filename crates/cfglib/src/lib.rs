@@ -157,16 +157,24 @@ pub use dataflow::constant_propagation::{
 pub use dataflow::copy_propagation::{CopyPropagationStats, CopySource, copy_propagation};
 pub use dataflow::def_use::DefUseChains;
 pub use dataflow::edge_fixpoint::{
-    EdgeFacts, EdgeProblem, EdgeSolveConfig, EdgeSolveError, TryEdgeProblem, TryEdgeSolveError,
-    solve_edge_problem, solve_edge_problem_from, solve_edge_problem_from_with_config,
-    solve_edge_problem_with_config, try_solve_edge_problem, try_solve_edge_problem_from,
-    try_solve_edge_problem_from_with_config, try_solve_edge_problem_with_config,
+    EdgeFacts, EdgeProblem, TryEdgeProblem, solve_edge_problem, solve_edge_problem_from,
+    solve_edge_problem_from_with_config, solve_edge_problem_with_config, try_solve_edge_problem,
+    try_solve_edge_problem_from, try_solve_edge_problem_from_with_config,
+    try_solve_edge_problem_with_config,
 };
-pub use dataflow::fixpoint::{Direction, Facts, Problem, solve_problem};
+pub use dataflow::fixpoint::{
+    Direction, Facts, Problem, SolveConfig, SolveError, TryProblem, TrySolveError, solve_problem,
+    solve_problem_from, solve_problem_from_with_config, solve_problem_with_config,
+    try_solve_problem, try_solve_problem_from, try_solve_problem_from_with_config,
+    try_solve_problem_with_config,
+};
 pub use dataflow::liveness::{Liveness, LivenessProblem};
 pub use dataflow::memory_ssa::{MemoryAccess, MemoryEffect, MemorySSA, MemoryVersion};
 pub use dataflow::node_fixpoint::{
-    NodeFacts, NodeProblem, solve_node_problem, solve_node_problem_from,
+    NodeFacts, NodeProblem, TryNodeProblem, solve_node_problem, solve_node_problem_from,
+    solve_node_problem_from_with_config, solve_node_problem_with_config, try_solve_node_problem,
+    try_solve_node_problem_from, try_solve_node_problem_from_with_config,
+    try_solve_node_problem_with_config,
 };
 pub use dataflow::phi_web::{PhiWeb, PhiWebs};
 pub use dataflow::reaching::{ReachingDef, ReachingDefs, ReachingDefsProblem};
@@ -194,7 +202,7 @@ pub use graph::cdg::control_dependence_graph;
 pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff};
 pub use graph::directed::{DirectedEdge, DirectedGraph, NodeId};
 pub use graph::dominator::DominatorTree;
-pub use graph::dot::write_view_dot;
+pub use graph::dot::{to_view_dot, write_view_dot};
 pub use graph::edge_traverse::{
     EdgeStep, breadth_first_edges, breadth_first_edges_with, breadth_first_view_edges,
     breadth_first_view_edges_with, depth_first_edges, depth_first_edges_with,
@@ -204,9 +212,6 @@ pub use graph::edge_traverse::{
 pub use graph::edge_view::{DenseEdgeId, EdgeGraphView, EdgeRef, FilteredEdges};
 pub use graph::eh::{EhBlockKind, EhEdge, EhEdgeKind, EhModel};
 pub use graph::horn::HornClauses;
-pub use graph::incremental_dominators::{
-    IncrementalUpdate, update_after_edge_insert, update_after_edge_remove,
-};
 pub use graph::interval::{Interval, IntervalAnalysis};
 pub use graph::keyed::KeyedGraph;
 pub use graph::loop_nest::{LoopNestNode, LoopNestingTree};
@@ -259,4 +264,4 @@ pub use transform::critical::{
 pub use transform::dce::dead_code_elimination;
 pub use transform::linearize::{BlockOrder, Emitter, LinearInst, linearize};
 pub use transform::loops::{LoopRotation, find_loop_invariants, rotate_loop};
-pub use transform::pre::{PreAnalysis, analyze_pre, eliminate_pre};
+pub use transform::pre::{PreAnalysis, eliminate_pre};

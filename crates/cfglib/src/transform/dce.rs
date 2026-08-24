@@ -46,11 +46,17 @@ use crate::cfg::Cfg;
 /// let removed = dead_code_elimination(&mut cfg);
 /// assert_eq!(removed, 1);
 /// ```
+///
+/// # Panics
+///
+/// Panics only if the unbounded fixpoint solve reports a step-limit error,
+/// which the unbounded configuration cannot produce.
 pub fn dead_code_elimination<I: crate::dataflow::EffectInfo + Clone>(cfg: &mut Cfg<I>) -> usize {
     use crate::dataflow::fixpoint;
     use crate::dataflow::liveness::LivenessProblem;
 
-    let liveness = fixpoint::solve_problem(cfg, &LivenessProblem);
+    let liveness = fixpoint::solve_problem(cfg, &LivenessProblem)
+        .expect("an unbounded solve cannot exceed a step limit");
     let mut removed = 0;
 
     // Phase 1: compute which instructions to keep per block.

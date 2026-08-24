@@ -146,7 +146,10 @@ mod tests {
             },
         );
 
-        assert_eq!(types.get(HandlerRef::new(region, 0)), Some(&0x0200_0001));
+        assert_eq!(
+            types.metadata(HandlerRef::new(region, 0)),
+            Some(&0x0200_0001)
+        );
         assert_eq!(cfg.regions()[0].handlers[1].kind, HandlerKind::Fault);
         assert_eq!(
             cfg.regions()[0].handlers[2].kind,

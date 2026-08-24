@@ -152,11 +152,17 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
 }
 
 /// Run constant propagation on the CFG.
+///
+/// # Panics
+///
+/// Panics only if the unbounded fixpoint solve reports a step-limit error,
+/// which the unbounded configuration cannot produce.
 #[must_use]
 pub fn constant_propagation<I: ConstantFolder>(
     cfg: &Cfg<I>,
 ) -> Facts<ConstFact<I::Variable, I::Const>> {
     fixpoint::solve_problem(cfg, &ConstPropProblem)
+        .expect("an unbounded solve cannot exceed a step limit")
 }
 
 #[cfg(test)]

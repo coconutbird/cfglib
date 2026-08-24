@@ -22,48 +22,50 @@ pub struct PreAnalysis {
     pub eliminated: usize,
 }
 
-/// Analyze the CFG for partially redundant expressions.
-///
-/// This implements a simplified "lazy code motion" style PRE:
-/// 1. Run local value numbering per block.
-/// 2. Propagate available expressions along dominator tree edges.
-/// 3. Mark as redundant any expression whose VN is already available
-///    from a dominating block.
-#[must_use]
-pub fn analyze_pre<I: ValueNumberInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PreAnalysis {
-    let rpo = cfg.reverse_postorder();
-    let gvn = ValueNumbering::compute(cfg, dom);
+impl PreAnalysis {
+    /// Analyze the CFG for partially redundant expressions.
+    ///
+    /// This implements a simplified "lazy code motion" style PRE:
+    /// 1. Run local value numbering per block.
+    /// 2. Propagate available expressions along dominator tree edges.
+    /// 3. Mark as redundant any expression whose VN is already available
+    ///    from a dominating block.
+    #[must_use]
+    pub fn compute<I: ValueNumberInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> Self {
+        let rpo = cfg.reverse_postorder();
+        let gvn = ValueNumbering::compute(cfg, dom);
 
-    let mut available: BTreeMap<BlockId, BTreeSet<ValueNumber>> = BTreeMap::new();
-    let mut redundant = Vec::new();
+        let mut available: BTreeMap<BlockId, BTreeSet<ValueNumber>> = BTreeMap::new();
+        let mut redundant = Vec::new();
 
-    for &bid in &rpo {
-        // Inherit available VNs from immediate dominator.
-        let mut avail = if let Some(idom) = dom.idom(bid) {
-            available.get(&idom).cloned().unwrap_or_default()
-        } else {
-            BTreeSet::new()
-        };
+        for &bid in &rpo {
+            // Inherit available VNs from immediate dominator.
+            let mut avail = if let Some(idom) = dom.idom(bid) {
+                available.get(&idom).cloned().unwrap_or_default()
+            } else {
+                BTreeSet::new()
+            };
 
-        if let Some(bvn) = gvn.blocks.get(&bid) {
-            for (idx, vn_opt) in bvn.inst_vn.iter().enumerate() {
-                if let Some(vn) = vn_opt {
-                    if avail.contains(vn) {
-                        redundant.push((bid, idx, *vn));
-                    } else {
-                        avail.insert(*vn);
+            if let Some(bvn) = gvn.blocks.get(&bid) {
+                for (idx, vn_opt) in bvn.inst_vn.iter().enumerate() {
+                    if let Some(vn) = vn_opt {
+                        if avail.contains(vn) {
+                            redundant.push((bid, idx, *vn));
+                        } else {
+                            avail.insert(*vn);
+                        }
                     }
                 }
             }
+
+            available.insert(bid, avail);
         }
 
-        available.insert(bid, avail);
-    }
-
-    let eliminated = redundant.len();
-    PreAnalysis {
-        redundant,
-        eliminated,
+        let eliminated = redundant.len();
+        PreAnalysis {
+            redundant,
+            eliminated,
+        }
     }
 }
 
@@ -71,7 +73,7 @@ pub fn analyze_pre<I: ValueNumberInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> Pre
 ///
 /// Returns the number of instructions removed.
 pub fn eliminate_pre<I: ValueNumberInfo + Clone>(cfg: &mut Cfg<I>, dom: &DominatorTree) -> usize {
-    let result = analyze_pre(cfg, dom);
+    let result = PreAnalysis::compute(cfg, dom);
 
     // Collect removals per block (reverse order to preserve indices).
     let mut per_block: BTreeMap<BlockId, Vec<usize>> = BTreeMap::new();
@@ -147,7 +149,7 @@ mod tests {
             .instructions_mut()
             .extend([pi(1, &[0, 1], &[2]), pi(1, &[0, 1], &[3])]);
         let dom = DominatorTree::compute(&cfg);
-        let result = analyze_pre(&cfg, &dom);
+        let result = PreAnalysis::compute(&cfg, &dom);
         assert_eq!(result.eliminated, 1);
     }
 
@@ -165,7 +167,7 @@ mod tests {
             .push(pi(1, &[0, 1], &[3]));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);
-        let result = analyze_pre(&cfg, &dom);
+        let result = PreAnalysis::compute(&cfg, &dom);
         assert_eq!(result.eliminated, 1);
     }
 
@@ -181,7 +183,7 @@ mod tests {
             .push(pi(2, &[0, 1], &[3]));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dom = DominatorTree::compute(&cfg);
-        let result = analyze_pre(&cfg, &dom);
+        let result = PreAnalysis::compute(&cfg, &dom);
         assert_eq!(result.eliminated, 0);
     }
 }
