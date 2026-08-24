@@ -30,6 +30,12 @@
 //! be folded once *per route*, which is what [`crate::VisitedPolicy::Path`] means
 //! here.
 //!
+//! [`open_breadth_first_paths`] is the once-per-route walk in breadth-first
+//! form: no global marks at all, each frontier entry owning its route, so
+//! routes arrive shortest-first at simple-path-enumeration cost. It is the
+//! breadth-first counterpart of [`open_depth_first_events`] under
+//! [`crate::VisitedPolicy::Path`].
+//!
 //! [`follow`] and [`follow_path`] are the degenerate case that shows up just
 //! as often: an out-degree ≤ 1 chase (import alias to import alias, symlink to
 //! symlink, type alias to type alias) which needs a hop bound and a cycle
@@ -37,6 +43,7 @@
 
 mod events;
 mod follow;
+mod paths;
 mod search;
 
 pub use events::{
@@ -44,6 +51,7 @@ pub use events::{
     open_depth_first_events,
 };
 pub use follow::{follow, follow_path};
+pub use paths::{OpenPathsConfig, OpenPathsEvent, open_breadth_first_paths};
 pub use search::{OpenSearchConfig, open_search};
 
 /// Whether a node at `depth` may expand under a `max_depth` bound.

@@ -110,6 +110,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Traversal events | `breadth_first_events` → `BfsEvent`; `depth_first_events` → `DfsEvent` | Breadth-first discovery with tree/non-tree edges, or depth-first discover/tree/back/forward-or-cross/finish events in pinned order |
 | Open-graph search | `open_search` + `OpenSearchConfig` | The same disciplines over a lazily discovered node space: successors come from a closure, no dense ids (import/re-export chases, ordered emission walks) |
 | Open-graph events | `open_breadth_first_events` → `OpenBfsEvent`; `open_depth_first_events` → `OpenDfsEvent` | Breadth-first discovery/refusal events or depth-first discover/finish/refusal events over a lazily discovered node space; path policy can revisit a shared node once per route |
+| Open-graph route enumeration | `open_breadth_first_paths` → `OpenPathsEvent` | Simple routes shortest-first over a lazily discovered space — no global marks, per-route cycle guard; exponential worst case, so bound with depth, `Skip`, or `Break` |
 | Alias chase | `follow`, `follow_path` | Out-degree ≤ 1 chase with a hop bound and a full-path cycle guard; the chain, or just its end |
 | Shortest path | `shortest_path` (nodes), `shortest_path_edges` (edge witness) | Forward or reverse unweighted witness path |
 | Minimum-label relaxation | `min_label_relaxation` | Edge-defined label transfer to a minimum fixpoint; nodes re-expand when their label improves |
@@ -185,7 +186,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Merge blocks | `merge_blocks` | Coalesce single-succ/single-pred chains |
 | Remove empty blocks | `remove_empty_blocks` | Bypass empty fallthrough blocks |
 | Critical edge splitting | `split_critical_edges`, `split_critical_edges_with` | Insert blocks on multi-succ → multi-pred edges while retaining the original edge identity/payload and mapping both halves |
-| Dead code elimination | `dead_code_elimination` | Liveness-based; requires `EffectInfo` so side-effecting code is never silently deleted |
+| Dead code elimination | `dead_code_elimination` (instructions), `remove_dead_code[_mapped]` (plus the structure left dead) | Liveness-based; requires `EffectInfo` so side-effecting code is never silently deleted |
 | Edge contraction | `contract_edge`, `contract_edge_mapped` | Merge two blocks connected by a single edge; mapped form preserves surviving edge identities/payloads |
 | Node splitting | `split_node`, `split_node_at_points` | Split at one or several validated consumer-selected instruction boundaries |
 | Loop rotation | `rotate_loop` | Top-tested → bottom-tested loop form |

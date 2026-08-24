@@ -15,6 +15,14 @@ use super::super::may_expand;
 /// Breadth-first traversal always marks nodes globally: unlike a depth-first
 /// stack, its frontier has no unwind point at which a path mark could be
 /// released. The type therefore exposes only the meaningful depth bound.
+///
+/// Once-per-route semantics *breadth-first* is not impossible — it is a
+/// different algorithm. A frontier whose entries each carry their own route
+/// enumerates simple paths shortest-first, trading this walk's `O(nodes)`
+/// marks for a route tree that is exponential in the worst case, and its
+/// events carry the route to mean anything. That walk is
+/// [`open_breadth_first_paths`](super::super::open_breadth_first_paths), a
+/// separate entry point rather than a policy field here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OpenBfsConfig {
     /// Maximum depth to expand from, in hops from a seed. `None` is

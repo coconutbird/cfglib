@@ -216,8 +216,9 @@ pub use graph::interval::{Interval, IntervalAnalysis};
 pub use graph::keyed::KeyedGraph;
 pub use graph::loop_nest::{LoopNestNode, LoopNestingTree};
 pub use graph::open::{
-    OpenBfsConfig, OpenBfsEvent, OpenDfsConfig, OpenDfsEvent, OpenSearchConfig, follow,
-    follow_path, open_breadth_first_events, open_depth_first_events, open_search,
+    OpenBfsConfig, OpenBfsEvent, OpenDfsConfig, OpenDfsEvent, OpenPathsConfig, OpenPathsEvent,
+    OpenSearchConfig, follow, follow_path, open_breadth_first_events, open_breadth_first_paths,
+    open_depth_first_events, open_search,
 };
 pub use graph::pdg::{DependenceKind, DependenceNode, program_dependence_graph};
 pub use graph::reducible::make_reducible;
@@ -261,7 +262,7 @@ pub use transform::contract::{
 pub use transform::critical::{
     split_critical_edges, split_critical_edges_mapped, split_critical_edges_with,
 };
-pub use transform::dce::dead_code_elimination;
+pub use transform::dce::{dead_code_elimination, remove_dead_code, remove_dead_code_mapped};
 pub use transform::linearize::{BlockOrder, Emitter, LinearInst, linearize};
 pub use transform::loops::{LoopRotation, find_loop_invariants, rotate_loop};
 pub use transform::pre::{PreAnalysis, eliminate_pre};
