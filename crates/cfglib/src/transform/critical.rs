@@ -1,79 +1,99 @@
-//! Critical edge splitting.
-//!
-//! A critical edge is one from a block with multiple successors to a
-//! block with multiple predecessors. Splitting such edges by inserting
-//! an empty block in between is required for correct SSA phi placement
-//! and simplifies many transformations.
+//! Critical-edge splitting with payload and identity preservation.
 
 extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::cfg::Cfg;
-use crate::edge::EdgeKind;
+use crate::edge::{Edge, EdgeId, EdgeKind};
+use crate::rewrite::RewriteMap;
 
-/// Split **critical edges** in the CFG.
+/// Split every critical edge and return the number split.
 ///
-/// Returns the number of edges split.
+/// This compatibility entry point is for unit-payload CFGs. The original edge
+/// identity remains on the first half of each split.
+pub fn split_critical_edges<I>(cfg: &mut Cfg<I>) -> usize {
+    split_critical_edges_mapped(cfg).0
+}
+
+/// Split critical edges using default payloads for synthetic fallthroughs.
+pub fn split_critical_edges_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap)
+where
+    E: Default,
+{
+    split_critical_edges_with(cfg, |_, _| E::default())
+}
+
+/// Split critical edges with a consumer-defined payload for each synthetic
+/// fallthrough.
 ///
-/// # Examples
-///
-/// ```
-/// use cfglib::{Cfg, EdgeKind, split_critical_edges};
-///
-/// let mut cfg = Cfg::<u32>::new();
-/// let b0 = cfg.entry();
-/// let b1 = cfg.new_block();
-/// let b2 = cfg.new_block();
-/// let b3 = cfg.new_block();
-/// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
-/// cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
-/// cfg.add_edge(b1, b3, EdgeKind::Fallthrough);
-/// cfg.add_edge(b2, b3, EdgeKind::Fallthrough);
-/// // b0→b1 is critical: b0 has 2 succs, b3 has 2 preds.
-///
-/// let split = split_critical_edges(&mut cfg);
-/// // Critical edges were split by inserting new blocks.
-/// ```
-pub fn split_critical_edges<I: Clone>(cfg: &mut Cfg<I>) -> usize {
-    // Collect critical edges first (can't mutate while iterating).
+/// `payload_for` sees the original stable edge before mutation. The original
+/// edge is redirected to the inserted block without changing its identity,
+/// kind, weight, or payload. Its mapping contains both halves in execution
+/// order; only the second half receives the generated payload.
+pub fn split_critical_edges_with<I, E>(
+    cfg: &mut Cfg<I, E>,
+    mut payload_for: impl FnMut(EdgeId, &Edge<E>) -> E,
+) -> (usize, RewriteMap) {
     let mut critical = Vec::new();
     for block in cfg.blocks() {
-        let bid = block.id();
-        let succ_edges = cfg.successor_edges(bid);
-        if succ_edges.len() < 2 {
-            continue; // not a multi-successor block
+        let source = block.id();
+        if cfg.successor_edges(source).len() < 2 {
+            continue;
         }
-        for &eid in succ_edges {
-            let target = cfg.edge(eid).target();
+        for &edge in cfg.successor_edges(source) {
+            let target = cfg.edge(edge).target();
             if cfg.predecessor_edges(target).len() >= 2 {
-                critical.push(eid);
+                critical.push(edge);
             }
         }
     }
 
-    let mut split_count = 0;
-    for eid in critical {
-        let edge = cfg.edge(eid);
-        let src = edge.source();
-        let tgt = edge.target();
-        let kind = edge.kind();
-        let weight = edge.weight();
+    let mut mapping = RewriteMap::new();
+    for &edge in &critical {
+        let (target, payload) = {
+            let original = cfg.edge(edge);
+            (original.target(), payload_for(edge, original))
+        };
+        let middle = cfg.new_block();
+        let (_, redirected) = cfg.redirect_edge_target_mapped(edge, middle);
+        mapping.compose(redirected);
+        let fallthrough = cfg.add_edge_with_payload(middle, target, EdgeKind::Fallthrough, payload);
 
-        // Remove old edge.
-        cfg.remove_edge(eid);
-
-        // Insert new empty block.
-        let mid = cfg.new_block();
-        let e1 = cfg.add_edge(src, mid, kind);
-        cfg.add_edge(mid, tgt, EdgeKind::Fallthrough);
-
-        // Preserve weight on the first half.
-        if let Some(w) = weight {
-            cfg.edge_mut(e1).set_weight(Some(w));
-        }
-
-        split_count += 1;
+        mapping.record_edge(edge, [edge, fallthrough]);
+        mapping.record_created_block(middle);
+        mapping.record_created_edge(fallthrough);
     }
+    (critical.len(), mapping)
+}
 
-    split_count
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_preserves_original_metadata_and_maps_both_halves() {
+        let mut cfg = Cfg::<(), &'static str>::new_with_edge_payload();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        let other_source = cfg.new_block();
+        let original = cfg.add_weighted_edge_with_payload(
+            cfg.entry(),
+            left,
+            EdgeKind::ConditionalTrue,
+            0.75,
+            "case 7",
+        );
+        cfg.add_edge_with_payload(cfg.entry(), right, EdgeKind::ConditionalFalse, "default");
+        cfg.add_edge_with_payload(other_source, left, EdgeKind::Jump, "other");
+
+        let (count, mapping) = split_critical_edges_with(&mut cfg, |_, edge| *edge.payload());
+        assert_eq!(count, 1);
+        let replacements = mapping.edge_replacements(original).unwrap();
+        assert_eq!(replacements.len(), 2);
+        assert_eq!(replacements[0], original);
+        assert_eq!(cfg.edge(original).kind(), EdgeKind::ConditionalTrue);
+        assert_eq!(cfg.edge(original).weight(), Some(0.75));
+        assert_eq!(cfg.edge(original).payload(), &"case 7");
+        assert_eq!(cfg.edge(replacements[1]).payload(), &"case 7");
+    }
 }

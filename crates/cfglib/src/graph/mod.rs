@@ -7,6 +7,7 @@ pub mod directed;
 pub mod dominator;
 pub mod dot;
 pub mod edge_traverse;
+pub mod edge_view;
 pub mod eh;
 pub mod horn;
 pub mod inc_dom;

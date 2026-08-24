@@ -710,7 +710,7 @@ pub fn topological_sort<G: DirectedGraphView>(graph: &G) -> Option<Vec<G::NodeId
     (order.len() == graph.node_count()).then_some(order)
 }
 
-impl<I> Cfg<I> {
+impl<I, E> Cfg<I, E> {
     /// Depth-first preorder traversal starting from the entry block.
     #[must_use]
     pub fn dfs_preorder(&self) -> Vec<BlockId> {

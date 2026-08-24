@@ -18,8 +18,11 @@ pub mod loops;
 pub mod pre;
 
 // Re-export all pass entry points at the `transform` level for convenience.
-pub use cleanup::{merge_blocks, remove_empty_blocks, remove_unreachable, simplify};
-pub use critical::split_critical_edges;
+pub use cleanup::{
+    merge_blocks, merge_blocks_mapped, remove_empty_blocks, remove_empty_blocks_mapped,
+    remove_unreachable, remove_unreachable_mapped, simplify, simplify_mapped,
+};
+pub use critical::{split_critical_edges, split_critical_edges_mapped, split_critical_edges_with};
 pub use dce::dead_code_elimination;
 pub use linearize::{BlockOrder, Emitter, LinearInst, linearize};
 

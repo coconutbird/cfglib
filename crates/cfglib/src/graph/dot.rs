@@ -60,7 +60,7 @@ pub fn write_view_dot<G: DirectedGraphView>(
     writeln!(w, "}}")
 }
 
-impl<I> Cfg<I> {
+impl<I, E> Cfg<I, E> {
     /// Write the CFG in DOT format using a caller-supplied instruction label.
     ///
     /// This is the bound-free escape hatch: rendering needs no trait on `I`
@@ -171,7 +171,7 @@ impl<I> Cfg<I> {
     }
 }
 
-impl<I: DisplayInstr> Cfg<I> {
+impl<I: DisplayInstr, E> Cfg<I, E> {
     /// Write the CFG in DOT format to any `fmt::Write` sink.
     ///
     /// # Errors

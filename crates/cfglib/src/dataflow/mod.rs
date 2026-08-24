@@ -24,6 +24,7 @@ pub mod abs_int;
 pub mod constprop;
 pub mod copyprop;
 pub mod defuse;
+pub mod edge_fixpoint;
 pub mod fixpoint;
 pub mod liveness;
 pub mod memssa;

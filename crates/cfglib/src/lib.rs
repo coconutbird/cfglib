@@ -2,9 +2,11 @@
 //!
 //! [`DirectedGraph`] stores arbitrary node and edge payloads for value-flow,
 //! symbol, type-relation, import, call, and grammar graphs. Algorithms consume
-//! [`DirectedGraphView`] / [`RootedGraphView`], so consumer-owned graph stores
-//! participate without migrating their data. [`Cfg<I>`] adds basic-block and
-//! control-flow semantics when the graph really is a program CFG, and every
+//! [`DirectedGraphView`] / [`RootedGraphView`], while [`EdgeGraphView`] and
+//! [`FilteredEdges`] retain edge identity and data without rebuilding, so
+//! consumer-owned graph stores participate without migrating their data.
+//! [`Cfg<I, E>`] adds basic-block, control-flow, and caller-owned edge metadata
+//! when the graph really is a program CFG, and every
 //! instruction-adjacent axis — variables, constants, operators, effects,
 //! branch targets, callees — is consumer-typed rather than imposed by the
 //! library.
@@ -41,8 +43,9 @@
 //!
 //! [`DirectedGraph`] owns arbitrary graph storage without requiring a consumer
 //! trait. Existing graph stores implement [`DenseNodeId`] and
-//! [`DirectedGraphView`] (plus [`RootedGraphView`], or the [`Rooted`]
-//! adapter, for entry-requiring algorithms) to reuse the generic algorithms.
+//! [`DirectedGraphView`] (plus [`EdgeGraphView`] for edge-sensitive algorithms
+//! and [`RootedGraphView`], or the [`Rooted`] adapter, for entry-requiring
+//! algorithms) to reuse the generic algorithms.
 //! Instruction types implement progressively richer traits only when they
 //! need CFG or dataflow facilities — every associated type below is the
 //! consumer's own:
@@ -50,6 +53,7 @@
 //! ```text
 //! DirectedGraph<N, E>       (owned arbitrary graph; no adapter trait)
 //! DirectedGraphView         (existing consumer-owned graph storage)
+//!   ├─ EdgeGraphView        (stable edge identity, endpoints, data)
 //!   └─ RootedGraphView     (adds a distinguished entry node; `Rooted` adapts)
 //!
 //! FlowControl               (required only by CfgBuilder)
@@ -70,7 +74,8 @@
 //!
 //! Additionally, [`Problem`] is the trait for pluggable instruction-level
 //! dataflow analyses, [`NodeProblem`] its node-level counterpart over any
-//! graph view, and [`Emitter`] the trait for linearization output.
+//! graph view, [`EdgeProblem`] its edge-sensitive counterpart, and [`Emitter`]
+//! the trait for linearization output.
 //!
 //! # Contracts
 //!
@@ -107,6 +112,7 @@ pub mod display;
 pub mod edge;
 pub mod flow;
 pub mod region;
+pub mod rewrite;
 
 // Graph algorithms.
 pub mod graph;
@@ -136,7 +142,7 @@ pub use analysis::switch_table::{
 pub use ast::{AstNode, lift, lift_predicated};
 pub use block::{BasicBlock, BlockId};
 pub use builder::{BuildError, CfgBuilder, JumpResolution, resolve_jump_edges};
-pub use cfg::Cfg;
+pub use cfg::{Cfg, SplitPointError};
 pub use display::DisplayInstr;
 pub use edge::{Edge, EdgeId, EdgeKind};
 pub use flow::{CallInfo, FlowControl, FlowEffect, JumpTargets};
@@ -144,10 +150,15 @@ pub use region::{
     Cleanup, CompletionReason, Continuation, Handler, HandlerFilters, HandlerKind, HandlerRef,
     Region, RegionId,
 };
+pub use rewrite::RewriteMap;
 
 // ── Re-exports: Dataflow framework & SSA ────────────────────────────
 
 pub use dataflow::defuse::DefUseChains;
+pub use dataflow::edge_fixpoint::{
+    EdgeFacts, EdgeProblem, EdgeSolveConfig, EdgeSolveError, solve_edge_problem,
+    solve_edge_problem_with_config,
+};
 pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
 pub use dataflow::liveness::Liveness;
 pub use dataflow::node_fixpoint::{
@@ -171,7 +182,11 @@ pub use graph::diff::{BlockFingerprint, BlockMatch, CfgDiff, cfg_diff};
 pub use graph::directed::{DirectedEdge, DirectedGraph, NodeId};
 pub use graph::dominator::DominatorTree;
 pub use graph::dot::write_view_dot;
-pub use graph::edge_traverse::{EdgeStep, breadth_first_edges, shortest_path_edges, walk_edges};
+pub use graph::edge_traverse::{
+    EdgeStep, breadth_first_edges, breadth_first_view_edges, shortest_path_edges,
+    shortest_path_view_edges, walk_edges, walk_view_edges,
+};
+pub use graph::edge_view::{DenseEdgeId, EdgeGraphView, EdgeRef, FilteredEdges};
 pub use graph::eh::{EhBlockKind, EhEdge, EhModel, build_eh_model, cleanup_blocks, landing_pads};
 pub use graph::horn::HornClauses;
 pub use graph::inc_dom::{IncrementalUpdate, update_after_edge_insert, update_after_edge_remove};
@@ -199,7 +214,10 @@ pub use graph::traverse::{
     depth_first_preorder, nearest_common_ancestor, reachable, reverse_postorder, shortest_path,
     topological_sort,
 };
-pub use graph::verify::{VerifyError, VerifyResult, verify, verify_view};
+pub use graph::verify::{
+    SemanticValidator, SemanticVerifyResult, VerifyError, VerifyResult, verify, verify_edge_view,
+    verify_view, verify_with,
+};
 pub use graph::view::{DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView};
 pub use region::RegionIndex;
 
@@ -231,10 +249,15 @@ pub use dataflow::ssa_destruct::{PhiCopy, copies_by_predecessor, eliminate_phis}
 // ── Re-exports: Transforms & linearization ──────────────────────────
 
 pub use transform::coloring::{ColorAssignment, build_interference_graph, color_graph};
-pub use transform::contract::{contract_edge, split_node};
+pub use transform::contract::{
+    contract_edge, contract_edge_mapped, split_node, split_node_at_points,
+    split_node_with_payload_mapped,
+};
 pub use transform::loops::{RotationResult, find_loop_invariants, rotate_loop};
 pub use transform::pre::{PreResult, analyse_pre, eliminate_pre};
 pub use transform::{
     BlockOrder, Emitter, LinearInst, dead_code_elimination, linearize, merge_blocks,
-    remove_empty_blocks, remove_unreachable, simplify, split_critical_edges,
+    merge_blocks_mapped, remove_empty_blocks, remove_empty_blocks_mapped, remove_unreachable,
+    remove_unreachable_mapped, simplify, simplify_mapped, split_critical_edges,
+    split_critical_edges_mapped, split_critical_edges_with,
 };

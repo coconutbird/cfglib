@@ -5,11 +5,14 @@
 //! IDs, and every non-entry reachable block has at least one predecessor.
 
 extern crate alloc;
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::block::BlockId;
 use crate::cfg::Cfg;
+use crate::edge::EdgeId;
+use crate::graph::edge_view::{DenseEdgeId, EdgeGraphView};
 use crate::graph::view::{DenseNodeId, RootedGraphView};
 
 /// A single verification failure.
@@ -46,7 +49,50 @@ impl VerifyResult {
     }
 }
 
-fn verify_edge_endpoints<I>(cfg: &Cfg<I>, block_count: usize, errors: &mut Vec<VerifyError>) {
+/// Consumer-defined semantic checks layered over structural CFG verification.
+///
+/// Hooks run in block allocation order, then live edge identity order, then
+/// once for whole-graph checks. Errors are consumer types, allowing frontends
+/// to report branch cardinality, handler order, continuation constraints, or
+/// format-specific provenance without putting those semantics in cfglib.
+pub trait SemanticValidator<I, E> {
+    /// Structured consumer error.
+    type Error;
+
+    /// Validate one block and its ordered adjacency.
+    fn validate_block(&self, _cfg: &Cfg<I, E>, _block: BlockId, _errors: &mut Vec<Self::Error>) {}
+
+    /// Validate one stable live edge.
+    fn validate_edge(&self, _cfg: &Cfg<I, E>, _edge: EdgeId, _errors: &mut Vec<Self::Error>) {}
+
+    /// Validate relationships that span several blocks or edges.
+    fn finish(&self, _cfg: &Cfg<I, E>, _errors: &mut Vec<Self::Error>) {}
+}
+
+/// Structural and consumer-semantic verification results.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SemanticVerifyResult<E> {
+    /// Storage and adjacency invariants checked by [`verify`].
+    pub structural: VerifyResult,
+    /// Typed errors emitted by the consumer validator.
+    pub semantic_errors: Vec<E>,
+}
+
+impl<E> SemanticVerifyResult<E> {
+    /// Whether both structural and semantic validation succeeded.
+    #[must_use]
+    pub fn is_ok(&self) -> bool {
+        self.structural.is_ok() && self.semantic_errors.is_empty()
+    }
+
+    /// Total structural plus semantic error count.
+    #[must_use]
+    pub fn error_count(&self) -> usize {
+        self.structural.error_count() + self.semantic_errors.len()
+    }
+}
+
+fn verify_edge_endpoints<I, E>(cfg: &Cfg<I, E>, block_count: usize, errors: &mut Vec<VerifyError>) {
     for edge in cfg.edges() {
         if edge.source().index() >= block_count {
             errors.push(VerifyError {
@@ -71,7 +117,7 @@ fn verify_edge_endpoints<I>(cfg: &Cfg<I>, block_count: usize, errors: &mut Vec<V
     }
 }
 
-fn verify_adjacency<I>(cfg: &Cfg<I>, errors: &mut Vec<VerifyError>) {
+fn verify_adjacency<I, E>(cfg: &Cfg<I, E>, errors: &mut Vec<VerifyError>) {
     for block in cfg.blocks() {
         let block_id = block.id();
         for &edge_id in cfg.successor_edges(block_id) {
@@ -113,7 +159,7 @@ fn verify_adjacency<I>(cfg: &Cfg<I>, errors: &mut Vec<VerifyError>) {
     }
 }
 
-fn verify_unique_adjacency<I>(cfg: &Cfg<I>, errors: &mut Vec<VerifyError>) {
+fn verify_unique_adjacency<I, E>(cfg: &Cfg<I, E>, errors: &mut Vec<VerifyError>) {
     for block in cfg.blocks() {
         let block_id = block.id();
         let mut seen = alloc::collections::BTreeSet::new();
@@ -163,7 +209,7 @@ fn verify_unique_adjacency<I>(cfg: &Cfg<I>, errors: &mut Vec<VerifyError>) {
 /// assert!(result.is_ok());
 /// ```
 #[must_use]
-pub fn verify<I>(cfg: &Cfg<I>) -> VerifyResult {
+pub fn verify<I, E>(cfg: &Cfg<I, E>) -> VerifyResult {
     let mut errors = Vec::new();
     let n = cfg.num_blocks();
 
@@ -199,6 +245,27 @@ pub fn verify<I>(cfg: &Cfg<I>) -> VerifyResult {
     verify_unique_adjacency(cfg, &mut errors);
 
     VerifyResult { errors }
+}
+
+/// Validate structural invariants and consumer semantics in stable order.
+#[must_use]
+pub fn verify_with<I, E, V>(cfg: &Cfg<I, E>, validator: &V) -> SemanticVerifyResult<V::Error>
+where
+    V: SemanticValidator<I, E>,
+{
+    let structural = verify(cfg);
+    let mut semantic_errors = Vec::new();
+    for block in cfg.blocks() {
+        validator.validate_block(cfg, block.id(), &mut semantic_errors);
+    }
+    for edge in cfg.edges() {
+        validator.validate_edge(cfg, edge.id(), &mut semantic_errors);
+    }
+    validator.finish(cfg, &mut semantic_errors);
+    SemanticVerifyResult {
+        structural,
+        semantic_errors,
+    }
 }
 
 /// Validate the [`RootedGraphView`] contract on consumer-owned storage.
@@ -284,6 +351,111 @@ pub fn verify_view<G: RootedGraphView>(graph: &G) -> VerifyResult {
     }
 
     VerifyResult { errors }
+}
+
+/// Validate the node and stable-edge contracts of an edge-aware rooted view.
+///
+/// In addition to [`verify_view`], this checks dense edge-slot bounds, unique
+/// live identities, endpoint bounds, exact one-time membership in source and
+/// target adjacency, and adjacency endpoint orientation. Parallel edges are
+/// valid because their identities remain distinct.
+#[must_use]
+pub fn verify_edge_view<G>(graph: &G) -> VerifyResult
+where
+    G: EdgeGraphView + RootedGraphView,
+{
+    let mut result = verify_view(graph);
+    let mut live = BTreeSet::new();
+    for edge_id in graph.edge_ids() {
+        let index = edge_id.index();
+        if index >= graph.edge_slot_count() {
+            result.errors.push(VerifyError {
+                message: alloc::format!(
+                    "edge index {index} out of bounds (edge_slot_count={})",
+                    graph.edge_slot_count()
+                ),
+            });
+            continue;
+        }
+        if !live.insert(index) {
+            result.errors.push(VerifyError {
+                message: alloc::format!("edge index {index} appears more than once"),
+            });
+            continue;
+        }
+        let edge = graph.edge_ref(edge_id);
+        if edge.source().index() >= graph.node_count()
+            || edge.target().index() >= graph.node_count()
+        {
+            result.errors.push(VerifyError {
+                message: alloc::format!(
+                    "edge index {index} has endpoint outside node_count {}",
+                    graph.node_count()
+                ),
+            });
+        }
+    }
+
+    let mut outgoing_counts = BTreeMap::new();
+    let mut incoming_counts = BTreeMap::new();
+    for node in graph.node_ids() {
+        for edge_id in graph.outgoing_edges(node) {
+            let index = edge_id.index();
+            if !live.contains(&index) {
+                result.errors.push(VerifyError {
+                    message: alloc::format!(
+                        "node {} has non-live outgoing edge index {index}",
+                        node.index()
+                    ),
+                });
+                continue;
+            }
+            *outgoing_counts.entry(index).or_insert(0) += 1;
+            if graph.edge_ref(edge_id).source() != node {
+                result.errors.push(VerifyError {
+                    message: alloc::format!(
+                        "node {} lists edge index {index}, whose source is {}",
+                        node.index(),
+                        graph.edge_ref(edge_id).source().index()
+                    ),
+                });
+            }
+        }
+        for edge_id in graph.incoming_edges(node) {
+            let index = edge_id.index();
+            if !live.contains(&index) {
+                result.errors.push(VerifyError {
+                    message: alloc::format!(
+                        "node {} has non-live incoming edge index {index}",
+                        node.index()
+                    ),
+                });
+                continue;
+            }
+            *incoming_counts.entry(index).or_insert(0) += 1;
+            if graph.edge_ref(edge_id).target() != node {
+                result.errors.push(VerifyError {
+                    message: alloc::format!(
+                        "node {} lists edge index {index}, whose target is {}",
+                        node.index(),
+                        graph.edge_ref(edge_id).target().index()
+                    ),
+                });
+            }
+        }
+    }
+    for edge in live {
+        let outgoing = outgoing_counts.get(&edge).copied().unwrap_or(0);
+        let incoming = incoming_counts.get(&edge).copied().unwrap_or(0);
+        if outgoing != 1 || incoming != 1 {
+            result.errors.push(VerifyError {
+                message: alloc::format!(
+                    "edge index {edge} appears {outgoing} time(s) in outgoing and {incoming} time(s) in incoming adjacency"
+                ),
+            });
+        }
+    }
+    result
 }
 
 #[cfg(test)]
@@ -389,5 +561,96 @@ mod tests {
                 .iter()
                 .any(|error| error.message.contains("no predecessors"))
         );
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Route {
+        Normal,
+        Handler(u8),
+    }
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum SemanticError {
+        ConditionalCardinality {
+            block: BlockId,
+            actual: usize,
+        },
+        HandlerOrder {
+            block: BlockId,
+            expected: u8,
+            actual: u8,
+        },
+    }
+
+    struct RouteValidator;
+
+    impl SemanticValidator<(), Route> for RouteValidator {
+        type Error = SemanticError;
+
+        fn validate_block(
+            &self,
+            cfg: &Cfg<(), Route>,
+            block: BlockId,
+            errors: &mut Vec<Self::Error>,
+        ) {
+            let mut conditional_count = 0;
+            let mut expected_handler = 0;
+            for &edge in cfg.successor_edges(block) {
+                let edge = cfg.edge(edge);
+                if matches!(
+                    edge.kind(),
+                    EdgeKind::ConditionalTrue | EdgeKind::ConditionalFalse
+                ) {
+                    conditional_count += 1;
+                }
+                if let Route::Handler(actual) = *edge.payload() {
+                    if actual != expected_handler {
+                        errors.push(SemanticError::HandlerOrder {
+                            block,
+                            expected: expected_handler,
+                            actual,
+                        });
+                    }
+                    expected_handler += 1;
+                }
+            }
+            if conditional_count != 0 && conditional_count != 2 {
+                errors.push(SemanticError::ConditionalCardinality {
+                    block,
+                    actual: conditional_count,
+                });
+            }
+        }
+    }
+
+    #[test]
+    fn semantic_hooks_return_typed_cardinality_and_order_errors() {
+        let mut cfg = Cfg::<(), Route>::new_with_edge_payload();
+        let branch = cfg.new_block();
+        let handler_a = cfg.new_block();
+        let handler_b = cfg.new_block();
+        let entry = cfg.entry();
+        cfg.add_edge_with_payload(entry, branch, EdgeKind::ConditionalTrue, Route::Normal);
+        cfg.add_edge_with_payload(
+            entry,
+            handler_a,
+            EdgeKind::ExceptionHandler,
+            Route::Handler(1),
+        );
+        cfg.add_edge_with_payload(
+            entry,
+            handler_b,
+            EdgeKind::ExceptionHandler,
+            Route::Handler(0),
+        );
+
+        let result = verify_with(&cfg, &RouteValidator);
+        assert!(result.structural.is_ok());
+        assert!(!result.is_ok());
+        assert_eq!(result.semantic_errors.len(), 3);
+        assert!(matches!(
+            result.semantic_errors[2],
+            SemanticError::ConditionalCardinality { actual: 1, .. }
+        ));
     }
 }

@@ -2,7 +2,7 @@
 
 Generic, `no_std` graph and dataflow framework for code intelligence, program analysis, decompilation, and compiler infrastructure.
 
-`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I>` for graphs that genuinely need basic blocks, typed control-flow edges, and exception regions. A small read-only view contract lets consumer-owned stores reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, and call targets all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph colouring, and structured AST recovery.
+`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph colouring, and structured AST recovery.
 
 Everything is `no_std + alloc` and the core graph structure uses `SmallVec` adjacency lists with tombstone-based edge removal for cache-friendly, arena-stable IDs.
 
@@ -61,7 +61,7 @@ let resolution = resolve_jump_edges(&mut cfg); // wires goto/label edges
 
 ### Generic graph core
 
-`DirectedGraph<N, E>` is the single owned storage type for consumer-defined node and edge payloads, stable IDs, and forward/reverse adjacency. `DirectedGraphView` lets existing graph stores use the algorithms without first migrating their storage; dense node IDs give it a default node iterator, so adapters only expose a node count plus successor and predecessor iteration. `RootedGraphView` adds a distinguished entry node for algorithms that need one (dominance, reachability metrics, loop and interval analysis), and the `Rooted` adapter roots any plain view at a chosen node. This layer is suitable for symbol/reference graphs, value-flow graphs, call graphs, type relations, import graphs, grammar dependencies, and analysis-derived relations; it has no instruction or binary-analysis concepts.
+`DirectedGraph<N, E>` is the single owned storage type for consumer-defined node and edge payloads, stable IDs, and forward/reverse adjacency. `DirectedGraphView` lets existing graph stores use node algorithms without first migrating their storage; `EdgeGraphView` additionally exposes stable edge identity, view-oriented endpoints, payloads, and ordered adjacency. `FilteredEdges` borrows either representation through an edge predicate without cloning or renumbering anything—for example, the same CFG can be viewed as normal-only flow or full normal-plus-exception flow. `RootedGraphView` adds a distinguished entry node for algorithms that need one (dominance, reachability metrics, loop and interval analysis), and the `Rooted` adapter roots any plain view at a chosen node. This layer is suitable for symbol/reference graphs, value-flow graphs, call graphs, type relations, import graphs, grammar dependencies, and analysis-derived relations; it has no instruction or binary-analysis concepts.
 
 ```rust
 use cfglib::{DirectedGraph, Rooted, DominatorTree, TraversalDirection, shortest_path};
@@ -83,18 +83,18 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 
 | Feature | Description |
 |---|---|
-| Generic `Cfg<I>` | Parameterised over any instruction type; no trait needed for direct construction |
+| Generic `Cfg<I, E = ()>` | Parameterised over any instruction and caller-owned edge payload; unit payload preserves the original API |
 | `no_std` + `alloc` | Runs in embedded, kernel, and WASM environments |
 | `CfgBuilder` | Builds a CFG from a flat structured instruction stream (`if/else/endif`, `loop/endloop`, `switch/case/endswitch`, `break`, `continue`) |
 | Goto wiring | `resolve_jump_edges` + `JumpTargets` (consumer-typed targets: labels, addresses, syntax nodes) |
 | SmallVec adjacency | Stack-allocated successor (2) / predecessor (4) lists; heap only for high fan-out |
 | Tombstone edges | `remove_edge()` replaces the slot with `None`; existing `EdgeId`s remain stable |
-| Edge metadata | `EdgeKind` (14 variants: fallthrough, conditional, back, call, switch-case, exception, jump) plus optional weights |
+| Edge metadata | Stable `EdgeId`, endpoints, `EdgeKind`, optional weight, and a caller-owned payload for switch labels, handlers, continuations, or provenance |
 | Regions | Try/catch/finally regions with `Handler` and `HandlerKind` (Catch, CatchAll, Finally, Fault, Filter) |
 | Cleanup continuations | `add_continuation` / `set_cleanup_resume` → `Cleanup` (`Continuation` + `CompletionReason`): which route out of a single shared `finally` block a resume edge belongs to |
 | Handler filters | `HandlerFilters<F>` side table — consumer-typed filter predicates (C# `catch … when`) keyed by `HandlerRef`, with no type parameter on `Cfg` |
-| Subgraph extraction | `subgraph()` with dense O(1) block-id remapping |
-| Block splitting | `split_block()` with automatic edge transfer |
+| Subgraph extraction | `subgraph()` or `subgraph_mapped()` with dense O(1) block-id remapping and payload cloning |
+| Block splitting | `split_block()`, mapped payload-aware variants, and validated multi-point splitting with automatic stable edge transfer |
 | `serde` feature | Optional serialisation support |
 
 ### Graph algorithms
@@ -102,7 +102,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Algorithm | Function / Type | Description |
 |---|---|---|
 | DFS / BFS | `depth_first_preorder`, `breadth_first`, CFG convenience methods | Direction-selectable traversals over `DirectedGraphView` |
-| Edge-aware traversal | `breadth_first_edges`, `walk_edges` (filtered + depth-bounded) | Every distinct edge once with identity + endpoints; parallel-edge provenance |
+| Edge-aware traversal | `breadth_first_view_edges`, `walk_view_edges`, `shortest_path_view_edges` plus owned-graph compatibility wrappers | Every distinct edge once with identity + endpoints over any edge view; parallel-edge provenance |
 | Configurable search | `search` + `SearchConfig` (order, visited policy, direction, depth bound) | First-match, pruning (`Visit::Skip`), early exit (`ControlFlow::Break`), and backtracking as configuration; `VisitedPolicy::Path` un-marks on unwind so every route to a node is reported |
 | Reusable search marks | `search_with_marks` + `EpochMarks` | The same search with its visited marks in a caller-owned epoch-stamped buffer: a per-root pass allocates marks once instead of an O(node count) buffer per root, and each search still starts from a clean set (epoch bump, O(1)) |
 | Reusable search scratch | `search_with_scratch` + `SearchScratch` | The same search with the marks *and* the call's own buffers — seeds, frontier, adjacency — caller-owned, for a pass whose searches are small enough that the call is the cost; marks and buffers both reset on entry |
@@ -135,7 +135,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Call graph | `build_call_graph` + `CallInfo`, `propagate_summaries` (callee-first SCC fixpoint) | Consumer-typed callees; interprocedural summary scaffold |
 | CFG diff | `cfg_diff` | Structural comparison (bindiff-style fingerprinting), no trait bounds |
 | Exception handling model | `build_eh_model` | Landing pads, cleanup blocks, protected-by mapping, cleanup continuations by completion reason |
-| Integrity verification | `verify` (CFG storage), `verify_view` (consumer view contract) | |
+| Integrity verification | `verify`, `verify_view`, `verify_edge_view`; `verify_with` + `SemanticValidator` | Structural node/edge-view checks plus deterministic typed consumer hooks for cardinality, ordering, and provenance rules |
 | DOT export | `to_dot` (`DisplayInstr`), `to_dot_with` (bound-free), `write_view_dot` (any view) | Graphviz output with escaped labels |
 
 ### Dataflow framework
@@ -145,6 +145,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Generic fixpoint solver | `solve`, `Problem` trait | Forward or backward, any lattice type |
 | Node-level fixpoint | `solve_node_problem`, `NodeProblem` trait | Per-node facts over any graph view (taint, reachability-with-facts) |
 | Seeded node fixpoint | `solve_node_problem_from` | Same solver, worklist seeded from a subset — incremental / dirty-region re-solves |
+| Edge-sensitive fixpoint | `solve_edge_problem`, `EdgeProblem` trait | Per-edge transfer over any edge view; stable id/data plus physical node pre/post states and deterministic bounded-solve errors |
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
 | Liveness | `Liveness::compute` | Live-in / live-out at each block |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |
@@ -178,14 +179,14 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 
 | Transform | Function | Description |
 |---|---|---|
-| Simplify (all-in-one) | `simplify` | Unreachable removal + block merging + empty bypass until stable |
+| Simplify (all-in-one) | `simplify`, `simplify_mapped` | Unreachable removal + block merging + empty bypass until stable; mapped form composes identity changes |
 | Remove unreachable | `remove_unreachable` | DFS reachability pruning |
 | Merge blocks | `merge_blocks` | Coalesce single-succ/single-pred chains |
 | Remove empty blocks | `remove_empty_blocks` | Bypass empty fallthrough blocks |
-| Critical edge splitting | `split_critical_edges` | Insert blocks on multi-succ → multi-pred edges |
+| Critical edge splitting | `split_critical_edges`, `split_critical_edges_with` | Insert blocks on multi-succ → multi-pred edges while retaining the original edge identity/payload and mapping both halves |
 | Dead code elimination | `dead_code_elimination` | Liveness-based; requires `EffectInfo` so side-effecting code is never silently deleted |
-| Edge contraction | `contract_edge` | Merge two blocks connected by a single edge |
-| Node splitting | `split_node` | Split a block at an instruction index |
+| Edge contraction | `contract_edge`, `contract_edge_mapped` | Merge two blocks connected by a single edge; mapped form preserves surviving edge identities/payloads |
+| Node splitting | `split_node`, `split_node_at_points` | Split at one or several validated consumer-selected instruction boundaries |
 | Loop rotation | `rotate_loop` | Top-tested → bottom-tested loop form |
 | Loop invariant detection | `find_loop_invariants` | Identify hoistable instructions |
 | Partial redundancy elimination | `analyse_pre`, `eliminate_pre` | GVN-based PRE |
@@ -207,11 +208,12 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 
 ## Extension contracts
 
-The generic graph has no consumer trait requirement when it owns the storage. Implement `DenseNodeId` and the three required `DirectedGraphView` methods (`node_count`, `successors`, and `predecessors`) only when adapting an existing graph store; add `RootedGraphView` (or use `Rooted`) for entry-requiring algorithms. Instruction traits are opt-in according to which CFG and dataflow features an adapter needs — every associated type is the consumer's own:
+The generic graph has no consumer trait requirement when it owns the storage. Implement `DenseNodeId` and the three required `DirectedGraphView` methods (`node_count`, `successors`, and `predecessors`) only when adapting an existing graph store; implement `EdgeGraphView` when algorithms must observe stable edge identities or payloads; add `RootedGraphView` (or use `Rooted`) for entry-requiring algorithms. Instruction traits are opt-in according to which CFG and dataflow features an adapter needs — every associated type is the consumer's own:
 
 ```text
 DirectedGraph<N, E>       (owned arbitrary graph; no adapter trait)
 DirectedGraphView         (existing consumer-owned graph storage)
+├── EdgeGraphView         (stable edge identity, endpoints, data, adjacency)
 └── RootedGraphView       (adds a distinguished entry node; `Rooted` adapts)
 
 FlowControl               (required only by CfgBuilder)
@@ -245,9 +247,11 @@ For symbol, reference, value-flow, type-relation, import, or grammar graphs, sto
 
 For a control-flow and SSA adapter:
 
-1. Build the `Cfg` directly with `new_block()` / `add_edge()` (source frontends, decoded binaries), or implement `FlowControl` and use `CfgBuilder::build()` (structured streams).
+1. Build `Cfg<I>` directly with `new_block()` / `add_edge()`, or use `Cfg<I, E>::new_with_edge_payload()` plus `add_edge_with_payload()` when branch labels, handler order, continuation/call-site identity, or source provenance must survive. Structured unit-payload streams can instead implement `FlowControl` and use `CfgBuilder::build()`.
 2. Optionally implement `InstrInfo` with a native `Variable` identity (and its sub-traits) for dataflow analyses.
 3. Implement `DisplayInstr` when you want DOT or pseudocode output.
+
+Existing `Cfg<I>` callers remain source-compatible: `E` defaults to `()`, and the original constructors and transform entry points remain. Payload-aware frontends opt into the new methods. `RewriteMap` uses a missing entry for an unchanged identity, an empty replacement list for removal, one replacement for retention/redirect/merge, and several ordered replacements for a split. Stable parallel `EdgeId`s plus caller payloads are also the generic continuation/call-site mechanism; cfglib does not impose a VM-specific continuation type.
 
 The variable type only needs `Clone + Ord` — never `Copy`, never numeric. It can be an architecture enum such as `Register(Rax)` / `Flag(Zero)`, a shader structure such as `(register file, index, component)`, an interned source symbol, or an existing IR value handle. Adapters decide the atomic aliasing unit; for overlapping resources such as x86 subregisters, expose canonical units or every affected unit.
 

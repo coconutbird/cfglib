@@ -88,9 +88,13 @@ impl core::fmt::Display for EdgeKind {
 }
 
 /// A directed edge between two basic blocks.
+///
+/// `E` is consumer-owned metadata. The default unit payload preserves the
+/// original `Cfg<I>` surface, while frontends that need switch labels, handler
+/// identities, continuation tokens, or source provenance use `Cfg<I, E>`.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct Edge {
+pub struct Edge<E = ()> {
     /// Edge identity.
     pub(crate) id: EdgeId,
     /// Source block.
@@ -106,21 +110,24 @@ pub struct Edge {
     /// Used by the linearizer for hot-path layout and by DOT output
     /// for visual emphasis.
     pub(crate) weight: Option<f64>,
+    /// Consumer-defined metadata.
+    pub(crate) payload: E,
 }
 
-impl PartialEq for Edge {
+impl<E: PartialEq> PartialEq for Edge<E> {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
             && self.source == other.source
             && self.target == other.target
             && self.kind == other.kind
             && self.weight.map(f64::to_bits) == other.weight.map(f64::to_bits)
+            && self.payload == other.payload
     }
 }
 
-impl Eq for Edge {}
+impl<E: Eq> Eq for Edge<E> {}
 
-impl Edge {
+impl<E> Edge<E> {
     /// The edge's unique identifier.
     #[inline]
     #[must_use]
@@ -160,5 +167,25 @@ impl Edge {
     #[inline]
     pub fn set_weight(&mut self, w: Option<f64>) {
         self.weight = w;
+    }
+
+    /// The consumer-defined edge metadata.
+    #[inline]
+    #[must_use]
+    pub const fn payload(&self) -> &E {
+        &self.payload
+    }
+
+    /// Mutable access to the consumer-defined edge metadata.
+    #[inline]
+    pub const fn payload_mut(&mut self) -> &mut E {
+        &mut self.payload
+    }
+
+    /// Consume the edge and return its consumer-defined metadata.
+    #[inline]
+    #[must_use]
+    pub fn into_payload(self) -> E {
+        self.payload
     }
 }
