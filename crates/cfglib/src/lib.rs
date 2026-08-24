@@ -127,6 +127,7 @@ pub mod transform;
 pub(crate) mod test_util;
 
 pub use analysis::alias::{AliasSets, MemoryInfo, MemoryOp};
+pub use analysis::dead_code::DeadCode;
 pub use analysis::expr::{
     BlockExprTrees, ExprInstr, ExprNode, recover_block_expressions, recover_expressions,
 };

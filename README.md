@@ -170,6 +170,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Value numbering (global) | `ValueNumbering::compute`, `ValueNumberInfo` (associated `Operator`) | Dominator-scoped GVN over any operation identity |
 | Redundancy counting | `ValueNumbering::redundant_count` | From GVN results |
 | Alias analysis | `AliasSets::compute`, `MemoryInfo` trait | Union-find based alias sets |
+| Dead code analysis | `DeadCode::compute` | Liveness-dead instructions (effect-guarded) and unreachable blocks, reported without mutating — the analysis `dead_code_elimination` applies |
 | Purity classification | `cfg_purity`, `block_purity`, `EffectInfo` (associated `Effect`) | Consumer effect vocabularies — machine memory/IO, allocation, panics |
 | Metrics | `GraphMetrics::compute` (any rooted view); `CfgMetrics::compute` | Node/edge counts, cyclomatic complexity, nesting depth, instruction density |
 | Pattern detection | `detect_patterns` (any view), `detect_cfg_patterns` (adds trampolines + arm orientation) | Diamond, chain, self-loop, empty trampoline |
