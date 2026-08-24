@@ -95,7 +95,6 @@ pub fn recover_switch_tables<I, T>(
     let mut results = Vec::new();
 
     for table in tables {
-        // Remove existing IndirectJump edges from this block.
         let edges_to_remove: Vec<_> = cfg
             .successor_edges(table.block)
             .iter()
@@ -108,7 +107,6 @@ pub fn recover_switch_tables<I, T>(
 
         let mut num_cases = 0;
 
-        // Add SwitchCase edges for each resolved target.
         for target in &table.targets {
             if let Some(target_block) = resolve(target) {
                 cfg.add_edge(table.block, target_block, EdgeKind::SwitchCase);
@@ -116,7 +114,6 @@ pub fn recover_switch_tables<I, T>(
             }
         }
 
-        // Add default target if present.
         if let Some(default) = &table.default_target
             && let Some(default_block) = resolve(default)
         {

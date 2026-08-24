@@ -138,7 +138,6 @@ pub fn recover_block_expressions<I: ExprInstr>(
 
     // Map from variable → the expression that defines it (within this block).
     let mut variable_expressions = BTreeMap::new();
-    // Count uses of each variable within this block.
     let mut use_count = BTreeMap::new();
 
     // First pass: count intra-block uses.
@@ -151,7 +150,6 @@ pub fn recover_block_expressions<I: ExprInstr>(
     // Second pass: build expressions.
     for (idx, inst) in insts.iter().enumerate() {
         if let Some(c) = inst.as_const() {
-            // Constant load.
             if let Some(destination) = inst.defs().first() {
                 variable_expressions.insert(destination.clone(), ExprNode::Const(c));
             }

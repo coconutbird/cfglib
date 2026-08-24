@@ -44,7 +44,6 @@ pub enum EdgeKind {
     /// Edge for a switch/case arm.
     SwitchCase,
 
-    // ── Unstructured control flow ─────────────────────────────────
     /// Direct explicit jump: a source `goto`, a machine `jmp` / `b`.
     ///
     /// Distinct from [`Unconditional`](Self::Unconditional): `Jump` records

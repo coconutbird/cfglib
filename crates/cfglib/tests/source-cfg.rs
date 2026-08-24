@@ -175,12 +175,10 @@ fn direct_construction_dominators_reaching_and_liveness_over_symbols() {
     assert_eq!(x_defs.len(), 1, "dead first write must not reach");
     assert_eq!(x_defs[0].inst_idx, 1);
 
-    // Liveness over non-Copy symbol identities.
     let liveness = Liveness::compute(&cfg);
     assert!(liveness.live_in(ret).contains(&sym("x")));
     assert!(!liveness.live_out(ret).contains(&sym("x")));
 
-    // SSA over symbol identities.
     let ssa = build_ssa(&cfg, &dominators);
     assert_eq!(ssa.block(cfg.entry()).instructions.len(), 2);
 }

@@ -73,7 +73,6 @@ pub fn detect_patterns<G: DirectedGraphView>(graph: &G) -> Vec<CfgPattern<G::Nod
     for bid in graph.node_ids() {
         let succs: Vec<G::NodeId> = graph.successors(bid).collect();
 
-        // Self-loop detection.
         if succs.contains(&bid) {
             patterns.push(CfgPattern::SelfLoop { block: bid });
         }
@@ -125,7 +124,6 @@ pub fn detect_patterns<G: DirectedGraphView>(graph: &G) -> Vec<CfgPattern<G::Nod
             }
             start = ps[0];
         }
-        // Walk forward to collect the chain.
         let mut chain = alloc::vec![start];
         visited.insert(start);
         let mut cur = start;

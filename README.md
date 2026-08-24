@@ -289,7 +289,7 @@ and reports observable shader effects through its own `Sm4Effect` vocabulary.
 Its `dxbc` dependency comes directly from the `d3dasm` Git repository;
 `Cargo.lock` records the exact upstream commit used by the test suite.
 
-The `tests/source_cfg.rs` integration test is the executable specification of
+The `tests/source-cfg.rs` integration test is the executable specification of
 the source-language side: interned symbol variables, string/bool constants
 through constant propagation, enum operators in expression trees, goto wiring
 by label token, and switch recovery over syntax-node targets.

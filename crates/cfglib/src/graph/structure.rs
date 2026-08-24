@@ -283,8 +283,6 @@ pub fn is_reducible<G: RootedGraphView>(graph: &G, dom: &DominatorTree<G::NodeId
     true
 }
 
-// ── Loop canonicalization ───────────────────────────────────────────
-
 /// Information about a canonicalized loop.
 #[derive(Debug, Clone)]
 pub struct CanonicalLoop {

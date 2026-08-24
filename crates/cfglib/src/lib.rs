@@ -5,6 +5,10 @@
 //! [`DirectedGraphView`] / [`RootedGraphView`], while [`EdgeGraphView`] and
 //! [`FilteredEdges`] retain edge identity and data without rebuilding, so
 //! consumer-owned graph stores participate without migrating their data.
+//! [`breadth_first_events`] and [`depth_first_events`] expose traversal-tree
+//! structure for dense graphs; [`open_breadth_first_events`] and
+//! [`open_depth_first_events`] provide the corresponding discovery streams
+//! for lazily generated node spaces.
 //! [`Cfg<I, E>`] adds basic-block, control-flow, and caller-owned edge metadata
 //! when the graph really is a program CFG, and every
 //! instruction-adjacent axis — variables, constants, operators, effects,
@@ -103,9 +107,6 @@ pub(crate) fn usize_to_f64(value: usize) -> f64 {
     half * 2.0 + f64::from(u8::from(value & 1 == 1))
 }
 
-// ── Modules ─────────────────────────────────────────────────────────
-
-// Core types.
 pub mod block;
 pub mod builder;
 pub mod cfg;
@@ -116,26 +117,18 @@ pub mod flow;
 pub mod region;
 pub mod rewrite;
 
-// Graph algorithms.
 pub mod graph;
 
-// Dataflow framework, analyses, and SSA.
 pub mod dataflow;
 
-// Higher-level analyses (switch recovery, expression trees, purity).
 pub mod analysis;
 
-// AST lifting / structural recovery.
 pub mod ast;
 
-// Transforms (cleanup, critical edges, DCE, linearization).
 pub mod transform;
 
-// Shared test utilities (crate-internal).
 #[cfg(test)]
 pub(crate) mod test_util;
-
-// ── Re-exports: Core ────────────────────────────────────────────────
 
 pub use analysis::purity::{Purity, all_block_purities, block_purity, cfg_purity};
 pub use analysis::switch_table::{
@@ -160,8 +153,6 @@ pub use region::{
 };
 pub use rewrite::RewriteMap;
 
-// ── Re-exports: Dataflow framework & SSA ────────────────────────────
-
 pub use dataflow::defuse::DefUseChains;
 pub use dataflow::edge_fixpoint::{
     EdgeFacts, EdgeProblem, EdgeSolveConfig, EdgeSolveError, TryEdgeProblem, TryEdgeSolveError,
@@ -180,8 +171,6 @@ pub use dataflow::ssa::{
     SsaValue, SsaVersion, build_ssa, place_phis,
 };
 pub use dataflow::{DefSite, EffectInfo, InstrInfo, Predicated, ProgramPoint, UseSite, VariableId};
-
-// ── Re-exports: Graph algorithms ────────────────────────────────────
 
 pub use graph::callgraph::{
     CallMetadata, FunctionNode, build_call_graph, find_function, is_recursive_function,
@@ -207,16 +196,16 @@ pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};
 pub use graph::keyed::KeyedGraph;
 pub use graph::loopnest::{LoopNestNode, LoopNestingTree};
 pub use graph::open::{
-    OpenDfsConfig, OpenDfsEvent, OpenSearchConfig, follow, follow_path, open_depth_first_events,
-    open_search,
+    OpenBfsConfig, OpenBfsEvent, OpenDfsConfig, OpenDfsEvent, OpenSearchConfig, follow,
+    follow_path, open_breadth_first_events, open_depth_first_events, open_search,
 };
 pub use graph::pdg::{DependenceKind, DependenceNode, program_dependence_graph};
 pub use graph::relax::min_label_relaxation;
 pub use graph::reverse::reverse_cfg;
 pub use graph::scc::{Scc, SccResult, condensation, condensation_of, kosaraju_scc, tarjan_scc};
 pub use graph::search::{
-    DfsEvent, EpochMarks, SearchConfig, SearchOrder, SearchScratch, Visit, VisitedPolicy,
-    depth_first_events, search, search_with_marks, search_with_scratch,
+    BfsEvent, DfsEvent, EpochMarks, SearchConfig, SearchOrder, SearchScratch, Visit, VisitedPolicy,
+    breadth_first_events, depth_first_events, search, search_with_marks, search_with_scratch,
 };
 pub use graph::structure::{
     BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, detect_loops_tagged,
@@ -233,8 +222,6 @@ pub use graph::verify::{
 };
 pub use graph::view::{DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView};
 pub use region::RegionIndex;
-
-// ── Re-exports: Analyses ────────────────────────────────────────────
 
 pub use analysis::alias::{AliasSets, MemoryInfo, MemoryOp, alias_analysis};
 pub use analysis::expr::{
@@ -258,8 +245,6 @@ pub use dataflow::memssa::{MemoryAccess, MemoryEffect, MemorySSA, build_memory_s
 pub use dataflow::phi_web::{PhiWeb, PhiWebs, compute_phi_webs};
 pub use dataflow::sccp::{SccpResult, sccp};
 pub use dataflow::ssa_destruct::{PhiCopy, copies_by_predecessor, eliminate_phis};
-
-// ── Re-exports: Transforms & linearization ──────────────────────────
 
 pub use transform::coloring::{ColorAssignment, build_interference_graph, color_graph};
 pub use transform::contract::{

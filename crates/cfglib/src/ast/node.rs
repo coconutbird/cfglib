@@ -73,7 +73,6 @@ pub enum AstNode<I> {
         instructions: Vec<I>,
     },
 
-    // ── Unstructured / CPU-ISA nodes ────────────────────────────────
     /// A label target (used after irreducible CFG lowering).
     Label {
         /// The label name.
@@ -152,7 +151,6 @@ impl<I> AstNode<I> {
         match self {
             AstNode::Sequence { mut body } => {
                 body = body.into_iter().map(AstNode::simplify).collect();
-                // Unwrap single-element sequences.
                 if body.len() == 1 {
                     body.pop().unwrap_or(AstNode::Sequence { body: Vec::new() })
                 } else {

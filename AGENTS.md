@@ -18,19 +18,22 @@ Before handing off a Rust change, run the relevant targeted tests while iteratin
 then run all of these from the workspace root:
 
 ```text
+python scripts/check_repository_policy.py
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --all-features
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -D clippy::pedantic
+cargo test --workspace --all-features --locked
 ```
 
 Also build documentation with warnings denied when public APIs or docs change:
 
 ```text
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 ```
 
 In PowerShell, set `RUSTDOCFLAGS` with
 `$env:RUSTDOCFLAGS = "-D warnings"` before running the documentation command.
+If `python` is a local shim that does not forward arguments, run the policy check
+with `uv run --no-project python scripts/check_repository_policy.py`.
 
 ### Clippy
 
@@ -59,6 +62,23 @@ In PowerShell, set `RUSTDOCFLAGS` with
 - Generated files are exempt only when they are clearly marked as generated and
   are not intended for manual editing.
 
+## Cargo Project Layout
+
+- Follow the [Cargo Book package-layout conventions](https://doc.rust-lang.org/cargo/guide/project-layout.html)
+  within every workspace package.
+- Keep package manifests at the package root and Rust implementation code under
+  `src/`. Use `src/lib.rs` and `src/main.rs` for the default library and binary
+  targets, and `src/bin/` for additional binaries.
+- Put integration tests in `tests/`, examples in `examples/`, and benchmarks in
+  `benches/` at the package root.
+- Name binary, example, benchmark, and integration-test targets in `kebab-case`.
+  Name Rust modules within those targets in `snake_case`.
+- Give a multi-file binary, example, benchmark, or integration test its own
+  `kebab-case` directory with a `main.rs` entry point and `snake_case` module
+  files.
+- Keep workspace-only tooling outside package `src/` trees unless it is an actual
+  Cargo target.
+
 ## Clean and Ergonomic Code
 
 - Keep functions focused and control flow shallow. Prefer guard clauses when they
@@ -79,6 +99,12 @@ In PowerShell, set `RUSTDOCFLAGS` with
   explain the violated invariant rather than repeat the immediate operation.
 - Comments should explain intent, invariants, tradeoffs, or safety reasoning. Do not
   narrate code that is already self-explanatory.
+- Do not use decorative section-divider comments made from repeated dashes, equals
+  signs, or box-drawing characters. Express meaningful structure with cohesive
+  modules, types, functions, and interface boundaries.
+- Do not use a standalone comment merely to name or divide a section (for example,
+  `// Parsing` or `// Constructors`). If the section is a distinct responsibility,
+  extract a module with a narrow interface; otherwise omit the label.
 - Keep public items documented, and update examples and crate-level docs when their
   behavior changes.
 

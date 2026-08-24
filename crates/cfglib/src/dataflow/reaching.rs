@@ -148,8 +148,6 @@ mod tests {
     };
     use alloc::vec;
 
-    // --- Linear CFG tests ---
-
     #[test]
     fn reaching_linear_single_def() {
         // bb0: def r0; use r0
@@ -180,8 +178,6 @@ mod tests {
         assert_eq!(out.len(), 2);
     }
 
-    // --- Branching CFG tests ---
-
     #[test]
     fn reaching_branch_merges_both_defs() {
         // bb0: if
@@ -206,8 +202,6 @@ mod tests {
             "both branch defs should reach merge"
         );
     }
-
-    // --- Loop CFG tests ---
 
     #[test]
     fn reaching_loop_def_reaches_through_backedge() {

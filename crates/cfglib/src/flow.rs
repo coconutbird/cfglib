@@ -73,7 +73,6 @@ pub enum FlowEffect {
     /// Declaration or metadata — skipped by the builder.
     Declaration,
 
-    // ── Unstructured control flow ─────────────────────────────────
     /// Unconditional explicit jump: a source `goto`, a machine `jmp`/`b`.
     ///
     /// The builder ends the block; the target edge is wired afterwards by

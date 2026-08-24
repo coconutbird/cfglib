@@ -10,9 +10,8 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
-use crate::cfg::Cfg;
 use crate::edge::{EdgeId, EdgeKind};
-use crate::region::{Cleanup, HandlerRef};
+use crate::region::{Cleanup, HandlerKind, HandlerRef};
 
 /// Classification of a block's role in exception handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +26,16 @@ pub enum EhBlockKind {
     CatchSwitch,
     /// A resume/rethrow point.
     Resume,
+}
+
+impl From<HandlerKind> for EhBlockKind {
+    fn from(kind: HandlerKind) -> Self {
+        match kind {
+            HandlerKind::Catch | HandlerKind::CatchAll => Self::LandingPad,
+            HandlerKind::Finally | HandlerKind::Fault => Self::Cleanup,
+            HandlerKind::Filter { .. } => Self::CatchSwitch,
+        }
+    }
 }
 
 /// The exception-control meaning retained for an [`EhEdge`].
@@ -69,7 +78,8 @@ pub struct EhEdge {
     /// Stable identity of the source CFG edge.
     ///
     /// Use it to recover caller-owned payload metadata from the original
-    /// [`Cfg`], including exception dispositions and platform records.
+    /// [`Cfg`](crate::Cfg), including exception dispositions and platform
+    /// records.
     pub edge_id: EdgeId,
     /// Source block (may throw).
     pub from: BlockId,
@@ -95,12 +105,12 @@ pub struct EhModel {
     /// Handler entry block → region/handler identities that use that entry.
     ///
     /// The identity provides a lossless route back to
-    /// [`HandlerKind`](crate::HandlerKind) and consumer-owned
+    /// [`HandlerKind`] and consumer-owned
     /// [`HandlerMetadata`](crate::HandlerMetadata).
     pub handlers: BTreeMap<BlockId, Vec<HandlerRef>>,
     /// Cleanup handler entry block → what the cleanup does once its body
     /// ends, for the handlers whose frontend recorded it
-    /// ([`Cfg::add_continuation`]).
+    /// ([`Cfg::add_continuation`](crate::Cfg::add_continuation)).
     ///
     /// A `finally` lowered as a single shared block is entered by every route
     /// out of its region and edges to all of their destinations, so the graph
@@ -112,114 +122,8 @@ pub struct EhModel {
     pub cleanups: BTreeMap<BlockId, Cleanup>,
 }
 
-/// Build an EH model by analysing edge kinds and region metadata.
-///
-/// Targets of handler/unwind edges are classified as landing pads. Sources of
-/// resume/continue edges are classified as resume points. Explicit [`Region`]
-/// metadata is authoritative, so a `finally` or `fault` target remains a
-/// cleanup even when an unwind edge also reaches it.
-///
-/// [`Region`]: crate::Region
-///
-/// Cleanup records the frontend attached to a handler
-/// ([`Cfg::add_continuation`]) are carried into [`EhModel::cleanups`], keyed
-/// by that handler's entry block, so an analysis reads cleanup-then-continue
-/// structure instead of a fan of indistinguishable out-edges.
-///
-/// # Examples
-///
-/// ```
-/// use cfglib::{Cfg, EdgeKind, build_eh_model};
-///
-/// let mut cfg = Cfg::<u32>::new();
-/// let b0 = cfg.entry();
-/// let b1 = cfg.new_block();
-/// cfg.add_edge(b0, b1, EdgeKind::Fallthrough);
-///
-/// let model = build_eh_model(&cfg);
-/// // No exception edges, so no landing pads.
-/// assert!(model.eh_edges.is_empty());
-/// ```
-#[must_use]
-pub fn build_eh_model<I, E>(cfg: &Cfg<I, E>) -> EhModel {
-    let mut block_kinds = BTreeMap::new();
-    let mut eh_edges = Vec::new();
-    let mut protected_by: BTreeMap<BlockId, BTreeSet<BlockId>> = BTreeMap::new();
-    let mut handlers: BTreeMap<BlockId, Vec<HandlerRef>> = BTreeMap::new();
-    let mut cleanups: BTreeMap<BlockId, Cleanup> = BTreeMap::new();
-
-    // Classify from edge kinds.
-    for edge in cfg.edges() {
-        if let Some(kind) = EhEdgeKind::from_cfg(edge.kind()) {
-            eh_edges.push(EhEdge {
-                edge_id: edge.id(),
-                from: edge.source(),
-                to: edge.target(),
-                kind,
-                is_unwind: kind.is_unwind(),
-            });
-            match kind {
-                EhEdgeKind::Handler | EhEdgeKind::Unwind => {
-                    block_kinds
-                        .entry(edge.target())
-                        .or_insert(EhBlockKind::LandingPad);
-                    protected_by
-                        .entry(edge.target())
-                        .or_default()
-                        .insert(edge.source());
-                }
-                EhEdgeKind::Resume | EhEdgeKind::Continue => {
-                    block_kinds
-                        .entry(edge.source())
-                        .or_insert(EhBlockKind::Resume);
-                }
-                EhEdgeKind::Leave => {}
-            }
-        }
-    }
-
-    // Classify from region metadata.
-    for region in cfg.regions() {
-        for (index, handler) in region.handlers.iter().enumerate() {
-            let target = handler.entry;
-            let handler_ref = HandlerRef::new(region.id, index);
-            handlers.entry(target).or_default().push(handler_ref);
-            if let Some(cleanup) = cfg.cleanup(handler_ref) {
-                cleanups.insert(target, cleanup.clone());
-            }
-            // Explicit region metadata is authoritative over the coarse role
-            // inferred from an incoming exception edge.
-            block_kinds.insert(
-                target,
-                match handler.kind {
-                    crate::region::HandlerKind::Catch | crate::region::HandlerKind::CatchAll => {
-                        EhBlockKind::LandingPad
-                    }
-                    crate::region::HandlerKind::Finally | crate::region::HandlerKind::Fault => {
-                        EhBlockKind::Cleanup
-                    }
-                    crate::region::HandlerKind::Filter { .. } => EhBlockKind::CatchSwitch,
-                },
-            );
-            for &bid in &region.protected_blocks {
-                protected_by.entry(target).or_default().insert(bid);
-            }
-        }
-    }
-
-    // All remaining blocks are Normal.
-    for block in cfg.blocks() {
-        block_kinds.entry(block.id()).or_insert(EhBlockKind::Normal);
-    }
-
-    EhModel {
-        block_kinds,
-        eh_edges,
-        protected_by,
-        handlers,
-        cleanups,
-    }
-}
+mod build;
+pub use build::build_eh_model;
 
 /// Returns all landing pad blocks.
 #[must_use]
@@ -260,6 +164,29 @@ mod tests {
     use crate::cfg::Cfg;
     use crate::edge::EdgeKind;
     use crate::test_util::ff;
+
+    #[test]
+    fn handler_kinds_map_to_precise_block_roles() {
+        assert_eq!(
+            EhBlockKind::from(HandlerKind::Catch),
+            EhBlockKind::LandingPad
+        );
+        assert_eq!(
+            EhBlockKind::from(HandlerKind::CatchAll),
+            EhBlockKind::LandingPad
+        );
+        assert_eq!(
+            EhBlockKind::from(HandlerKind::Finally),
+            EhBlockKind::Cleanup
+        );
+        assert_eq!(EhBlockKind::from(HandlerKind::Fault), EhBlockKind::Cleanup);
+        assert_eq!(
+            EhBlockKind::from(HandlerKind::Filter {
+                filter_block: BlockId::from_raw(7),
+            }),
+            EhBlockKind::CatchSwitch
+        );
+    }
 
     #[test]
     fn no_eh_all_normal() {
