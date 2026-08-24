@@ -99,6 +99,8 @@ fn edge_kind_discriminant(k: EdgeKind) -> u8 {
         EdgeKind::ExceptionHandler => 11,
         EdgeKind::ExceptionUnwind => 12,
         EdgeKind::ExceptionLeave => 13,
+        EdgeKind::ExceptionResume => 14,
+        EdgeKind::ExceptionContinue => 15,
     }
 }
 

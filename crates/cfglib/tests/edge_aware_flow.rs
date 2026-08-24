@@ -1,7 +1,8 @@
 use cfglib::{
-    Cfg, DominatorTree, Edge, EdgeGraphView, EdgeId, EdgeKind, FilteredEdges, RootedGraphView,
-    TraversalDirection, breadth_first_view_edges, remove_empty_blocks_mapped, split_node_at_points,
-    verify_edge_view,
+    Cfg, Direction, DominatorTree, Edge, EdgeGraphView, EdgeId, EdgeKind, FilteredEdges,
+    KeyedGraph, NodeId, RootedGraphView, TraversalDirection, TryEdgeProblem, TryEdgeSolveError,
+    breadth_first_view_edges, remove_empty_blocks_mapped, split_node_at_points,
+    try_solve_edge_problem_from, verify_edge_view,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,4 +180,94 @@ fn handler_and_unwind_payloads_remain_distinct_and_ordered() {
     assert_eq!(cfg.edge(edges[0]).payload(), &Route::Handler { order: 0 });
     assert_eq!(cfg.edge(edges[1]).payload(), &Route::Handler { order: 1 });
     assert_eq!(cfg.edge(edges[2]).payload(), &Route::Unwind);
+}
+
+struct FallibleReach {
+    entry: NodeId,
+    reject: Option<NodeId>,
+}
+
+impl TryEdgeProblem<KeyedGraph<u32, u32, Route>> for FallibleReach {
+    type Fact = Option<u8>;
+    type Error = &'static str;
+
+    fn direction(&self) -> Direction {
+        Direction::Forward
+    }
+
+    fn bottom(&self, _graph: &KeyedGraph<u32, u32, Route>) -> Self::Fact {
+        None
+    }
+
+    fn boundary(
+        &self,
+        _graph: &KeyedGraph<u32, u32, Route>,
+        node: NodeId,
+    ) -> Result<Option<Self::Fact>, Self::Error> {
+        Ok((node == self.entry).then_some(Some(1)))
+    }
+
+    fn meet(
+        &self,
+        _graph: &KeyedGraph<u32, u32, Route>,
+        _node: NodeId,
+        left: &Self::Fact,
+        right: &Self::Fact,
+    ) -> Result<Self::Fact, Self::Error> {
+        Ok(match (left, right) {
+            (Some(left), Some(right)) => Some((*left).max(*right)),
+            (Some(value), None) | (None, Some(value)) => Some(*value),
+            (None, None) => None,
+        })
+    }
+
+    fn transfer_node(
+        &self,
+        _graph: &KeyedGraph<u32, u32, Route>,
+        node: NodeId,
+        input: &Self::Fact,
+    ) -> Result<Self::Fact, Self::Error> {
+        if self.reject == Some(node) {
+            return Err("node rejected its incoming fact");
+        }
+        Ok(input.map(|value| value + 1))
+    }
+}
+
+#[test]
+fn keyed_seeded_dataflow_preserves_bottom_and_consumer_errors() {
+    let mut graph = KeyedGraph::<u32, u32, Route>::new();
+    let entry = graph.intern(&10);
+    let reached = graph.intern(&20);
+    let island = graph.intern(&1_000);
+    let edge = graph.add_edge(entry, reached, Route::Normal);
+
+    let facts = try_solve_edge_problem_from(
+        &graph,
+        &FallibleReach {
+            entry,
+            reject: None,
+        },
+        &[entry],
+    )
+    .unwrap();
+    assert_eq!(facts.fact_in(entry), &Some(1));
+    assert_eq!(facts.fact_out(reached), &Some(3));
+    assert_eq!(facts.fact_in(island), &None);
+    assert_eq!(facts.fact_on(edge), Some(&Some(2)));
+    assert_eq!(graph.edge_ref(edge).data(), &Route::Normal);
+
+    let error = try_solve_edge_problem_from(
+        &graph,
+        &FallibleReach {
+            entry,
+            reject: Some(reached),
+        },
+        &[entry],
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        TryEdgeSolveError::Problem("node rejected its incoming fact")
+    );
 }

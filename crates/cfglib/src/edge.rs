@@ -63,6 +63,13 @@ pub enum EdgeKind {
     ExceptionUnwind,
     /// Edge from a protected region to the normal continuation.
     ExceptionLeave,
+    /// Edge from a resume/rethrow point to the next exception dispatcher.
+    ExceptionResume,
+    /// Edge that resumes execution after an exception was handled in-place.
+    ///
+    /// Windows SEH and VEH use this for `EXCEPTION_CONTINUE_EXECUTION`: the
+    /// target is the exact block at which execution resumes.
+    ExceptionContinue,
 }
 
 impl core::fmt::Display for EdgeKind {
@@ -82,6 +89,8 @@ impl core::fmt::Display for EdgeKind {
             EdgeKind::ExceptionHandler => "handler",
             EdgeKind::ExceptionUnwind => "unwind",
             EdgeKind::ExceptionLeave => "leave",
+            EdgeKind::ExceptionResume => "resume",
+            EdgeKind::ExceptionContinue => "continue_exception",
         };
         f.write_str(label)
     }

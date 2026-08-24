@@ -40,10 +40,11 @@
 //!   Continuations are library-typed ([`BlockId`] plus a reason), so the
 //!   [`Cfg`] owns them: [`Cfg::add_continuation`], [`Cfg::set_cleanup_resume`],
 //!   [`Cfg::cleanup`].
-//! - [`HandlerFilters`] carries the filter *predicate identity* a frontend
-//!   already has (a syntax node, an interned expression, a type id) beside the
-//!   CFG. It is a side table rather than a field or a type parameter, so no
-//!   consumer type escapes into [`Cfg`]'s signature.
+//! - [`HandlerMetadata`] carries consumer-owned handler data — for example a
+//!   filter predicate identity or a CLR catch-type token — beside the CFG.
+//!   [`HandlerFilters`] and [`HandlerTypes`] are descriptive aliases for the
+//!   two common uses. It is a side table rather than a field or a type
+//!   parameter, so no consumer type escapes into [`Cfg`]'s signature.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
@@ -111,10 +112,12 @@ pub struct Handler {
 }
 
 /// Classification of an exception handler.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HandlerKind {
     /// Catch handler — catches a specific exception type.
+    ///
+    /// Frontends retain their type token in a [`HandlerTypes`] side table.
     Catch,
     /// Catch-all handler — catches any exception.
     CatchAll,
@@ -245,7 +248,7 @@ impl Cleanup {
     }
 }
 
-/// Consumer-typed filter payloads for handlers, keyed by [`HandlerRef`].
+/// Consumer-owned metadata for handlers, keyed by [`HandlerRef`].
 ///
 /// [`HandlerKind::Filter`] names a *block* holding the predicate, which fits
 /// bytecode where a filter is its own funclet. Source lowerings frequently
@@ -255,14 +258,17 @@ impl Cleanup {
 /// predicate in the frontend's own world — a syntax-node id, an interned
 /// expression, a caught type, a bitmask. That payload is therefore consumer
 /// DATA rather than a library type, and it is orthogonal to
-/// [`HandlerKind`]: any handler may carry one.
+/// [`HandlerKind`]: any handler may carry one. The same table also carries a
+/// CLR catch-type token without forcing that token's type into [`Handler`] or
+/// [`Cfg`]. Use the [`HandlerFilters`] and [`HandlerTypes`] aliases when the
+/// role should be explicit at a call site.
 ///
 /// It is a **side table** and not a field or a type parameter on
 /// [`Handler`] on purpose. A `Handler<F>` would force `Region<F>` and
 /// `Cfg<I, F>`, infecting every algorithm signature in the crate, and a new
 /// field would break every existing struct-literal construction. A separate
 /// table keeps [`Cfg`] object-simple, keeps existing frontends compiling, and
-/// is dropped by consumers that have no filters at all.
+/// is dropped by consumers that have no handler metadata at all.
 ///
 /// Storage is a sorted `Vec` of pairs rather than a map: `serde` renders it
 /// as a sequence, so it survives formats that only admit string map keys,
@@ -286,12 +292,12 @@ impl Cleanup {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct HandlerFilters<F> {
+pub struct HandlerMetadata<M> {
     /// Sorted by key, so lookups binary-search and iteration is stable.
-    entries: Vec<(HandlerRef, F)>,
+    entries: Vec<(HandlerRef, M)>,
 }
 
-impl<F> HandlerFilters<F> {
+impl<M> HandlerMetadata<M> {
     /// An empty table.
     #[must_use]
     pub const fn new() -> Self {
@@ -300,20 +306,20 @@ impl<F> HandlerFilters<F> {
         }
     }
 
-    /// Attach `filter` to `handler`, returning the payload it replaced.
-    pub fn set(&mut self, handler: HandlerRef, filter: F) -> Option<F> {
+    /// Attach `metadata` to `handler`, returning the payload it replaced.
+    pub fn set(&mut self, handler: HandlerRef, metadata: M) -> Option<M> {
         match self.entries.binary_search_by_key(&handler, |(key, _)| *key) {
-            Ok(at) => Some(core::mem::replace(&mut self.entries[at].1, filter)),
+            Ok(at) => Some(core::mem::replace(&mut self.entries[at].1, metadata)),
             Err(at) => {
-                self.entries.insert(at, (handler, filter));
+                self.entries.insert(at, (handler, metadata));
                 None
             }
         }
     }
 
-    /// The filter payload attached to `handler`, if any.
+    /// The metadata attached to `handler`, if any.
     #[must_use]
-    pub fn get(&self, handler: HandlerRef) -> Option<&F> {
+    pub fn get(&self, handler: HandlerRef) -> Option<&M> {
         let at = self
             .entries
             .binary_search_by_key(&handler, |(key, _)| *key)
@@ -321,8 +327,8 @@ impl<F> HandlerFilters<F> {
         Some(&self.entries[at].1)
     }
 
-    /// Mutable access to the filter payload attached to `handler`.
-    pub fn get_mut(&mut self, handler: HandlerRef) -> Option<&mut F> {
+    /// Mutable access to the metadata attached to `handler`.
+    pub fn get_mut(&mut self, handler: HandlerRef) -> Option<&mut M> {
         let at = self
             .entries
             .binary_search_by_key(&handler, |(key, _)| *key)
@@ -330,8 +336,8 @@ impl<F> HandlerFilters<F> {
         Some(&mut self.entries[at].1)
     }
 
-    /// Detach and return the filter payload attached to `handler`.
-    pub fn remove(&mut self, handler: HandlerRef) -> Option<F> {
+    /// Detach and return the metadata attached to `handler`.
+    pub fn remove(&mut self, handler: HandlerRef) -> Option<M> {
         let at = self
             .entries
             .binary_search_by_key(&handler, |(key, _)| *key)
@@ -339,29 +345,35 @@ impl<F> HandlerFilters<F> {
         Some(self.entries.remove(at).1)
     }
 
-    /// The number of handlers carrying a filter.
+    /// The number of handlers carrying metadata.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether no handler carries a filter.
+    /// Whether no handler carries metadata.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Iterate over every `(handler, filter)` pair in handler order.
-    pub fn iter(&self) -> impl Iterator<Item = (HandlerRef, &F)> {
-        self.entries.iter().map(|(key, filter)| (*key, filter))
+    /// Iterate over every `(handler, metadata)` pair in handler order.
+    pub fn iter(&self) -> impl Iterator<Item = (HandlerRef, &M)> {
+        self.entries.iter().map(|(key, metadata)| (*key, metadata))
     }
 }
 
-impl<F> Default for HandlerFilters<F> {
+impl<M> Default for HandlerMetadata<M> {
     fn default() -> Self {
         Self::new()
     }
 }
+
+/// Handler metadata used as a filter-predicate side table.
+pub type HandlerFilters<F> = HandlerMetadata<F>;
+
+/// Handler metadata used as a caught-type side table.
+pub type HandlerTypes<T> = HandlerMetadata<T>;
 
 /// Precomputed innermost-protecting-region lookup.
 ///

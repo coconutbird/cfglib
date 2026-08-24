@@ -74,8 +74,9 @@
 //!
 //! Additionally, [`Problem`] is the trait for pluggable instruction-level
 //! dataflow analyses, [`NodeProblem`] its node-level counterpart over any
-//! graph view, [`EdgeProblem`] its edge-sensitive counterpart, and [`Emitter`]
-//! the trait for linearization output.
+//! graph view, [`EdgeProblem`] its edge-sensitive counterpart,
+//! [`TryEdgeProblem`] the error-preserving edge variant, and [`Emitter`] the
+//! trait for linearization output.
 //!
 //! # Contracts
 //!
@@ -110,6 +111,7 @@ pub mod builder;
 pub mod cfg;
 pub mod display;
 pub mod edge;
+pub mod exception;
 pub mod flow;
 pub mod region;
 pub mod rewrite;
@@ -139,16 +141,22 @@ pub use analysis::purity::{Purity, all_block_purities, block_purity, cfg_purity}
 pub use analysis::switch_table::{
     JumpTable, SwitchRecovery, SwitchSource, detect_switch_tables, recover_switch_tables,
 };
-pub use ast::{AstNode, lift, lift_predicated};
+pub use ast::{AstNode, CatchHandler, SwitchCase, lift, lift_predicated};
 pub use block::{BasicBlock, BlockId};
 pub use builder::{BuildError, CfgBuilder, JumpResolution, resolve_jump_edges};
 pub use cfg::{Cfg, SplitPointError};
 pub use display::DisplayInstr;
 pub use edge::{Edge, EdgeId, EdgeKind};
+pub use exception::{
+    ClrExceptionRegion, ClrHandler, ClrHandlerKind, ExceptionDisposition, ExceptionFlow,
+    ExceptionPhase, SehExceptionRegion, SehHandler, SehHandlerKind, SehRegistration,
+    SehRegistrationChain, VectoredExceptionModel, VectoredHandler, VectoredHandlerId,
+    VectoredHandlerKind, VectoredHandlerOrder, VehModel, install_clr_region, install_seh_region,
+};
 pub use flow::{CallInfo, FlowControl, FlowEffect, JumpTargets};
 pub use region::{
-    Cleanup, CompletionReason, Continuation, Handler, HandlerFilters, HandlerKind, HandlerRef,
-    Region, RegionId,
+    Cleanup, CompletionReason, Continuation, Handler, HandlerFilters, HandlerKind, HandlerMetadata,
+    HandlerRef, HandlerTypes, Region, RegionId,
 };
 pub use rewrite::RewriteMap;
 
@@ -156,8 +164,10 @@ pub use rewrite::RewriteMap;
 
 pub use dataflow::defuse::DefUseChains;
 pub use dataflow::edge_fixpoint::{
-    EdgeFacts, EdgeProblem, EdgeSolveConfig, EdgeSolveError, solve_edge_problem,
-    solve_edge_problem_with_config,
+    EdgeFacts, EdgeProblem, EdgeSolveConfig, EdgeSolveError, TryEdgeProblem, TryEdgeSolveError,
+    solve_edge_problem, solve_edge_problem_from, solve_edge_problem_from_with_config,
+    solve_edge_problem_with_config, try_solve_edge_problem, try_solve_edge_problem_from,
+    try_solve_edge_problem_from_with_config, try_solve_edge_problem_with_config,
 };
 pub use dataflow::fixpoint::{Direction, FixpointResult, Problem};
 pub use dataflow::liveness::Liveness;
@@ -187,7 +197,10 @@ pub use graph::edge_traverse::{
     shortest_path_view_edges, walk_edges, walk_view_edges,
 };
 pub use graph::edge_view::{DenseEdgeId, EdgeGraphView, EdgeRef, FilteredEdges};
-pub use graph::eh::{EhBlockKind, EhEdge, EhModel, build_eh_model, cleanup_blocks, landing_pads};
+pub use graph::eh::{
+    EhBlockKind, EhEdge, EhEdgeKind, EhModel, build_eh_model, cleanup_blocks, landing_pads,
+    resume_blocks,
+};
 pub use graph::horn::HornClauses;
 pub use graph::inc_dom::{IncrementalUpdate, update_after_edge_insert, update_after_edge_remove};
 pub use graph::interval::{Interval, IntervalAnalysis, interval_analysis};

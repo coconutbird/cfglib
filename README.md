@@ -89,10 +89,11 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Goto wiring | `resolve_jump_edges` + `JumpTargets` (consumer-typed targets: labels, addresses, syntax nodes) |
 | SmallVec adjacency | Stack-allocated successor (2) / predecessor (4) lists; heap only for high fan-out |
 | Tombstone edges | `remove_edge()` replaces the slot with `None`; existing `EdgeId`s remain stable |
-| Edge metadata | Stable `EdgeId`, endpoints, `EdgeKind`, optional weight, and a caller-owned payload for switch labels, handlers, continuations, or provenance |
-| Regions | Try/catch/finally regions with `Handler` and `HandlerKind` (Catch, CatchAll, Finally, Fault, Filter) |
+| Edge metadata | Stable `EdgeId`, endpoints, `EdgeKind`, optional weight, and a caller-owned payload; `ExceptionFlow<M>` standardises search/unwind phase and execute/search/continue disposition while retaining platform metadata |
+| Regions | Try/catch/finally regions with `Handler` and `HandlerKind` (Catch, CatchAll, Finally, Fault, Filter); `install_clr_region` and `install_seh_region` import normalized platform clauses |
 | Cleanup continuations | `add_continuation` / `set_cleanup_resume` → `Cleanup` (`Continuation` + `CompletionReason`): which route out of a single shared `finally` block a resume edge belongs to |
-| Handler filters | `HandlerFilters<F>` side table — consumer-typed filter predicates (C# `catch … when`) keyed by `HandlerRef`, with no type parameter on `Cfg` |
+| Handler metadata | `HandlerMetadata<M>` side table (`HandlerFilters<F>` / `HandlerTypes<T>`) — consumer-typed filter predicates and CLR caught-type tokens keyed by `HandlerRef`, with no type parameter on `Cfg` |
+| Native handler state | `SehRegistrationChain<F, H>` models per-thread x86 frame registrations; `VehModel<H>` separately models ordered process-wide vectored exception/continue handlers |
 | Subgraph extraction | `subgraph()` or `subgraph_mapped()` with dense O(1) block-id remapping and payload cloning |
 | Block splitting | `split_block()`, mapped payload-aware variants, and validated multi-point splitting with automatic stable edge transfer |
 | `serde` feature | Optional serialisation support |
@@ -134,7 +135,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Reverse CFG | `reverse_cfg` | Flip all edges, swap entry/exits |
 | Call graph | `build_call_graph` + `CallInfo`, `propagate_summaries` (callee-first SCC fixpoint) | Consumer-typed callees; interprocedural summary scaffold |
 | CFG diff | `cfg_diff` | Structural comparison (bindiff-style fingerprinting), no trait bounds |
-| Exception handling model | `build_eh_model` | Landing pads, cleanup blocks, protected-by mapping, cleanup continuations by completion reason |
+| Exception handling model | `build_eh_model` | Payload-generic CFG input; stable source `EdgeId`, exact handler/unwind/leave/resume/continue kinds, landing pads, cleanup/resume blocks, handler identities, protected-by mapping, and cleanup continuations |
 | Integrity verification | `verify`, `verify_view`, `verify_edge_view`; `verify_with` + `SemanticValidator` | Structural node/edge-view checks plus deterministic typed consumer hooks for cardinality, ordering, and provenance rules |
 | DOT export | `to_dot` (`DisplayInstr`), `to_dot_with` (bound-free), `write_view_dot` (any view) | Graphviz output with escaped labels |
 
@@ -145,7 +146,8 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Generic fixpoint solver | `solve`, `Problem` trait | Forward or backward, any lattice type |
 | Node-level fixpoint | `solve_node_problem`, `NodeProblem` trait | Per-node facts over any graph view (taint, reachability-with-facts) |
 | Seeded node fixpoint | `solve_node_problem_from` | Same solver, worklist seeded from a subset — incremental / dirty-region re-solves |
-| Edge-sensitive fixpoint | `solve_edge_problem`, `EdgeProblem` trait | Per-edge transfer over any edge view; stable id/data plus physical node pre/post states and deterministic bounded-solve errors |
+| Edge-sensitive fixpoint | `solve_edge_problem`, `solve_edge_problem_from`, `EdgeProblem` trait | Full or seeded per-edge transfer over any edge view; stable id/data plus physical node pre/post states and deterministic bounded-solve errors |
+| Fallible edge-sensitive fixpoint | `try_solve_edge_problem`, `try_solve_edge_problem_from`, `TryEdgeProblem` trait | Preserves consumer boundary, merge, node-transfer, and edge-transfer errors separately from solver limits |
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
 | Liveness | `Liveness::compute` | Live-in / live-out at each block |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |
@@ -208,7 +210,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 
 ## Extension contracts
 
-The generic graph has no consumer trait requirement when it owns the storage. Implement `DenseNodeId` and the three required `DirectedGraphView` methods (`node_count`, `successors`, and `predecessors`) only when adapting an existing graph store; implement `EdgeGraphView` when algorithms must observe stable edge identities or payloads; add `RootedGraphView` (or use `Rooted`) for entry-requiring algorithms. Instruction traits are opt-in according to which CFG and dataflow features an adapter needs — every associated type is the consumer's own:
+The generic graph has no consumer trait requirement when it owns the storage. `DirectedGraph`, `Cfg`, and `KeyedGraph` expose both node and edge views directly. Implement `DenseNodeId` and the three required `DirectedGraphView` methods (`node_count`, `successors`, and `predecessors`) only when adapting another graph store; implement `EdgeGraphView` when algorithms must observe stable edge identities or payloads; add `RootedGraphView` (or use `Rooted`) for entry-requiring algorithms. Instruction traits are opt-in according to which CFG and dataflow features an adapter needs — every associated type is the consumer's own:
 
 ```text
 DirectedGraph<N, E>       (owned arbitrary graph; no adapter trait)

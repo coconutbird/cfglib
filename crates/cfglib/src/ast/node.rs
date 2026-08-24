@@ -8,6 +8,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use crate::block::BlockId;
+use crate::region::{HandlerKind, HandlerRef};
 
 /// A node in the reconstructed AST.
 ///
@@ -87,7 +88,7 @@ pub enum AstNode<I> {
         target: alloc::string::String,
     },
 
-    /// A try/catch/finally region.
+    /// A try region with catch, filter, fault, and/or finally handlers.
     TryCatch {
         /// The protected body (try block).
         try_body: Vec<AstNode<I>>,
@@ -111,11 +112,18 @@ pub enum AstNode<I> {
     },
 }
 
-/// A single handler arm inside a [`AstNode::TryCatch`].
+/// A single non-finally handler arm inside an [`AstNode::TryCatch`].
+///
+/// The historical name is retained for compatibility; [`Self::kind`]
+/// distinguishes catch, catch-all, fault, and filter arms.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatchHandler<I> {
+    /// Stable identity of the source CFG handler.
+    pub handler: HandlerRef,
     /// The entry block of the handler.
     pub entry: BlockId,
+    /// Exact catch, catch-all, fault, or filter classification.
+    pub kind: HandlerKind,
     /// The body of the handler.
     pub body: Vec<AstNode<I>>,
 }
@@ -195,7 +203,9 @@ impl<I> AstNode<I> {
                 handlers: handlers
                     .into_iter()
                     .map(|h| CatchHandler {
+                        handler: h.handler,
                         entry: h.entry,
+                        kind: h.kind,
                         body: h.body.into_iter().map(AstNode::simplify).collect(),
                     })
                     .collect(),
@@ -216,7 +226,7 @@ impl<I> AstNode<I> {
 }
 
 use alloc::string::String;
-use core::fmt;
+use core::fmt::{self, Write as _};
 
 use crate::display::DisplayInstr;
 
@@ -318,7 +328,18 @@ fn write_try_catch<I: DisplayInstr>(
     write_nodes(out, try_body, depth + 1);
     for handler in handlers {
         write_indent(out, depth);
-        out.push_str("} catch {\n");
+        match handler.kind {
+            HandlerKind::Catch => out.push_str("} catch {\n"),
+            HandlerKind::CatchAll => out.push_str("} catch (...) {\n"),
+            HandlerKind::Finally => out.push_str("} finally {\n"),
+            HandlerKind::Fault => out.push_str("} fault {\n"),
+            HandlerKind::Filter { filter_block } => {
+                out.push_str("} filter (");
+                write!(out, ".bb{}", filter_block.index())
+                    .expect("writing to a String cannot fail");
+                out.push_str(") {\n");
+            }
+        }
         write_nodes(out, &handler.body, depth + 1);
     }
     if !finally_body.is_empty() {

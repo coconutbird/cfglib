@@ -360,7 +360,9 @@ fn wrap_predicated<I: Clone + Predicated>(node: AstNode<I>) -> AstNode<I> {
             handlers: handlers
                 .into_iter()
                 .map(|handler| CatchHandler {
+                    handler: handler.handler,
                     entry: handler.entry,
+                    kind: handler.kind,
                     body: wrap_nodes(handler.body),
                 })
                 .collect(),
@@ -525,7 +527,7 @@ fn lift_try_catch<I: Clone>(
     let mut handlers = Vec::new();
     let mut finally_body = Vec::new();
 
-    for handler in &region.handlers {
+    for (index, handler) in region.handlers.iter().enumerate() {
         let body = lift_region(cfg, dom, pdom, handler.entry, visited, region_entries);
         match handler.kind {
             HandlerKind::Finally => {
@@ -533,7 +535,9 @@ fn lift_try_catch<I: Clone>(
             }
             _ => {
                 handlers.push(CatchHandler {
+                    handler: crate::region::HandlerRef::new(region.id, index),
                     entry: handler.entry,
+                    kind: handler.kind,
                     body,
                 });
             }
@@ -1084,6 +1088,61 @@ mod tests {
         assert!(
             pseudo.contains("try"),
             "pseudocode should contain try: {pseudo}"
+        );
+    }
+
+    #[test]
+    fn lift_preserves_fault_and_filter_handler_kinds() {
+        use crate::region::{Handler, HandlerKind, Region, RegionId};
+        use alloc::collections::BTreeSet;
+
+        let mut cfg: Cfg<MockInst> = Cfg::new();
+        let try_body = cfg.new_block();
+        let fault = cfg.new_block();
+        let filter = cfg.new_block();
+        let filtered_handler = cfg.new_block();
+        let after = cfg.new_block();
+        let entry = cfg.entry();
+
+        cfg.block_mut(try_body)
+            .instructions_vec_mut()
+            .push(ff("try_inst"));
+        cfg.block_mut(fault)
+            .instructions_vec_mut()
+            .push(ff("fault_inst"));
+        cfg.block_mut(filtered_handler)
+            .instructions_vec_mut()
+            .push(ff("filtered_inst"));
+        cfg.add_edge(entry, try_body, EdgeKind::Fallthrough);
+        cfg.add_edge(try_body, after, EdgeKind::Fallthrough);
+        cfg.add_edge(try_body, fault, EdgeKind::ExceptionUnwind);
+        cfg.add_edge(try_body, filtered_handler, EdgeKind::ExceptionHandler);
+
+        cfg.add_region(Region {
+            id: RegionId::from_raw(0),
+            protected_blocks: [try_body].into_iter().collect::<BTreeSet<_>>(),
+            handlers: alloc::vec![
+                Handler {
+                    entry: fault,
+                    body: [fault].into_iter().collect(),
+                    kind: HandlerKind::Fault,
+                },
+                Handler {
+                    entry: filtered_handler,
+                    body: [filtered_handler].into_iter().collect(),
+                    kind: HandlerKind::Filter {
+                        filter_block: filter,
+                    },
+                },
+            ],
+            parent: None,
+        });
+
+        let pseudo = lift(&cfg).to_pseudocode();
+        assert!(pseudo.contains("} fault {"), "{pseudo}");
+        assert!(
+            pseudo.contains(&alloc::format!("}} filter (.bb{}) {{", filter.index())),
+            "{pseudo}"
         );
     }
 

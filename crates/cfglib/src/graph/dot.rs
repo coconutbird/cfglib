@@ -126,6 +126,8 @@ impl<I, E> Cfg<I, E> {
                 EdgeKind::ExceptionHandler => ("darkred", "solid", "handler"),
                 EdgeKind::ExceptionUnwind => ("darkred", "dashed", "unwind"),
                 EdgeKind::ExceptionLeave => ("darkred", "dotted", "leave"),
+                EdgeKind::ExceptionResume => ("darkred", "bold", "resume"),
+                EdgeKind::ExceptionContinue => ("darkgreen", "dashed", "continue"),
             };
             write!(
                 w,
