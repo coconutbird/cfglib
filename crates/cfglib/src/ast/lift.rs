@@ -13,6 +13,7 @@ use crate::cfg::Cfg;
 use crate::dataflow::Predicated;
 use crate::edge::EdgeKind;
 use crate::graph::dominator::DominatorTree;
+use crate::graph::structure::find_back_edges_tagged;
 use crate::region::{HandlerKind, Region};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +34,13 @@ struct BlockFlow {
 
 struct LiftState<'a> {
     pdom: &'a DominatorTree,
+    /// Dominance-proven and explicitly tagged back-edge endpoint pairs.
+    ///
+    /// Machine frontends normally describe every native jump as
+    /// [`EdgeKind::Jump`]. Keeping the structural result separately lets the
+    /// AST lifter recover those loops without requiring frontends to mutate
+    /// the lossless native edge classification.
+    back_edges: &'a BTreeSet<(u32, u32)>,
     visited: &'a mut BTreeSet<u32>,
     /// Region anchor (first protected block in reverse postorder) → the
     /// regions anchored there, outermost (largest protected set) first.
@@ -44,6 +52,15 @@ struct LiftState<'a> {
 
 fn has_edge_kind<I, E>(cfg: &Cfg<I, E>, edges: &[crate::EdgeId], kind: EdgeKind) -> bool {
     edges.iter().any(|&edge| cfg.edge(edge).kind() == kind)
+}
+
+fn is_back_edge<I, E>(
+    cfg: &Cfg<I, E>,
+    back_edges: &BTreeSet<(u32, u32)>,
+    edge: crate::EdgeId,
+) -> bool {
+    let edge = cfg.edge(edge);
+    back_edges.contains(&(edge.source().0, edge.target().0))
 }
 
 /// Whether an edge transfers control exceptionally rather than sequentially.
@@ -108,10 +125,17 @@ fn region_anchors<'c, I, E>(
     anchors
 }
 
-fn classify_block<I, E>(cfg: &Cfg<I, E>, block: BlockId) -> BlockFlow {
+fn classify_block<I, E>(
+    cfg: &Cfg<I, E>,
+    back_edges: &BTreeSet<(u32, u32)>,
+    block: BlockId,
+) -> BlockFlow {
     let successors = cfg.successor_edges(block);
     let predecessors = cfg.predecessor_edges(block);
-    let kind = if has_edge_kind(cfg, predecessors, EdgeKind::Back) {
+    let kind = if predecessors
+        .iter()
+        .any(|&edge| is_back_edge(cfg, back_edges, edge))
+    {
         BlockFlowKind::LoopHeader
     } else if has_edge_kind(cfg, successors, EdgeKind::ConditionalTrue)
         && has_edge_kind(cfg, successors, EdgeKind::ConditionalFalse)
@@ -119,7 +143,10 @@ fn classify_block<I, E>(cfg: &Cfg<I, E>, block: BlockId) -> BlockFlow {
         BlockFlowKind::Conditional
     } else if has_edge_kind(cfg, successors, EdgeKind::SwitchCase) {
         BlockFlowKind::Switch
-    } else if has_edge_kind(cfg, successors, EdgeKind::Back) {
+    } else if successors
+        .iter()
+        .any(|&edge| is_back_edge(cfg, back_edges, edge))
+    {
         BlockFlowKind::BackEdge
     } else if has_edge_kind(cfg, successors, EdgeKind::Jump) {
         BlockFlowKind::Jump
@@ -128,7 +155,9 @@ fn classify_block<I, E>(cfg: &Cfg<I, E>, block: BlockId) -> BlockFlow {
     };
     BlockFlow {
         kind,
-        needs_label: has_edge_kind(cfg, predecessors, EdgeKind::Jump),
+        needs_label: predecessors.iter().any(|&edge| {
+            cfg.edge(edge).kind() == EdgeKind::Jump && !is_back_edge(cfg, back_edges, edge)
+        }),
     }
 }
 
@@ -189,12 +218,18 @@ fn push_labeled<I: Clone, E>(
 /// a region as unstructured flow.
 #[must_use]
 pub fn lift<I: Clone, E>(cfg: &Cfg<I, E>) -> AstNode<I> {
+    let dom = DominatorTree::compute(cfg);
     let pdom = DominatorTree::compute_post(cfg);
+    let back_edges = find_back_edges_tagged(cfg, &dom)
+        .into_iter()
+        .map(|edge| (edge.tail.0, edge.header.0))
+        .collect();
     let order = cfg.reverse_postorder();
     let anchors = region_anchors(cfg, &order);
     let mut visited = BTreeSet::new();
     let mut state = LiftState {
         pdom: &pdom,
+        back_edges: &back_edges,
         visited: &mut visited,
         anchors: &anchors,
         goto_targets: BTreeSet::new(),
@@ -293,13 +328,13 @@ fn lift_block<I: Clone, E>(
     result: &mut Vec<AstNode<I>>,
 ) -> Option<BlockId> {
     let successor_edges = cfg.successor_edges(block);
-    let flow = classify_block(cfg, block);
+    let flow = classify_block(cfg, state.back_edges, block);
     let needs_label = flow.needs_label || state.goto_targets.contains(&block.0);
 
     if flow.kind == BlockFlowKind::LoopHeader {
         let node = lift_loop(cfg, state, block, allowed_blocks);
         push_labeled(result, cfg, block, needs_label, node);
-        return find_loop_exit(cfg, block, state.visited, allowed_blocks);
+        return find_loop_exit(cfg, state.back_edges, block, state.visited, allowed_blocks);
     }
 
     if flow.kind == BlockFlowKind::Conditional {
@@ -856,7 +891,9 @@ fn lift_loop<I: Clone, E>(
         }
         for &eid in successor_edges {
             let edge = cfg.edge(eid);
-            if edge.kind() != EdgeKind::Back && !state.visited.contains(&edge.target().0) {
+            if !is_back_edge(cfg, state.back_edges, eid)
+                && !state.visited.contains(&edge.target().0)
+            {
                 body.extend(lift_region(cfg, state, edge.target(), allowed_blocks));
             }
         }
@@ -911,6 +948,7 @@ fn lift_case_body<I: Clone, E>(
 /// to the loop body size rather than the entire CFG.
 fn find_loop_exit<I, E>(
     cfg: &Cfg<I, E>,
+    back_edges: &BTreeSet<(u32, u32)>,
     header: BlockId,
     visited: &BTreeSet<u32>,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
@@ -944,7 +982,7 @@ fn find_loop_exit<I, E>(
     // at the header level).
     for &eid in cfg.successor_edges(header) {
         let edge = cfg.edge(eid);
-        if !visited.contains(&edge.target().0) && edge.kind() != EdgeKind::Back {
+        if !visited.contains(&edge.target().0) && !is_back_edge(cfg, back_edges, eid) {
             if block_is_allowed(allowed_blocks, edge.target()) {
                 return Some(edge.target());
             }

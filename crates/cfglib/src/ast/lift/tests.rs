@@ -19,6 +19,35 @@ fn lift_accepts_caller_owned_edge_payloads() {
 }
 
 #[test]
+fn lift_recovers_a_payload_bearing_loop_from_ordinary_jump_edges() {
+    let mut cfg = Cfg::<MockInst, &'static str>::with_edge_payload();
+    let header = cfg.new_block();
+    let body = cfg.new_block();
+    let exit = cfg.new_block();
+    cfg.block_mut(header).push(ff("condition"));
+    cfg.block_mut(body).push(ff("body"));
+    cfg.block_mut(exit)
+        .push(MockInst(FlowEffect::Return, "return"));
+    cfg.add_edge_with_payload(cfg.entry(), header, EdgeKind::Fallthrough, "entry");
+    cfg.add_edge_with_payload(header, body, EdgeKind::ConditionalTrue, "true");
+    cfg.add_edge_with_payload(header, exit, EdgeKind::ConditionalFalse, "false");
+    cfg.add_edge_with_payload(body, header, EdgeKind::Jump, "native goto");
+
+    let ast = lift(&cfg);
+    assert!(
+        has_node_kind(&ast, |node| matches!(node, AstNode::Loop { .. })),
+        "dominance must recover a loop without rewriting its native jump edge: {ast:?}"
+    );
+    assert!(
+        !has_node_kind(&ast, |node| matches!(
+            node,
+            AstNode::Label { .. } | AstNode::Goto { .. }
+        )),
+        "the natural loop should not degrade to labels and gotos: {ast:?}"
+    );
+}
+
+#[test]
 fn lift_predicated_regionizes_same_predicate_runs() {
     let cfg = CfgBuilder::build(vec![
         df_ff("plain"),

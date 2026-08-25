@@ -54,7 +54,7 @@ impl DefUseChains {
     /// assert!(chains.dead_defs().is_empty());
     /// ```
     #[must_use]
-    pub fn compute<I: InstrInfo>(cfg: &Cfg<I>) -> Self {
+    pub fn compute<I: InstrInfo, E>(cfg: &Cfg<I, E>) -> Self {
         let reaching = ReachingDefs::compute(cfg);
 
         let mut def_use: BTreeMap<DefSite, BTreeSet<UseSite>> = BTreeMap::new();

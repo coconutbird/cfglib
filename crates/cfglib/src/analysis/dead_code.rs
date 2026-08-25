@@ -51,7 +51,7 @@ impl DeadCode {
     /// Panics only if the unbounded fixpoint solve reports a step-limit
     /// error, which the unbounded configuration cannot produce.
     #[must_use]
-    pub fn compute<I: EffectInfo>(cfg: &Cfg<I>) -> Self {
+    pub fn compute<I: EffectInfo, E>(cfg: &Cfg<I, E>) -> Self {
         use crate::dataflow::liveness::LivenessProblem;
 
         let liveness = fixpoint::solve_problem(cfg, &LivenessProblem)

@@ -92,7 +92,7 @@ pub struct ConstPropProblem;
 /// The flow fact: a map from variable to lattice value.
 pub type ConstFact<V, C> = BTreeMap<V, ConstValue<C>>;
 
-impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
+impl<I: ConstantFolder, E> Problem<I, E> for ConstPropProblem {
     type Fact = ConstFact<I::Variable, I::Const>;
 
     fn direction(&self) -> Direction {
@@ -116,7 +116,7 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
         result
     }
 
-    fn transfer(&self, cfg: &Cfg<I>, block: BlockId, input: &Self::Fact) -> Self::Fact {
+    fn transfer(&self, cfg: &Cfg<I, E>, block: BlockId, input: &Self::Fact) -> Self::Fact {
         let mut state = input.clone();
         let mut known: BTreeMap<I::Variable, I::Const> = state
             .iter()
@@ -154,8 +154,8 @@ impl<I: ConstantFolder> Problem<I> for ConstPropProblem {
 /// Panics only if the unbounded fixpoint solve reports a step-limit error,
 /// which the unbounded configuration cannot produce.
 #[must_use]
-pub fn constant_propagation<I: ConstantFolder>(
-    cfg: &Cfg<I>,
+pub fn constant_propagation<I: ConstantFolder, E>(
+    cfg: &Cfg<I, E>,
 ) -> Facts<ConstFact<I::Variable, I::Const>> {
     fixpoint::solve_problem(cfg, &ConstPropProblem)
         .expect("an unbounded solve cannot exceed a step limit")

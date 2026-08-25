@@ -53,7 +53,7 @@ pub struct CopyPropagationStats {
 /// 4. Remove dead copies (whose defs have no remaining uses).
 ///
 /// Returns the number of rewrites and removals.
-pub fn copy_propagation<I: CopySource + Clone>(cfg: &mut Cfg<I>) -> CopyPropagationStats {
+pub fn copy_propagation<I: CopySource + Clone, E>(cfg: &mut Cfg<I, E>) -> CopyPropagationStats {
     // Phase 1: identify copies and build a substitution map.
     // We iterate to a fixpoint in case of copy chains: a = b; c = a → c = b.
     let mut substitutions: BTreeMap<I::Variable, I::Variable> = BTreeMap::new();

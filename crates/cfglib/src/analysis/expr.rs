@@ -130,8 +130,8 @@ pub struct BlockExprTrees<V, Op, C> {
 /// Walks the block's instructions and builds expression trees by
 /// inlining single-use temporaries into their use sites.
 #[must_use]
-pub fn recover_block_expressions<I: ExprInstr>(
-    cfg: &Cfg<I>,
+pub fn recover_block_expressions<I: ExprInstr, E>(
+    cfg: &Cfg<I, E>,
     block: BlockId,
 ) -> BlockExprTrees<I::Variable, I::Operator, I::Const> {
     let insts = cfg.block(block).instructions();
@@ -199,8 +199,8 @@ pub fn recover_block_expressions<I: ExprInstr>(
 
 /// Recover expression trees for all blocks in the CFG.
 #[must_use]
-pub fn recover_expressions<I: ExprInstr>(
-    cfg: &Cfg<I>,
+pub fn recover_expressions<I: ExprInstr, E>(
+    cfg: &Cfg<I, E>,
 ) -> Vec<BlockExprTrees<I::Variable, I::Operator, I::Const>> {
     cfg.blocks()
         .iter()

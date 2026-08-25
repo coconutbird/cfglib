@@ -137,7 +137,7 @@ pub(crate) fn collapse_infallible<T>(
 ///
 /// `F` is the flow fact type (e.g. `BTreeSet<DefSite>` for reaching
 /// definitions, or `BTreeSet<I::Variable>` for liveness).
-pub trait Problem<I> {
+pub trait Problem<I, E = ()> {
     /// The flow fact (lattice element) type.
     type Fact: Clone + PartialEq;
 
@@ -155,7 +155,7 @@ pub trait Problem<I> {
 
     /// Transfer function: given the incoming fact for a block, compute
     /// the outgoing fact after the block's instructions are applied.
-    fn transfer(&self, cfg: &Cfg<I>, block: BlockId, input: &Self::Fact) -> Self::Fact;
+    fn transfer(&self, cfg: &Cfg<I, E>, block: BlockId, input: &Self::Fact) -> Self::Fact;
 }
 
 /// A fallible data flow problem.
@@ -164,7 +164,7 @@ pub trait Problem<I> {
 /// and abstract interpretation where a boundary, merge, or transfer can reject
 /// the input program. The solver reports those consumer errors separately from
 /// its own configured step limit.
-pub trait TryProblem<I> {
+pub trait TryProblem<I, E = ()> {
     /// The flow fact (lattice element) type.
     type Fact: Clone + PartialEq;
 
@@ -199,7 +199,7 @@ pub trait TryProblem<I> {
     /// Returns a consumer error when the block rejects the incoming fact.
     fn transfer(
         &self,
-        cfg: &Cfg<I>,
+        cfg: &Cfg<I, E>,
         block: BlockId,
         input: &Self::Fact,
     ) -> Result<Self::Fact, Self::Error>;
@@ -268,8 +268,8 @@ impl<F> Facts<F> {
 /// let live = Liveness::compute(&cfg);
 /// assert!(live.live_in(cfg.entry()).is_empty()); // r0 defined, not used
 /// ```
-pub fn solve_problem<I, P: Problem<I>>(
-    cfg: &Cfg<I>,
+pub fn solve_problem<I, E, P: Problem<I, E>>(
+    cfg: &Cfg<I, E>,
     problem: &P,
 ) -> Result<Facts<P::Fact>, SolveError> {
     solve_problem_with_config(cfg, problem, SolveConfig::new())
@@ -290,8 +290,8 @@ pub fn solve_problem<I, P: Problem<I>>(
 /// # Errors
 ///
 /// The unbounded configuration cannot produce a solver-limit error.
-pub fn solve_problem_from<I, P: Problem<I>>(
-    cfg: &Cfg<I>,
+pub fn solve_problem_from<I, E, P: Problem<I, E>>(
+    cfg: &Cfg<I, E>,
     problem: &P,
     seeds: &[BlockId],
 ) -> Result<Facts<P::Fact>, SolveError> {
@@ -304,8 +304,8 @@ pub fn solve_problem_from<I, P: Problem<I>>(
 ///
 /// Returns [`SolveError::StepLimitExceeded`] when work remains at the
 /// configured limit.
-pub fn solve_problem_with_config<I, P: Problem<I>>(
-    cfg: &Cfg<I>,
+pub fn solve_problem_with_config<I, E, P: Problem<I, E>>(
+    cfg: &Cfg<I, E>,
     problem: &P,
     config: SolveConfig,
 ) -> Result<Facts<P::Fact>, SolveError> {
@@ -328,8 +328,8 @@ pub fn solve_problem_with_config<I, P: Problem<I>>(
 ///
 /// Returns [`SolveError::StepLimitExceeded`] when work remains at the
 /// configured limit.
-pub fn solve_problem_from_with_config<I, P: Problem<I>>(
-    cfg: &Cfg<I>,
+pub fn solve_problem_from_with_config<I, E, P: Problem<I, E>>(
+    cfg: &Cfg<I, E>,
     problem: &P,
     seeds: &[BlockId],
     config: SolveConfig,
@@ -349,8 +349,8 @@ pub fn solve_problem_from_with_config<I, P: Problem<I>>(
 ///
 /// Returns [`TrySolveError::Problem`] for a consumer error. The unbounded
 /// configuration cannot produce a solver-limit error.
-pub fn try_solve_problem<I, P: TryProblem<I>>(
-    cfg: &Cfg<I>,
+pub fn try_solve_problem<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
     problem: &P,
 ) -> Result<Facts<P::Fact>, TrySolveError<P::Error>> {
     try_solve_problem_with_config(cfg, problem, SolveConfig::new())
@@ -366,8 +366,8 @@ pub fn try_solve_problem<I, P: TryProblem<I>>(
 ///
 /// Returns [`TrySolveError::Problem`] for a consumer error. The unbounded
 /// configuration cannot produce a solver-limit error.
-pub fn try_solve_problem_from<I, P: TryProblem<I>>(
-    cfg: &Cfg<I>,
+pub fn try_solve_problem_from<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
     problem: &P,
     seeds: &[BlockId],
 ) -> Result<Facts<P::Fact>, TrySolveError<P::Error>> {
@@ -380,8 +380,8 @@ pub fn try_solve_problem_from<I, P: TryProblem<I>>(
 ///
 /// Returns [`TrySolveError::Problem`] for a consumer error or
 /// [`TrySolveError::Solver`] when work remains at the configured limit.
-pub fn try_solve_problem_with_config<I, P: TryProblem<I>>(
-    cfg: &Cfg<I>,
+pub fn try_solve_problem_with_config<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
     problem: &P,
     config: SolveConfig,
 ) -> Result<Facts<P::Fact>, TrySolveError<P::Error>> {
@@ -399,8 +399,8 @@ pub fn try_solve_problem_with_config<I, P: TryProblem<I>>(
 ///
 /// Returns [`TrySolveError::Problem`] for a consumer error or
 /// [`TrySolveError::Solver`] when work remains at the configured limit.
-pub fn try_solve_problem_from_with_config<I, P: TryProblem<I>>(
-    cfg: &Cfg<I>,
+pub fn try_solve_problem_from_with_config<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
     problem: &P,
     seeds: &[BlockId],
     config: SolveConfig,
@@ -409,7 +409,7 @@ pub fn try_solve_problem_from_with_config<I, P: TryProblem<I>>(
 }
 
 /// Every reachable block, in the traversal order matching the direction.
-fn reachable_worklist<I, P: TryProblem<I>>(cfg: &Cfg<I>, problem: &P) -> BTreeSet<u32> {
+fn reachable_worklist<I, E, P: TryProblem<I, E>>(cfg: &Cfg<I, E>, problem: &P) -> BTreeSet<u32> {
     match problem.direction() {
         Direction::Forward => cfg
             .reverse_postorder()
@@ -420,7 +420,7 @@ fn reachable_worklist<I, P: TryProblem<I>>(cfg: &Cfg<I>, problem: &P) -> BTreeSe
     }
 }
 
-fn seed_worklist<I>(cfg: &Cfg<I>, seeds: &[BlockId]) -> BTreeSet<u32> {
+fn seed_worklist<I, E>(cfg: &Cfg<I, E>, seeds: &[BlockId]) -> BTreeSet<u32> {
     seeds
         .iter()
         .map(|seed| {
@@ -433,8 +433,8 @@ fn seed_worklist<I>(cfg: &Cfg<I>, seeds: &[BlockId]) -> BTreeSet<u32> {
         .collect()
 }
 
-fn try_solve_with_worklist<I, P: TryProblem<I>>(
-    cfg: &Cfg<I>,
+fn try_solve_with_worklist<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
     problem: &P,
     mut worklist: BTreeSet<u32>,
     config: SolveConfig,
@@ -528,7 +528,7 @@ fn try_solve_with_worklist<I, P: TryProblem<I>>(
 /// Adapter that runs an infallible [`Problem`] on the fallible solver core.
 struct InfallibleProblem<'p, P>(&'p P);
 
-impl<I, P: Problem<I>> TryProblem<I> for InfallibleProblem<'_, P> {
+impl<I, E, P: Problem<I, E>> TryProblem<I, E> for InfallibleProblem<'_, P> {
     type Fact = P::Fact;
     type Error = Infallible;
 
@@ -550,7 +550,7 @@ impl<I, P: Problem<I>> TryProblem<I> for InfallibleProblem<'_, P> {
 
     fn transfer(
         &self,
-        cfg: &Cfg<I>,
+        cfg: &Cfg<I, E>,
         block: BlockId,
         input: &Self::Fact,
     ) -> Result<Self::Fact, Self::Error> {

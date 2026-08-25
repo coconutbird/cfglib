@@ -18,7 +18,7 @@ use crate::cfg::Cfg;
 /// The liveness problem.
 pub struct LivenessProblem;
 
-impl<I: InstrInfo> Problem<I> for LivenessProblem {
+impl<I: InstrInfo, E> Problem<I, E> for LivenessProblem {
     type Fact = BTreeSet<I::Variable>;
 
     fn direction(&self) -> Direction {
@@ -42,7 +42,7 @@ impl<I: InstrInfo> Problem<I> for LivenessProblem {
     ///
     /// Walk the block's instructions in **reverse** to compute the
     /// set of variables live at the block's entry.
-    fn transfer(&self, cfg: &Cfg<I>, block: BlockId, live_out: &Self::Fact) -> Self::Fact {
+    fn transfer(&self, cfg: &Cfg<I, E>, block: BlockId, live_out: &Self::Fact) -> Self::Fact {
         let mut live = live_out.clone();
         let insts = cfg.block(block).instructions();
 
@@ -102,7 +102,7 @@ impl<V: VariableId> Liveness<V> {
     /// Panics only if the unbounded fixpoint solve reports a step-limit
     /// error, which the unbounded configuration cannot produce.
     #[must_use]
-    pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
+    pub fn compute<I: InstrInfo<Variable = V>, E>(cfg: &Cfg<I, E>) -> Self {
         let result = fixpoint::solve_problem(cfg, &LivenessProblem)
             .expect("an unbounded solve cannot exceed a step limit");
         Self { inner: result }
@@ -134,7 +134,10 @@ impl<V: VariableId> Liveness<V> {
 
     /// All variables that are live somewhere in the program.
     #[must_use]
-    pub fn all_live_variables<I: InstrInfo<Variable = V>>(&self, cfg: &Cfg<I>) -> BTreeSet<V> {
+    pub fn all_live_variables<I: InstrInfo<Variable = V>, E>(
+        &self,
+        cfg: &Cfg<I, E>,
+    ) -> BTreeSet<V> {
         let mut all = BTreeSet::new();
         for b in cfg.blocks() {
             all.extend(self.live_in(b.id()).iter().cloned());

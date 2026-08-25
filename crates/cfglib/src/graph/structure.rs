@@ -95,7 +95,7 @@ pub fn find_back_edges<G: DirectedGraphView>(
 /// frontend knows an edge is a loop back-edge even though dominance cannot
 /// prove it.
 #[must_use]
-pub fn find_back_edges_tagged<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackEdge> {
+pub fn find_back_edges_tagged<I, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Vec<BackEdge> {
     let mut backs = find_back_edges(cfg, dom);
     for edge in cfg.edges() {
         if edge.kind() == EdgeKind::Back {
@@ -230,7 +230,7 @@ pub fn detect_loops<G: DirectedGraphView>(
 /// Detect natural loops in a [`Cfg`], honoring explicit
 /// [`EdgeKind::Back`] tags (see [`find_back_edges_tagged`]).
 #[must_use]
-pub fn detect_loops_tagged<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
+pub fn detect_loops_tagged<I, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Vec<NaturalLoop> {
     loops_from_backs(cfg, &find_back_edges_tagged(cfg, dom))
 }
 

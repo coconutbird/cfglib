@@ -65,7 +65,7 @@ struct AbstractProblem<D> {
     _marker: core::marker::PhantomData<D>,
 }
 
-impl<I, D: AbstractDomain<I>> Problem<I> for AbstractProblem<D> {
+impl<I, E, D: AbstractDomain<I>> Problem<I, E> for AbstractProblem<D> {
     type Fact = D;
 
     fn direction(&self) -> Direction {
@@ -84,7 +84,7 @@ impl<I, D: AbstractDomain<I>> Problem<I> for AbstractProblem<D> {
         a.meet(b)
     }
 
-    fn transfer(&self, cfg: &Cfg<I>, block: BlockId, input: &D) -> D {
+    fn transfer(&self, cfg: &Cfg<I, E>, block: BlockId, input: &D) -> D {
         let mut state = input.clone();
         for inst in cfg.block(block).instructions() {
             state = D::transfer(&state, inst);
@@ -104,7 +104,7 @@ impl<I, D: AbstractDomain<I>> Problem<I> for AbstractProblem<D> {
 /// Panics only if the unbounded fixpoint solve reports a step-limit error,
 /// which the unbounded configuration cannot produce.
 #[must_use]
-pub fn abstract_interpret<I, D: AbstractDomain<I>>(cfg: &Cfg<I>) -> AbstractFacts<D> {
+pub fn abstract_interpret<I, E, D: AbstractDomain<I>>(cfg: &Cfg<I, E>) -> AbstractFacts<D> {
     let problem = AbstractProblem::<D> {
         _marker: core::marker::PhantomData,
     };

@@ -53,8 +53,8 @@ fn update_value<V: VariableId, C: Clone + Eq>(
     }
 }
 
-fn evaluate_block<I: ConstantFolder>(
-    cfg: &Cfg<I>,
+fn evaluate_block<I: ConstantFolder, E>(
+    cfg: &Cfg<I, E>,
     ssa: &SsaForm<I::Variable>,
     block: BlockId,
     values: &mut BTreeMap<SsaValue<I::Variable>, ConstValue<I::Const>>,
@@ -129,7 +129,7 @@ impl<V: VariableId, C: Clone + Eq> SccpAnalysis<V, C> {
     /// adapter exposes reachability but not branch predicates, so SCCP
     /// conservatively marks every successor of a reachable block executable.
     #[must_use]
-    pub fn compute<I>(cfg: &Cfg<I>, ssa: &SsaForm<V>) -> Self
+    pub fn compute<I, E>(cfg: &Cfg<I, E>, ssa: &SsaForm<V>) -> Self
     where
         I: ConstantFolder<Const = C> + InstrInfo<Variable = V>,
     {

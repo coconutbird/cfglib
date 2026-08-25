@@ -25,7 +25,7 @@ pub struct ReachingDef<V> {
 /// The reaching definitions problem.
 pub struct ReachingDefsProblem;
 
-impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
+impl<I: InstrInfo, E> Problem<I, E> for ReachingDefsProblem {
     type Fact = BTreeSet<ReachingDef<I::Variable>>;
 
     fn direction(&self) -> Direction {
@@ -44,7 +44,7 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
         a.union(b).cloned().collect()
     }
 
-    fn transfer(&self, cfg: &Cfg<I>, block: BlockId, input: &Self::Fact) -> Self::Fact {
+    fn transfer(&self, cfg: &Cfg<I, E>, block: BlockId, input: &Self::Fact) -> Self::Fact {
         let mut out = input.clone();
         let insts = cfg.block(block).instructions();
 
@@ -113,7 +113,7 @@ impl<V: VariableId> ReachingDefs<V> {
     /// Panics only if the unbounded fixpoint solve reports a step-limit
     /// error, which the unbounded configuration cannot produce.
     #[must_use]
-    pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
+    pub fn compute<I: InstrInfo<Variable = V>, E>(cfg: &Cfg<I, E>) -> Self {
         let result = fixpoint::solve_problem(cfg, &ReachingDefsProblem)
             .expect("an unbounded solve cannot exceed a step limit");
         Self { inner: result }
