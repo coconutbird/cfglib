@@ -29,7 +29,7 @@ impl DominanceFrontiers {
     /// Compute dominance frontiers using the algorithm from Cooper, Harvey,
     /// and Kennedy.
     #[must_use]
-    pub fn compute<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Self {
+    pub fn compute<I, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Self {
         let mut frontiers = vec![BTreeSet::new(); cfg.block_count()];
 
         for block in cfg.blocks() {
@@ -112,7 +112,7 @@ impl<V> PhiPlacements<V> {
     /// required (and see its precondition: the entry block must not be a
     /// branch target).
     #[must_use]
-    pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>, dom: &DominatorTree) -> Self
+    pub fn compute<I: InstrInfo<Variable = V>, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Self
     where
         V: VariableId,
     {
@@ -320,8 +320,8 @@ fn fresh_value<V: VariableId>(
     SsaValue::new(variable.clone(), *version)
 }
 
-fn create_drafts<I: InstrInfo>(
-    cfg: &Cfg<I>,
+fn create_drafts<I: InstrInfo, E>(
+    cfg: &Cfg<I, E>,
     placements: &PhiPlacements<I::Variable>,
 ) -> Vec<BlockDraft<I::Variable>> {
     cfg.blocks()
@@ -342,8 +342,8 @@ fn create_drafts<I: InstrInfo>(
         .collect()
 }
 
-fn rename_block<I: InstrInfo>(
-    cfg: &Cfg<I>,
+fn rename_block<I: InstrInfo, E>(
+    cfg: &Cfg<I, E>,
     block: BlockId,
     drafts: &mut [BlockDraft<I::Variable>],
     stacks: &mut BTreeMap<I::Variable, Vec<SsaValue<I::Variable>>>,
@@ -393,8 +393,8 @@ fn rename_block<I: InstrInfo>(
     pushed_variables
 }
 
-fn rename_drafts<I: InstrInfo>(
-    cfg: &Cfg<I>,
+fn rename_drafts<I: InstrInfo, E>(
+    cfg: &Cfg<I, E>,
     dom: &DominatorTree,
     drafts: &mut [BlockDraft<I::Variable>],
     max_versions: &mut BTreeMap<I::Variable, SsaVersion>,
@@ -499,7 +499,7 @@ impl<V: VariableId> SsaForm<V> {
     /// ([`insert_preheader`](crate::insert_preheader) /
     /// [`split_block`](crate::Cfg::split_block)).
     #[must_use]
-    pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>, dom: &DominatorTree) -> Self {
+    pub fn compute<I: InstrInfo<Variable = V>, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Self {
         let placements = PhiPlacements::compute(cfg, dom);
         let mut drafts = create_drafts(cfg, &placements);
         let mut max_versions = BTreeMap::new();
@@ -545,6 +545,30 @@ mod tests {
         let placements = PhiPlacements::compute(&cfg, &dom);
         assert_eq!(placements.len(), 1);
         assert_eq!(placements.at(merge)[0].variable, 0);
+    }
+
+    #[test]
+    fn edge_payloads_are_preserved_while_computing_ssa() {
+        let mut cfg = Cfg::<DfInst, &'static str>::with_edge_payload();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        let merge = cfg.new_block();
+        cfg.add_edge_with_payload(cfg.entry(), left, EdgeKind::ConditionalTrue, "left");
+        cfg.add_edge_with_payload(cfg.entry(), right, EdgeKind::ConditionalFalse, "right");
+        cfg.add_edge_with_payload(left, merge, EdgeKind::Fallthrough, "left-merge");
+        cfg.add_edge_with_payload(right, merge, EdgeKind::Fallthrough, "right-merge");
+        cfg.block_mut(left).push(df_def("left", 0));
+        cfg.block_mut(right).push(df_def("right", 0));
+        cfg.block_mut(merge).push(df_use("merged", 0));
+
+        let dom = DominatorTree::compute(&cfg);
+        let ssa = SsaForm::compute(&cfg, &dom);
+
+        assert_eq!(ssa.block(merge).phis.len(), 1);
+        assert_eq!(
+            cfg.edges().map(|edge| *edge.payload()).collect::<Vec<_>>(),
+            ["left", "right", "left-merge", "right-merge"]
+        );
     }
 
     #[test]
