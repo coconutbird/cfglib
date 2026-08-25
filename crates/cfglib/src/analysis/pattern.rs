@@ -14,7 +14,7 @@ use crate::cfg::Cfg;
 use crate::edge::EdgeKind;
 use crate::graph::view::DirectedGraphView;
 
-/// A recognised structural pattern, over node identity `N`.
+/// A recognized structural pattern, over node identity `N`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CfgPattern<N = BlockId> {
     /// Diamond: entry branches to two arms that reconverge at merge.
@@ -73,7 +73,6 @@ pub fn detect_patterns<G: DirectedGraphView>(graph: &G) -> Vec<CfgPattern<G::Nod
     for bid in graph.node_ids() {
         let succs: Vec<G::NodeId> = graph.successors(bid).collect();
 
-        // Self-loop detection.
         if succs.contains(&bid) {
             patterns.push(CfgPattern::SelfLoop { block: bid });
         }
@@ -125,7 +124,6 @@ pub fn detect_patterns<G: DirectedGraphView>(graph: &G) -> Vec<CfgPattern<G::Nod
             }
             start = ps[0];
         }
-        // Walk forward to collect the chain.
         let mut chain = alloc::vec![start];
         visited.insert(start);
         let mut cur = start;
@@ -169,8 +167,10 @@ pub fn detect_cfg_patterns<I>(cfg: &Cfg<I>) -> Vec<CfgPattern> {
             let true_target = cfg.successor_edges(*entry).iter().find_map(|&eid| {
                 (cfg.edge(eid).kind() == EdgeKind::ConditionalTrue).then(|| cfg.edge(eid).target())
             });
-            if true_target == Some(arms[1]) {
-                arms.swap(0, 1);
+            if let Some(target) = true_target {
+                if arms[1] == target {
+                    arms.swap(0, 1);
+                }
             }
         }
     }
@@ -199,12 +199,10 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         let merge = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("br"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(merge).instructions_vec_mut().push(ff("m"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("br"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
+        cfg.block_mut(merge).instructions_mut().push(ff("m"));
         // Wire false first so orientation genuinely reorders.
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
@@ -249,7 +247,7 @@ mod tests {
     fn detects_self_loop() {
         let mut cfg = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("loop"));
         cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
         let pats = detect_patterns(&cfg);

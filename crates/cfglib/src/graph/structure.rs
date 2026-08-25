@@ -47,7 +47,7 @@ pub struct BackEdge<N = BlockId> {
 /// The result is deduplicated: parallel edges between the same pair
 /// appear once. For [`Cfg`]s whose builders also tag explicit
 /// [`EdgeKind::Back`] edges, [`find_back_edges_tagged`] additionally
-/// honours the tags.
+/// honors the tags.
 ///
 /// # Examples
 ///
@@ -88,14 +88,14 @@ pub fn find_back_edges<G: DirectedGraphView>(
     backs
 }
 
-/// Find back-edges in a [`Cfg`], honouring explicit [`EdgeKind::Back`] tags.
+/// Find back-edges in a [`Cfg`], honoring explicit [`EdgeKind::Back`] tags.
 ///
 /// The union of [`find_back_edges`]'s dominance-based detection and the
 /// builder's tags. The tags matter on irreducible machine CFGs where a
 /// frontend knows an edge is a loop back-edge even though dominance cannot
 /// prove it.
 #[must_use]
-pub fn find_back_edges_tagged<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BackEdge> {
+pub fn find_back_edges_tagged<I, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Vec<BackEdge> {
     let mut backs = find_back_edges(cfg, dom);
     for edge in cfg.edges() {
         if edge.kind() == EdgeKind::Back {
@@ -194,10 +194,10 @@ fn loops_from_backs<G: DirectedGraphView>(
 /// [`NaturalLoop`] with multiple latches.
 ///
 /// **Dominance-based only.** Unlike the pre-substrate function of the same
-/// name, this does NOT honour explicit [`EdgeKind::Back`] tags — a tagged
+/// name, this does NOT honor explicit [`EdgeKind::Back`] tags — a tagged
 /// back-edge whose target does not dominate its source (an irreducible
 /// machine CFG) is invisible here. [`Cfg`] callers wanting tag recall use
-/// [`detect_loops_tagged`], as [`cfg_metrics`](crate::cfg_metrics) and
+/// [`detect_loops_tagged`], as [`CfgMetrics::compute`](crate::CfgMetrics::compute) and
 /// [`cfg_block_nesting_depths`](crate::cfg_block_nesting_depths) do.
 ///
 /// # Examples
@@ -227,10 +227,10 @@ pub fn detect_loops<G: DirectedGraphView>(
     loops_from_backs(graph, &find_back_edges(graph, dom))
 }
 
-/// Detect natural loops in a [`Cfg`], honouring explicit
+/// Detect natural loops in a [`Cfg`], honoring explicit
 /// [`EdgeKind::Back`] tags (see [`find_back_edges_tagged`]).
 #[must_use]
-pub fn detect_loops_tagged<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<NaturalLoop> {
+pub fn detect_loops_tagged<I, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Vec<NaturalLoop> {
     loops_from_backs(cfg, &find_back_edges_tagged(cfg, dom))
 }
 
@@ -294,8 +294,6 @@ pub(crate) fn find_irreducible_entry<G: RootedGraphView>(
     }
     None
 }
-
-// ── Loop canonicalization ───────────────────────────────────────────
 
 /// Information about a canonicalized loop.
 #[derive(Debug, Clone)]
@@ -373,7 +371,7 @@ pub fn loop_exit_blocks<G: DirectedGraphView>(
 /// Canonicalize all loops: insert preheaders and identify exits.
 ///
 /// Uses [`detect_loops_tagged`], so explicit [`EdgeKind::Back`] tags are
-/// honoured.
+/// honored.
 pub fn canonicalize_loops<I: Clone>(cfg: &mut Cfg<I>, dom: &DominatorTree) -> Vec<CanonicalLoop> {
     let loops = detect_loops_tagged(cfg, dom);
     let mut result = Vec::new();

@@ -1,74 +1,93 @@
 # Performance benchmark
 
-`performance.rs` is the crate root for a synthetic benchmark whose support
-modules live in `performance/`. It has two deliberately separate build modes
-so allocation instrumentation cannot perturb the CPU numbers used for
-comparisons.
+`performance/main.rs` is the crate root for a dependency-free synthetic
+benchmark; its support modules live beside it. The harness has separate CPU
+and allocation builds so allocator instrumentation cannot perturb timing
+results.
 
-The latest local before/after matrix, retained changes, tradeoffs, and rejected
-experiments are recorded in [RESULTS.md](RESULTS.md).
+The latest local comparison and its measurement limits are recorded in
+[RESULTS.md](RESULTS.md).
 
-## CPU timing (default)
+## Adding a benchmark
+
+Every case is registered through `benchmark_case!`, which keeps the operation,
+its semantic oracle, and the public facade functions it measures together:
+
+```rust,ignore
+benchmark_case!(
+    suite,
+    "api_topological_sort",
+    covers [topological_sort],
+    || topological_sort(&graph),
+    |order: &Option<Vec<_>>| assert_eq!(order.as_ref().map(Vec::len), Some(node_count)),
+);
+```
+
+The `covers` list can contain several exact aliases that share the measured
+implementation. `benchmark_coverage!` attaches an alias family to an existing
+case when the case lives in the original hot-path registry. `BenchmarkSuite`
+rejects duplicate case names, duplicate API assignments, unknown API names,
+filters that select nothing, and any public facade function without coverage.
+The operation's oracle always runs before measurement.
+
+API-focused cases are split by responsibility under
+`performance/api_cases/`; reusable instruction and graph fixtures live in
+their sibling fixture modules. Add a focused case to the appropriate module
+instead of extending `main.rs`. The `PUBLIC_API_FUNCTIONS` inventory covers
+all 132 root-level free functions re-exported by `lib.rs`; the repository
+policy check derives that set from the facade and fails if the inventory is
+stale. Constructors, accessors, and associated analysis entry points are
+exercised by the workloads but are not individually timed as facade
+functions.
+
+## CPU timing
 
 The default build installs `std::alloc::System` directly as the global
-allocator. There is no counting wrapper or atomic operation on allocation
-paths in this binary.
+allocator. From the workspace root in PowerShell:
 
-On Linux, pinning both runs to the same otherwise-idle core makes comparisons
-less noisy:
-
-```sh
-env -u RUSTFLAGS -u CARGO_ENCODED_RUSTFLAGS \
-  CFGLIB_BENCH_MS=300 taskset -c 2 \
-  cargo bench -p cfglib --locked --bench performance -- cfg_dominators
+```powershell
+$env:CFGLIB_BENCH_MS = "300"
+cargo bench -p cfglib --bench performance -- cfg_dominators
+Remove-Item Env:CFGLIB_BENCH_MS
 ```
 
-The final argument is an optional substring filter. Remove
-`cfg_dominators` to run every case. A nonempty filter that matches no case
-fails with status 2 instead of producing an empty successful run.
-`CFGLIB_BENCH_MS` is the minimum duration of each timing sample and defaults
-to 75 ms; zero, non-integer, and non-UTF-8 values also fail with status 2.
+The final argument is an optional substring filter. Remove `cfg_dominators` to
+run every case. A nonempty filter that matches no case fails instead of
+silently producing an empty run. `CFGLIB_BENCH_MS` controls the minimum duration
+of each timing sample and defaults to 75 ms.
 
-Before measurement, every selected operation runs once and its complete result
-is checked by a case-specific semantic oracle. The harness then calibrates an
-iteration count to reach the target duration, runs seven timing samples, and
-prints the median and minimum nanoseconds per operation. Analysis fixtures are
-constructed before timing; cases whose names contain `build` intentionally
-measure construction. Every measured operation returns its complete result,
-which the harness passes through `black_box` and then drops inside the measured
-iteration.
+Before timing, every selected operation runs once and a case-specific semantic
+oracle checks its complete result. The harness then calibrates an iteration
+count, runs seven samples, and prints the median and minimum nanoseconds per
+operation. Analysis fixtures are constructed before timing; cases containing
+`build` intentionally measure construction.
 
 Mutation cases clone their fixture inside the measured operation and return the
-complete mutated CFG together with any scalar status. Their names therefore use
-`clone_…`, and adjacent clone-only controls expose setup cost; they are not
-transform-only measurements.
+complete mutated CFG with any scalar status. The original hot-path cases name
+that setup with `clone` and include adjacent clone-only controls. API coverage
+cases also clone before mutation so repeated iterations remain independent;
+interpret their result as clone-plus-operation cost.
 
-## Allocation pressure (instrumented build)
+## Allocation pressure
 
-Rebuild the benchmark with its local allocation cfg enabled:
+Rebuild the benchmark with its local allocation configuration enabled:
 
-```sh
-env -u CARGO_ENCODED_RUSTFLAGS \
-  RUSTFLAGS='--cfg cfglib_bench_alloc' \
-  taskset -c 2 \
-  cargo bench -p cfglib --locked --bench performance -- cfg_dominators
+```powershell
+$env:RUSTFLAGS = "--cfg cfglib_bench_alloc"
+cargo bench -p cfglib --bench performance -- cfg_dominators
+Remove-Item Env:RUSTFLAGS
 ```
 
-This mode wraps `System` and prints three additional per-operation fields:
+This mode wraps `System` and reports three per-operation fields:
 
 - `allocs`: successful allocations and reallocations;
-- `bytes`: total requested allocation bytes, counting a reallocation's full
-  new requested size;
-- `peak`: maximum incremental live requested bytes above the pre-operation
-  baseline.
+- `bytes`: total requested bytes, including a reallocation's full new size;
+- `peak`: maximum incremental live requested bytes above the operation's
+  starting point.
 
-The instrumented binary tracks live bytes continuously and verifies that each
-measured operation returns to its starting live-byte baseline. The figures are
-allocator requests, not process RSS, and do not include allocator metadata or
-fragmentation.
-
-Allocation mode runs the semantic oracle before enabling counters, then
-performs one additional unmeasured warm-up operation followed by one measured
-operation. It does not report CPU timing because every allocator call in this
-build passes through the counting wrapper. Pair its allocation results with
-default-mode CPU results from the same benchmark case and revision.
+The instrumented binary checks that each operation returns to its starting
+live-byte baseline. These figures describe allocator requests, not process RSS,
+and exclude allocator metadata and fragmentation. Allocation mode runs the
+semantic oracle before enabling counters, performs an unmeasured warm-up, and
+then measures one operation. Pair these results with CPU-mode timing from the
+same case and revision.

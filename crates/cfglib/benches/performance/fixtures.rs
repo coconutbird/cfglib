@@ -3,6 +3,18 @@ use super::{
     FlowControl, FlowEffect, InstrInfo, NodeId, NodeProblem, Problem, ValueNumberInfo,
 };
 
+pub(super) fn fixture_u32(value: usize) -> u32 {
+    u32::try_from(value).expect("benchmark fixture index must fit in u32")
+}
+
+fn fixture_u64(value: usize) -> u64 {
+    u64::try_from(value).expect("benchmark fixture index must fit in u64")
+}
+
+pub(super) fn fixture_f64(value: usize) -> f64 {
+    f64::from(fixture_u32(value))
+}
+
 pub(super) fn branchy_cfg(node_count: usize) -> Cfg<u32> {
     assert!(node_count > 0);
     let mut cfg = Cfg::new();
@@ -12,8 +24,9 @@ pub(super) fn branchy_cfg(node_count: usize) -> Cfg<u32> {
         nodes.push(cfg.new_block());
     }
     for (index, &node) in nodes.iter().enumerate() {
-        cfg.block_mut(node).push(index as u32);
-        cfg.block_mut(node).push((index as u32).wrapping_mul(17));
+        let index = fixture_u32(index);
+        cfg.block_mut(node).push(index);
+        cfg.block_mut(node).push(index.wrapping_mul(17));
     }
     for index in 0..node_count - 1 {
         cfg.add_edge(nodes[index], nodes[index + 1], EdgeKind::Fallthrough);
@@ -61,7 +74,7 @@ pub(super) fn linear_cfg(node_count: usize) -> Cfg<u32> {
     cfg.block_mut(previous).push(0);
     for index in 1..node_count {
         let next = cfg.new_block();
-        cfg.block_mut(next).push(index as u32);
+        cfg.block_mut(next).push(fixture_u32(index));
         cfg.add_edge(previous, next, EdgeKind::Fallthrough);
         previous = next;
     }
@@ -75,7 +88,7 @@ pub(super) fn many_exit_cfg(exit_count: usize) -> Cfg<u32> {
     cfg.block_mut(entry).push(0);
     for index in 0..exit_count {
         let exit = cfg.new_block();
-        cfg.block_mut(exit).push((index + 1) as u32);
+        cfg.block_mut(exit).push(fixture_u32(index + 1));
         cfg.add_edge(entry, exit, EdgeKind::SwitchCase);
     }
     cfg
@@ -90,7 +103,7 @@ pub(super) fn empty_chain_cfg(node_count: usize) -> Cfg<u32> {
         cfg.add_edge(previous, next, EdgeKind::Fallthrough);
         previous = next;
         if index + 1 == node_count {
-            cfg.block_mut(next).push(index as u32);
+            cfg.block_mut(next).push(fixture_u32(index));
         }
     }
     cfg
@@ -123,7 +136,7 @@ pub(super) fn weighted_high_fan_out_cfg(edge_count: usize) -> (Cfg<u32>, BlockId
         } else {
             EdgeKind::ConditionalFalse
         };
-        cfg.add_weighted_edge(target, sink, kind, index as f64 + 0.25);
+        cfg.add_weighted_edge(target, sink, kind, fixture_f64(index) + 0.25);
     }
     cfg.add_weighted_edge(target, source, EdgeKind::Back, 0.875);
     (cfg, source, target)
@@ -154,7 +167,7 @@ pub(super) fn weighted_irreducible_cfg() -> Cfg<u32> {
     let second = cfg.new_block();
     let exit = cfg.new_block();
     for (index, block) in [entry, first, second, exit].into_iter().enumerate() {
-        cfg.block_mut(block).push(index as u32);
+        cfg.block_mut(block).push(fixture_u32(index));
     }
 
     cfg.add_edge(entry, first, EdgeKind::ConditionalTrue);
@@ -324,9 +337,9 @@ impl ConstantFolder for ConstantInst {
 }
 
 impl ValueNumberInfo for ConstantInst {
-    type Operation = u64;
+    type Operator = u64;
 
-    fn operation(&self) -> u64 {
+    fn operator(&self) -> u64 {
         self.value
     }
 
@@ -337,7 +350,7 @@ impl ValueNumberInfo for ConstantInst {
 
 pub(super) fn independent_constants(instruction_count: usize) -> Cfg<ConstantInst> {
     let mut cfg = Cfg::new();
-    for variable in 0..instruction_count as u32 {
+    for variable in 0..fixture_u32(instruction_count) {
         cfg.block_mut(cfg.entry()).push(ConstantInst {
             defs: vec![variable],
             uses: Vec::new(),
@@ -354,7 +367,7 @@ pub(super) fn linear_constants(block_count: usize) -> Cfg<ConstantInst> {
         cfg.block_mut(block).push(ConstantInst {
             defs: vec![0],
             uses: Vec::new(),
-            value: index as u64,
+            value: fixture_u64(index),
         });
         if index + 1 < block_count {
             let next = cfg.new_block();
@@ -376,12 +389,12 @@ pub(super) fn phi_storm_cfg(layer_count: usize, variable_count: usize) -> Cfg<Co
         cfg.add_edge(branch, right, EdgeKind::ConditionalFalse);
         cfg.add_edge(left, merge, EdgeKind::Fallthrough);
         cfg.add_edge(right, merge, EdgeKind::Fallthrough);
-        for variable in 0..variable_count as u32 {
+        for variable in 0..fixture_u32(variable_count) {
             for block in [left, right] {
                 cfg.block_mut(block).push(ConstantInst {
                     defs: vec![variable],
                     uses: Vec::new(),
-                    value: ((layer as u64) << 32) | u64::from(variable),
+                    value: (fixture_u64(layer) << 32) | u64::from(variable),
                 });
             }
         }

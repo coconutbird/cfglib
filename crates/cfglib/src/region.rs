@@ -28,8 +28,10 @@
 //! `return`, `goto`) and every unwind through one shared cleanup block, and
 //! registers a filtered `catch` (C# `when`) as a plain [`HandlerKind::Catch`]
 //! because the predicate sits in the pad rather than in a funclet of its own.
-//! Both shapes are answered here, and both are **additive**: [`Region`] and
-//! [`Handler`] are unchanged, so existing frontends keep compiling.
+//! Both shapes are answered here. Handler-body completeness is modeled
+//! independently through [`HandlerBody`]: source and normalized native
+//! frontends can provide an exact block set, while table-driven formats that
+//! encode only a handler entry can say that the remaining extent is unknown.
 //!
 //! - [`Cleanup`] records what a cleanup handler does once its body ends: the
 //!   block it resumes from and the [`Continuation`]s it selects among, each
@@ -40,10 +42,11 @@
 //!   Continuations are library-typed ([`BlockId`] plus a reason), so the
 //!   [`Cfg`] owns them: [`Cfg::add_continuation`], [`Cfg::set_cleanup_resume`],
 //!   [`Cfg::cleanup`].
-//! - [`HandlerFilters`] carries the filter *predicate identity* a frontend
-//!   already has (a syntax node, an interned expression, a type id) beside the
-//!   CFG. It is a side table rather than a field or a type parameter, so no
-//!   consumer type escapes into [`Cfg`]'s signature.
+//! - [`HandlerMetadata`] carries consumer-owned handler data — for example a
+//!   filter predicate identity or a CLR catch-type token — beside the CFG.
+//!   [`HandlerFilters`] and [`HandlerTypes`] are descriptive aliases for the
+//!   two common uses. It is a side table rather than a field or a type
+//!   parameter, so no consumer type escapes into [`Cfg`]'s signature.
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
@@ -59,21 +62,27 @@ use crate::cfg::Cfg;
 pub struct RegionId(pub(crate) u32);
 
 impl RegionId {
-    pub(crate) fn from_index(index: usize) -> Self {
+    /// Create a `RegionId` from a dense zero-based index.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `index` exceeds `u32::MAX`.
+    #[must_use]
+    pub fn from_index(index: usize) -> Self {
         Self(u32::try_from(index).expect("region index exceeds u32::MAX"))
     }
 
     /// Create a `RegionId` from a raw index.
     #[inline]
     #[must_use]
-    pub fn from_raw(raw: u32) -> Self {
+    pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
     /// Returns the raw index.
     #[inline]
     #[must_use]
-    pub fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         self.0 as usize
     }
 }
@@ -104,17 +113,76 @@ pub struct Region {
 pub struct Handler {
     /// Entry block of the handler.
     pub entry: BlockId,
-    /// All blocks in the handler body.
-    pub body: BTreeSet<BlockId>,
+    /// Whether the complete handler body is known, and its blocks when it is.
+    pub body: HandlerBody,
     /// The handler classification.
     pub kind: HandlerKind,
 }
 
-/// Classification of an exception handler.
+/// Completeness of an exception handler's block extent.
+///
+/// Exception tables commonly identify the protected range and handler entry
+/// without encoding where the handler body ends. Keeping that state distinct
+/// from an empty body prevents consumers from treating a guessed extent as
+/// lossless metadata.
+///
+/// With the `serde` feature, this serializes as an externally tagged enum
+/// (`{"Known":[…]}` / `"Unknown"`); snapshots that stored a handler body as
+/// a plain block sequence predate this type and no longer deserialize.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HandlerBody {
+    /// Only the handler entry is known; the complete body extent is not.
+    Unknown,
+    /// The complete set of blocks belonging to the handler.
+    Known(BTreeSet<BlockId>),
+}
+
+impl HandlerBody {
+    /// Construct a handler body whose complete extent is unavailable.
+    #[inline]
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self::Unknown
+    }
+
+    /// Construct a complete handler body from its blocks.
+    #[must_use]
+    pub fn known(blocks: impl IntoIterator<Item = BlockId>) -> Self {
+        Self::Known(blocks.into_iter().collect())
+    }
+
+    /// Return the complete block set, or `None` when its extent is unknown.
+    #[inline]
+    #[must_use]
+    pub const fn blocks(&self) -> Option<&BTreeSet<BlockId>> {
+        match self {
+            Self::Unknown => None,
+            Self::Known(blocks) => Some(blocks),
+        }
+    }
+
+    /// Whether the complete block extent is known.
+    #[inline]
+    #[must_use]
+    pub const fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+}
+
+impl From<BTreeSet<BlockId>> for HandlerBody {
+    fn from(blocks: BTreeSet<BlockId>) -> Self {
+        Self::Known(blocks)
+    }
+}
+
+/// Classification of an exception handler.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum HandlerKind {
     /// Catch handler — catches a specific exception type.
+    ///
+    /// Frontends retain their type token in a [`HandlerTypes`] side table.
     Catch,
     /// Catch-all handler — catches any exception.
     CatchAll,
@@ -167,7 +235,7 @@ impl HandlerRef {
     /// The handler's position in [`Region::handlers`].
     #[inline]
     #[must_use]
-    pub fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         self.handler as usize
     }
 }
@@ -245,7 +313,7 @@ impl Cleanup {
     }
 }
 
-/// Consumer-typed filter payloads for handlers, keyed by [`HandlerRef`].
+/// Consumer-owned metadata for handlers, keyed by [`HandlerRef`].
 ///
 /// [`HandlerKind::Filter`] names a *block* holding the predicate, which fits
 /// bytecode where a filter is its own funclet. Source lowerings frequently
@@ -255,14 +323,17 @@ impl Cleanup {
 /// predicate in the frontend's own world — a syntax-node id, an interned
 /// expression, a caught type, a bitmask. That payload is therefore consumer
 /// DATA rather than a library type, and it is orthogonal to
-/// [`HandlerKind`]: any handler may carry one.
+/// [`HandlerKind`]: any handler may carry one. The same table also carries a
+/// CLR catch-type token without forcing that token's type into [`Handler`] or
+/// [`Cfg`]. Use the [`HandlerFilters`] and [`HandlerTypes`] aliases when the
+/// role should be explicit at a call site.
 ///
 /// It is a **side table** and not a field or a type parameter on
 /// [`Handler`] on purpose. A `Handler<F>` would force `Region<F>` and
 /// `Cfg<I, F>`, infecting every algorithm signature in the crate, and a new
 /// field would break every existing struct-literal construction. A separate
 /// table keeps [`Cfg`] object-simple, keeps existing frontends compiling, and
-/// is dropped by consumers that have no filters at all.
+/// is dropped by consumers that have no handler metadata at all.
 ///
 /// Storage is a sorted `Vec` of pairs rather than a map: `serde` renders it
 /// as a sequence, so it survives formats that only admit string map keys,
@@ -279,19 +350,19 @@ impl Cleanup {
 /// let mut filters = HandlerFilters::new();
 /// assert!(filters.set(handler, "expr#17").is_none());
 ///
-/// assert_eq!(filters.get(handler), Some(&"expr#17"));
+/// assert_eq!(filters.metadata(handler), Some(&"expr#17"));
 /// assert_eq!(filters.len(), 1);
 /// // Re-registering returns the payload it replaced.
 /// assert_eq!(filters.set(handler, "expr#18"), Some("expr#17"));
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct HandlerFilters<F> {
+pub struct HandlerMetadata<M> {
     /// Sorted by key, so lookups binary-search and iteration is stable.
-    entries: Vec<(HandlerRef, F)>,
+    entries: Vec<(HandlerRef, M)>,
 }
 
-impl<F> HandlerFilters<F> {
+impl<M> HandlerMetadata<M> {
     /// An empty table.
     #[must_use]
     pub const fn new() -> Self {
@@ -300,20 +371,20 @@ impl<F> HandlerFilters<F> {
         }
     }
 
-    /// Attach `filter` to `handler`, returning the payload it replaced.
-    pub fn set(&mut self, handler: HandlerRef, filter: F) -> Option<F> {
+    /// Attach `metadata` to `handler`, returning the payload it replaced.
+    pub fn set(&mut self, handler: HandlerRef, metadata: M) -> Option<M> {
         match self.entries.binary_search_by_key(&handler, |(key, _)| *key) {
-            Ok(at) => Some(core::mem::replace(&mut self.entries[at].1, filter)),
+            Ok(at) => Some(core::mem::replace(&mut self.entries[at].1, metadata)),
             Err(at) => {
-                self.entries.insert(at, (handler, filter));
+                self.entries.insert(at, (handler, metadata));
                 None
             }
         }
     }
 
-    /// The filter payload attached to `handler`, if any.
+    /// The metadata attached to `handler`, if any.
     #[must_use]
-    pub fn get(&self, handler: HandlerRef) -> Option<&F> {
+    pub fn metadata(&self, handler: HandlerRef) -> Option<&M> {
         let at = self
             .entries
             .binary_search_by_key(&handler, |(key, _)| *key)
@@ -321,8 +392,8 @@ impl<F> HandlerFilters<F> {
         Some(&self.entries[at].1)
     }
 
-    /// Mutable access to the filter payload attached to `handler`.
-    pub fn get_mut(&mut self, handler: HandlerRef) -> Option<&mut F> {
+    /// Mutable access to the metadata attached to `handler`.
+    pub fn metadata_mut(&mut self, handler: HandlerRef) -> Option<&mut M> {
         let at = self
             .entries
             .binary_search_by_key(&handler, |(key, _)| *key)
@@ -330,8 +401,8 @@ impl<F> HandlerFilters<F> {
         Some(&mut self.entries[at].1)
     }
 
-    /// Detach and return the filter payload attached to `handler`.
-    pub fn remove(&mut self, handler: HandlerRef) -> Option<F> {
+    /// Detach and return the metadata attached to `handler`.
+    pub fn remove(&mut self, handler: HandlerRef) -> Option<M> {
         let at = self
             .entries
             .binary_search_by_key(&handler, |(key, _)| *key)
@@ -339,29 +410,35 @@ impl<F> HandlerFilters<F> {
         Some(self.entries.remove(at).1)
     }
 
-    /// The number of handlers carrying a filter.
+    /// The number of handlers carrying metadata.
     #[must_use]
     pub fn len(&self) -> usize {
         self.entries.len()
     }
 
-    /// Whether no handler carries a filter.
+    /// Whether no handler carries metadata.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Iterate over every `(handler, filter)` pair in handler order.
-    pub fn iter(&self) -> impl Iterator<Item = (HandlerRef, &F)> {
-        self.entries.iter().map(|(key, filter)| (*key, filter))
+    /// Iterate over every `(handler, metadata)` pair in handler order.
+    pub fn iter(&self) -> impl Iterator<Item = (HandlerRef, &M)> {
+        self.entries.iter().map(|(key, metadata)| (*key, metadata))
     }
 }
 
-impl<F> Default for HandlerFilters<F> {
+impl<M> Default for HandlerMetadata<M> {
     fn default() -> Self {
         Self::new()
     }
 }
+
+/// Handler metadata used as a filter-predicate side table.
+pub type HandlerFilters<F> = HandlerMetadata<F>;
+
+/// Handler metadata used as a caught-type side table.
+pub type HandlerTypes<T> = HandlerMetadata<T>;
 
 /// Precomputed innermost-protecting-region lookup.
 ///
@@ -377,12 +454,12 @@ pub struct RegionIndex {
 }
 
 impl RegionIndex {
-    /// Build the index from a CFG's current regions.
+    /// Compute the index from a CFG's current regions.
     ///
-    /// The index is a snapshot: rebuild after adding regions or blocks.
+    /// The index is a snapshot: recompute after adding regions or blocks.
     #[must_use]
-    pub fn build<I>(cfg: &Cfg<I>) -> Self {
-        let mut innermost = vec![None; cfg.num_blocks()];
+    pub fn compute<I>(cfg: &Cfg<I>) -> Self {
+        let mut innermost = vec![None; cfg.block_count()];
         for region in cfg.regions() {
             for &block in &region.protected_blocks {
                 if let Some(slot) = innermost.get_mut(block.index()) {
@@ -410,6 +487,24 @@ mod tests {
 
     fn block_set(ids: &[u32]) -> BTreeSet<BlockId> {
         ids.iter().map(|&i| BlockId::from_raw(i)).collect()
+    }
+
+    #[cfg(feature = "serde")]
+    #[test]
+    fn handler_body_serde_form_is_pinned() {
+        let known = HandlerBody::known([BlockId::from_raw(1), BlockId::from_raw(2)]);
+        let json = serde_json::to_string(&known).expect("serialization cannot fail");
+        assert_eq!(json, r#"{"Known":[1,2]}"#);
+        let round_tripped: HandlerBody =
+            serde_json::from_str(&json).expect("the pinned form deserializes");
+        assert_eq!(round_tripped, known);
+
+        let unknown = HandlerBody::unknown();
+        let json = serde_json::to_string(&unknown).expect("serialization cannot fail");
+        assert_eq!(json, r#""Unknown""#);
+        let round_tripped: HandlerBody =
+            serde_json::from_str(&json).expect("the pinned form deserializes");
+        assert_eq!(round_tripped, unknown);
     }
 
     #[test]
@@ -466,7 +561,7 @@ mod tests {
         assert!(cfg.protecting_region(b3).is_none());
 
         // The precomputed index agrees with the linear scan everywhere.
-        let index = RegionIndex::build(&cfg);
+        let index = RegionIndex::compute(&cfg);
         for block in [0, 1, 2] {
             let block = BlockId::from_raw(block);
             assert_eq!(
@@ -493,12 +588,12 @@ mod tests {
             handlers: alloc::vec![
                 Handler {
                     entry: pad,
-                    body: [pad].into_iter().collect(),
+                    body: HandlerBody::known([pad]),
                     kind: HandlerKind::Catch,
                 },
                 Handler {
                     entry: cleanup,
-                    body: [cleanup].into_iter().collect(),
+                    body: HandlerBody::known([cleanup]),
                     kind: HandlerKind::Finally,
                 },
             ],
@@ -525,6 +620,35 @@ mod tests {
             cleanup
         );
         assert_eq!(alloc::format!("{finally}"), "region0.handler1");
+        assert_eq!(cfg.handler(catch).map(|handler| handler.entry), Some(pad));
+        assert_eq!(
+            cfg.handler(finally).map(|handler| handler.entry),
+            Some(cleanup)
+        );
+        assert!(
+            cfg.handler(HandlerRef::new(RegionId::from_raw(99), 0))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn identity_checked_accessors_update_regions_and_handlers() {
+        let (mut cfg, region, [pad, _, _, _]) = try_catch_finally();
+        let catch = HandlerRef::new(region, 0);
+        let replacement = cfg.new_block();
+
+        cfg.region_mut(region).unwrap().parent = Some(region);
+        cfg.handler_mut(catch).unwrap().entry = replacement;
+
+        assert_eq!(
+            cfg.region(region).and_then(|item| item.parent),
+            Some(region)
+        );
+        assert_eq!(
+            cfg.handler(catch).map(|handler| handler.entry),
+            Some(replacement)
+        );
+        assert_ne!(cfg.handler(catch).map(|handler| handler.entry), Some(pad));
     }
 
     #[test]
@@ -661,15 +785,15 @@ mod tests {
         assert!(filters.set(catch, "e.Retryable").is_none());
 
         assert_eq!(filters.len(), 2);
-        assert_eq!(filters.get(catch), Some(&"e.Retryable"));
+        assert_eq!(filters.metadata(catch), Some(&"e.Retryable"));
         assert_eq!(
             filters.set(catch, "e.Retryable && !e.Fatal"),
             Some("e.Retryable")
         );
-        if let Some(filter) = filters.get_mut(catch) {
+        if let Some(filter) = filters.metadata_mut(catch) {
             *filter = "e.Fatal";
         }
-        assert_eq!(filters.get(catch), Some(&"e.Fatal"));
+        assert_eq!(filters.metadata(catch), Some(&"e.Fatal"));
         // Iteration is in handler order regardless of insertion order.
         assert_eq!(
             filters.iter().map(|(key, _)| key).collect::<Vec<_>>(),
@@ -686,9 +810,9 @@ mod tests {
     }
 
     #[test]
-    fn the_v2_additions_leave_v1_construction_alone() {
-        // Exactly the v1 shape: a region built by struct literal, handlers
-        // built by struct literal, nothing else supplied.
+    fn regions_need_no_optional_cleanup_or_handler_metadata() {
+        // The core region remains usable without cleanup continuations or
+        // consumer-owned side metadata.
         let mut cfg: Cfg<MockInst> = Cfg::new();
         let pad = cfg.new_block();
         let id = cfg.add_region(Region {
@@ -696,7 +820,7 @@ mod tests {
             protected_blocks: block_set(&[0]),
             handlers: alloc::vec![Handler {
                 entry: pad,
-                body: [pad].into_iter().collect(),
+                body: HandlerBody::known([pad]),
                 kind: HandlerKind::Finally,
             }],
             parent: None,
@@ -708,7 +832,7 @@ mod tests {
             Some(id)
         );
         // A frontend that records no routes carries no records.
-        assert_eq!(cfg.cleanups().len(), 0);
+        assert!(cfg.cleanups().is_empty());
         assert!(cfg.cleanup(HandlerRef::new(id, 0)).is_none());
     }
 
@@ -716,18 +840,37 @@ mod tests {
     fn handler_kind_variants() {
         let h = Handler {
             entry: BlockId::from_raw(1),
-            body: block_set(&[1, 2]),
+            body: HandlerBody::known(block_set(&[1, 2])),
             kind: HandlerKind::Finally,
         };
         assert_eq!(h.kind, HandlerKind::Finally);
 
         let h2 = Handler {
             entry: BlockId::from_raw(3),
-            body: block_set(&[3]),
+            body: HandlerBody::known(block_set(&[3])),
             kind: HandlerKind::Filter {
                 filter_block: BlockId::from_raw(4),
             },
         };
         assert!(matches!(h2.kind, HandlerKind::Filter { .. }));
+    }
+
+    #[test]
+    fn handler_body_distinguishes_unknown_from_complete_extents() {
+        let unknown = HandlerBody::unknown();
+        assert!(!unknown.is_known());
+        assert!(unknown.blocks().is_none());
+
+        let known = HandlerBody::known([
+            BlockId::from_raw(2),
+            BlockId::from_raw(1),
+            BlockId::from_raw(2),
+        ]);
+        assert!(known.is_known());
+        assert_eq!(
+            known.blocks().map(BTreeSet::len),
+            Some(2),
+            "known extents are a deduplicated block set"
+        );
     }
 }

@@ -1,12 +1,4 @@
-//! Edge-aware traversals over [`DirectedGraph`].
-//!
-//! The node-only view traversals in [`traverse`](super::traverse) drop
-//! parallel edges and carry no edge identities. Provenance-carrying graphs
-//! (value flow, call graphs, typed relations) need the opposite: every
-//! distinct edge visited once, with its identity and endpoints, and walks
-//! that can filter on the edge payload or bound their depth. These
-//! functions provide that, over the owned [`DirectedGraph`] storage where
-//! edges exist.
+//! Edge-aware traversals over owned graphs and borrowed edge views.
 
 extern crate alloc;
 use alloc::collections::VecDeque;
@@ -14,56 +6,119 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use super::directed::{DirectedEdge, DirectedGraph, EdgeId, NodeId};
-use super::traverse::TraversalDirection;
+use super::edge_view::{DenseEdgeId, EdgeGraphView, EdgeRef};
+use super::traverse::{Incoming, Outgoing, TraversalDirection, by_axis};
+use super::view::DenseNodeId;
 
-/// One traversed edge, with its real (direction-independent) endpoints.
+trait EdgeAdjacency: Copy {
+    fn edges<G: EdgeGraphView>(
+        self,
+        graph: &G,
+        node: G::NodeId,
+    ) -> impl Iterator<Item = G::EdgeId> + '_;
+
+    fn next<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N;
+
+    fn previous<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N;
+}
+
+impl EdgeAdjacency for Outgoing {
+    fn edges<G: EdgeGraphView>(
+        self,
+        graph: &G,
+        node: G::NodeId,
+    ) -> impl Iterator<Item = G::EdgeId> + '_ {
+        graph.outgoing_edges(node)
+    }
+
+    fn next<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N {
+        edge.target()
+    }
+
+    fn previous<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N {
+        edge.source()
+    }
+}
+
+impl EdgeAdjacency for Incoming {
+    fn edges<G: EdgeGraphView>(
+        self,
+        graph: &G,
+        node: G::NodeId,
+    ) -> impl Iterator<Item = G::EdgeId> + '_ {
+        graph.incoming_edges(node)
+    }
+
+    fn next<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N {
+        edge.source()
+    }
+
+    fn previous<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N {
+        edge.target()
+    }
+}
+
+/// One traversed edge, with endpoints as exposed by the traversed view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct EdgeStep {
+pub struct EdgeStep<N = NodeId, E = EdgeId> {
     /// The edge traversed.
-    pub edge: EdgeId,
-    /// The edge's source node (as stored, regardless of walk direction).
-    pub source: NodeId,
-    /// The edge's target node (as stored, regardless of walk direction).
-    pub target: NodeId,
+    pub edge: E,
+    /// The edge source in this view.
+    pub source: N,
+    /// The edge target in this view.
+    pub target: N,
 }
 
-/// Breadth-first edge traversal from `start`.
-///
-/// Every edge **leaving a reached node** (in the walk direction) is
-/// reported exactly once, in adjacency order — including parallel edges
-/// and edges into already-visited nodes, which node-only traversal cannot
-/// report. Edges entering the reached region from elsewhere are not walked
-/// and not reported. Each node is expanded once, so the walk terminates on
-/// cyclic graphs.
+/// Breadth-first edge traversal over any edge-aware graph view.
 #[must_use]
-pub fn breadth_first_edges<N, E>(
-    graph: &DirectedGraph<N, E>,
-    start: NodeId,
+pub fn breadth_first_view_edges<G: EdgeGraphView>(
+    graph: &G,
+    start: G::NodeId,
     direction: TraversalDirection,
-) -> Vec<EdgeStep> {
-    walk_edges(graph, start, direction, None, |_| true)
+) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
+    breadth_first_view_edges_with(graph, start, direction, None, |_| true)
 }
 
-/// Breadth-first edge traversal with an edge filter and an optional depth
-/// bound.
+/// Breadth-first edge traversal with a predicate and optional depth bound.
 ///
-/// `filter` decides whether an edge is traversed at all: a rejected edge
-/// produces no step and does not visit its far endpoint. The filter should be
-/// pure so its decision depends only on the edge.
-/// `max_depth` bounds the walk in hops from `start`: edges leaving a node
-/// `max_depth` hops away are not taken (`Some(0)` reports nothing).
+/// Every accepted edge leaving a reached node in `direction` is reported once
+/// in adjacency order, including parallel edges and edges to visited nodes.
+/// Rejected edges are neither reported nor traversed. This operates directly
+/// on [`crate::FilteredEdges`] and other borrowed views without rebuilding a
+/// graph.
+///
+/// # Panics
+///
+/// Panics when `start` is outside the view or the view violates its dense
+/// node/edge identity contract.
 #[must_use]
-pub fn walk_edges<N, E>(
-    graph: &DirectedGraph<N, E>,
-    start: NodeId,
+pub fn breadth_first_view_edges_with<G: EdgeGraphView>(
+    graph: &G,
+    start: G::NodeId,
     direction: TraversalDirection,
     max_depth: Option<usize>,
-    mut filter: impl FnMut(&DirectedEdge<E>) -> bool,
-) -> Vec<EdgeStep> {
-    let forward = matches!(direction, TraversalDirection::Outgoing);
+    filter: impl FnMut(EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>) -> bool,
+) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
+    by_axis!(
+        direction,
+        breadth_first_view_edges_from(graph, start, max_depth, filter)
+    )
+}
+
+fn breadth_first_view_edges_from<G: EdgeGraphView, A: EdgeAdjacency>(
+    axis: A,
+    graph: &G,
+    start: G::NodeId,
+    max_depth: Option<usize>,
+    mut filter: impl FnMut(EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>) -> bool,
+) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
+    assert!(
+        start.index() < graph.node_count(),
+        "start node is out of range"
+    );
     let mut steps = Vec::new();
     let mut seen_node = vec![false; graph.node_count()];
-    let mut queue: VecDeque<(NodeId, usize)> = VecDeque::new();
+    let mut queue = VecDeque::new();
     seen_node[start.index()] = true;
     queue.push_back((start, 0));
 
@@ -71,13 +126,8 @@ pub fn walk_edges<N, E>(
         if max_depth.is_some_and(|limit| depth >= limit) {
             continue;
         }
-        let adjacency = if forward {
-            graph.outgoing_edges(node)
-        } else {
-            graph.incoming_edges(node)
-        };
-        for &edge_id in adjacency {
-            let edge = graph.edge(edge_id);
+        for edge_id in axis.edges(graph, node) {
+            let edge = graph.edge_ref(edge_id);
             if !filter(edge) {
                 continue;
             }
@@ -86,11 +136,7 @@ pub fn walk_edges<N, E>(
                 source: edge.source(),
                 target: edge.target(),
             });
-            let next = if forward {
-                edge.target()
-            } else {
-                edge.source()
-            };
+            let next = axis.next(edge);
             if !seen_node[next.index()] {
                 seen_node[next.index()] = true;
                 queue.push_back((next, depth + 1));
@@ -100,44 +146,173 @@ pub fn walk_edges<N, E>(
     steps
 }
 
-/// The edges of one shortest path from `from` to `to`, or `None` when `to`
-/// is unreachable. `from == to` yields `Some(vec![])`.
-///
-/// The node-yielding [`shortest_path`](super::traverse::shortest_path)
-/// loses which of several parallel edges realized each hop; witness-path
-/// consumers (value-flow provenance) need the edges themselves.
+/// Depth-first edge traversal over any edge-aware graph view.
 #[must_use]
-pub fn shortest_path_edges<N, E>(
-    graph: &DirectedGraph<N, E>,
-    from: NodeId,
-    to: NodeId,
+pub fn depth_first_view_edges<G: EdgeGraphView>(
+    graph: &G,
+    start: G::NodeId,
     direction: TraversalDirection,
-) -> Option<Vec<EdgeId>> {
+) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
+    depth_first_view_edges_with(graph, start, direction, None, |_| true)
+}
+
+/// Depth-first edge traversal with a predicate and optional depth bound.
+///
+/// Every accepted edge leaving a reached node in `direction` is reported once,
+/// including parallel edges and edges to visited nodes. A tree edge is
+/// reported immediately before the target's edges, preserving depth-first
+/// adjacency order. Rejected edges are neither reported nor traversed.
+///
+/// # Panics
+///
+/// Panics when `start` is outside the view or the view violates its dense
+/// node/edge identity contract.
+#[must_use]
+pub fn depth_first_view_edges_with<G: EdgeGraphView>(
+    graph: &G,
+    start: G::NodeId,
+    direction: TraversalDirection,
+    max_depth: Option<usize>,
+    filter: impl FnMut(EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>) -> bool,
+) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
+    by_axis!(
+        direction,
+        depth_first_view_edges_from(graph, start, max_depth, filter)
+    )
+}
+
+fn depth_first_view_edges_from<G: EdgeGraphView, A: EdgeAdjacency>(
+    axis: A,
+    graph: &G,
+    start: G::NodeId,
+    max_depth: Option<usize>,
+    mut filter: impl FnMut(EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>) -> bool,
+) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
+    assert!(
+        start.index() < graph.node_count(),
+        "start node is out of range"
+    );
+    let mut steps = Vec::new();
+    let mut seen_node = vec![false; graph.node_count()];
+    let mut arena = Vec::new();
+    append_adjacency(axis, graph, start, &mut arena);
+    let mut stack = vec![EdgeDfsFrame {
+        depth: 0,
+        start: 0,
+        cursor: 0,
+    }];
+    seen_node[start.index()] = true;
+
+    while let Some(frame) = stack.last_mut() {
+        if max_depth.is_some_and(|limit| frame.depth >= limit) || frame.cursor >= arena.len() {
+            let Some(finished) = stack.pop() else {
+                break;
+            };
+            arena.truncate(finished.start);
+            continue;
+        }
+
+        let edge_id = arena[frame.cursor];
+        let depth = frame.depth;
+        frame.cursor += 1;
+        let edge = graph.edge_ref(edge_id);
+        if !filter(edge) {
+            continue;
+        }
+        steps.push(EdgeStep {
+            edge: edge_id,
+            source: edge.source(),
+            target: edge.target(),
+        });
+        let next = axis.next(edge);
+        if seen_node[next.index()] {
+            continue;
+        }
+
+        seen_node[next.index()] = true;
+        let start = arena.len();
+        append_adjacency(axis, graph, next, &mut arena);
+        stack.push(EdgeDfsFrame {
+            depth: depth + 1,
+            start,
+            cursor: start,
+        });
+    }
+
+    steps
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EdgeDfsFrame {
+    depth: usize,
+    start: usize,
+    cursor: usize,
+}
+
+fn append_adjacency<G: EdgeGraphView, A: EdgeAdjacency>(
+    axis: A,
+    graph: &G,
+    node: G::NodeId,
+    arena: &mut Vec<G::EdgeId>,
+) {
+    arena.extend(axis.edges(graph, node));
+}
+
+/// Compatibility alias for [`breadth_first_view_edges_with`].
+#[must_use]
+pub fn walk_view_edges<G: EdgeGraphView>(
+    graph: &G,
+    start: G::NodeId,
+    direction: TraversalDirection,
+    max_depth: Option<usize>,
+    filter: impl FnMut(EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>) -> bool,
+) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
+    breadth_first_view_edges_with(graph, start, direction, max_depth, filter)
+}
+
+/// The edges of one shortest path through an edge-aware view.
+///
+/// # Panics
+///
+/// Panics when either endpoint is outside the view or the view violates its
+/// dense node/edge identity contract.
+#[must_use]
+pub fn shortest_path_view_edges<G: EdgeGraphView>(
+    graph: &G,
+    from: G::NodeId,
+    to: G::NodeId,
+    direction: TraversalDirection,
+) -> Option<Vec<G::EdgeId>> {
+    by_axis!(direction, shortest_path_view_edges_from(graph, from, to))
+}
+
+fn shortest_path_view_edges_from<G: EdgeGraphView, A: EdgeAdjacency>(
+    axis: A,
+    graph: &G,
+    from: G::NodeId,
+    to: G::NodeId,
+) -> Option<Vec<G::EdgeId>> {
+    assert!(
+        from.index() < graph.node_count(),
+        "source node is out of range"
+    );
+    assert!(
+        to.index() < graph.node_count(),
+        "target node is out of range"
+    );
     if from == to {
         return Some(Vec::new());
     }
-    let forward = matches!(direction, TraversalDirection::Outgoing);
-    // `seen` guards every read. A plain edge id halves the parent table on
-    // targets where `Option<EdgeId>` cannot use a niche.
-    let mut parent_edge = vec![EdgeId::from_raw(0); graph.node_count()];
+    let mut parent_edge = vec![G::EdgeId::from_index(0); graph.node_count()];
     let mut seen = vec![false; graph.node_count()];
     let mut queue = VecDeque::new();
     seen[from.index()] = true;
     queue.push_back(from);
 
     'search: while let Some(node) = queue.pop_front() {
-        let adjacency = if forward {
-            graph.outgoing_edges(node)
-        } else {
-            graph.incoming_edges(node)
-        };
-        for &edge_id in adjacency {
-            let edge = graph.edge(edge_id);
-            let next = if forward {
-                edge.target()
-            } else {
-                edge.source()
-            };
+        for edge_id in axis.edges(graph, node) {
+            let edge = graph.edge_ref(edge_id);
+            let next = axis.next(edge);
             if seen[next.index()] {
                 continue;
             }
@@ -158,23 +333,92 @@ pub fn shortest_path_edges<N, E>(
     while current != from {
         let edge_id = parent_edge[current.index()];
         path.push(edge_id);
-        let edge = graph.edge(edge_id);
-        current = if forward {
-            edge.source()
-        } else {
-            edge.target()
-        };
+        let edge = graph.edge_ref(edge_id);
+        current = axis.previous(edge);
     }
     path.reverse();
     Some(path)
 }
 
+/// Breadth-first edge traversal over owned [`DirectedGraph`] storage.
+#[must_use]
+pub fn breadth_first_edges<N, E>(
+    graph: &DirectedGraph<N, E>,
+    start: NodeId,
+    direction: TraversalDirection,
+) -> Vec<EdgeStep> {
+    breadth_first_view_edges(graph, start, direction)
+}
+
+/// Breadth-first traversal over owned storage with a predicate and optional
+/// depth bound.
+#[must_use]
+pub fn breadth_first_edges_with<N, E>(
+    graph: &DirectedGraph<N, E>,
+    start: NodeId,
+    direction: TraversalDirection,
+    max_depth: Option<usize>,
+    mut filter: impl FnMut(&DirectedEdge<E>) -> bool,
+) -> Vec<EdgeStep> {
+    breadth_first_view_edges_with(graph, start, direction, max_depth, |edge| {
+        filter(graph.edge(edge.id()))
+    })
+}
+
+/// Depth-first edge traversal over owned [`DirectedGraph`] storage.
+#[must_use]
+pub fn depth_first_edges<N, E>(
+    graph: &DirectedGraph<N, E>,
+    start: NodeId,
+    direction: TraversalDirection,
+) -> Vec<EdgeStep> {
+    depth_first_view_edges(graph, start, direction)
+}
+
+/// Depth-first traversal over owned storage with a predicate and optional
+/// depth bound.
+#[must_use]
+pub fn depth_first_edges_with<N, E>(
+    graph: &DirectedGraph<N, E>,
+    start: NodeId,
+    direction: TraversalDirection,
+    max_depth: Option<usize>,
+    mut filter: impl FnMut(&DirectedEdge<E>) -> bool,
+) -> Vec<EdgeStep> {
+    depth_first_view_edges_with(graph, start, direction, max_depth, |edge| {
+        filter(graph.edge(edge.id()))
+    })
+}
+
+/// Compatibility alias for [`breadth_first_edges_with`].
+#[must_use]
+pub fn walk_edges<N, E>(
+    graph: &DirectedGraph<N, E>,
+    start: NodeId,
+    direction: TraversalDirection,
+    max_depth: Option<usize>,
+    filter: impl FnMut(&DirectedEdge<E>) -> bool,
+) -> Vec<EdgeStep> {
+    breadth_first_edges_with(graph, start, direction, max_depth, filter)
+}
+
+/// Compatibility wrapper for a shortest path through an owned graph.
+#[must_use]
+pub fn shortest_path_edges<N, E>(
+    graph: &DirectedGraph<N, E>,
+    from: NodeId,
+    to: NodeId,
+    direction: TraversalDirection,
+) -> Option<Vec<EdgeId>> {
+    shortest_path_view_edges(graph, from, to, direction)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{FilteredEdges, Rooted};
 
-    /// a =x=> b =y=> c, plus a parallel a =z=> b and a cycle edge c => a.
-    fn diamondish() -> (DirectedGraph<&'static str, &'static str>, [NodeId; 3]) {
+    fn fixture() -> (DirectedGraph<&'static str, &'static str>, [NodeId; 3]) {
         let mut graph = DirectedGraph::new();
         let a = graph.add_node("a");
         let b = graph.add_node("b");
@@ -188,81 +432,77 @@ mod tests {
 
     #[test]
     fn edge_bfs_reports_parallel_and_cycle_edges_once() {
-        let (graph, [a, b, c]) = diamondish();
+        let (graph, [a, _, c]) = fixture();
         let steps = breadth_first_edges(&graph, a, TraversalDirection::Outgoing);
-        // All four edges appear exactly once; parallel a->b twice as
-        // distinct edges; the cycle edge back into the visited region too.
         assert_eq!(steps.len(), 4);
-        let payloads: Vec<&str> = steps
+        let payloads: Vec<_> = steps
             .iter()
-            .map(|s| *graph.edge(s.edge).payload())
+            .map(|step| *graph.edge(step.edge).payload())
             .collect();
         assert_eq!(payloads, ["x", "z", "y", "cycle"]);
-        assert_eq!(steps[0].source, a);
-        assert_eq!(steps[3].source, c);
-        assert_eq!(steps[3].target, a);
 
-        // Backward from c sees y then x/z then the cycle edge from a's side.
-        let back = breadth_first_edges(&graph, c, TraversalDirection::Incoming);
-        assert_eq!(back.len(), 4);
-        assert_eq!(back[0].edge, steps[2].edge);
-        let _ = b;
+        let backward = breadth_first_edges(&graph, c, TraversalDirection::Incoming);
+        let backward_payloads: Vec<_> = backward
+            .iter()
+            .map(|step| *graph.edge(step.edge).payload())
+            .collect();
+        assert_eq!(backward_payloads, ["y", "x", "z", "cycle"]);
     }
 
     #[test]
-    fn filtered_and_depth_bounded_walks() {
-        let (graph, [a, _, _]) = diamondish();
-        // Filter out the parallel "z" edge entirely.
-        let steps = walk_edges(&graph, a, TraversalDirection::Outgoing, None, |edge| {
-            *edge.payload() != "z"
-        });
-        let payloads: Vec<&str> = steps
+    fn filtered_view_walk_never_rebuilds_or_renumbers() {
+        let (graph, [a, _, c]) = fixture();
+        let rooted = Rooted::new(&graph, a);
+        let filtered = FilteredEdges::new(&rooted, |_, payload: &&str| *payload != "z");
+        let steps = breadth_first_view_edges(&filtered, a, TraversalDirection::Outgoing);
+        let payloads: Vec<_> = steps
             .iter()
-            .map(|s| *graph.edge(s.edge).payload())
+            .map(|step| *filtered.edge_ref(step.edge).data())
             .collect();
         assert_eq!(payloads, ["x", "y", "cycle"]);
-
-        // Depth 1: only edges leaving the start node.
-        let close = walk_edges(&graph, a, TraversalDirection::Outgoing, Some(1), |_| true);
-        let payloads: Vec<&str> = close
-            .iter()
-            .map(|s| *graph.edge(s.edge).payload())
-            .collect();
-        assert_eq!(payloads, ["x", "z"]);
         assert_eq!(
-            walk_edges(&graph, a, TraversalDirection::Outgoing, Some(0), |_| true).len(),
-            0
+            shortest_path_view_edges(&filtered, a, c, TraversalDirection::Outgoing)
+                .unwrap()
+                .len(),
+            2
         );
+        let incoming =
+            shortest_path_view_edges(&filtered, c, a, TraversalDirection::Incoming).unwrap();
+        assert_eq!(incoming.len(), 2);
+        assert_eq!(*filtered.edge_ref(incoming[0]).data(), "y");
+        assert_eq!(*filtered.edge_ref(incoming[1]).data(), "x");
     }
 
     #[test]
-    fn shortest_path_edges_returns_a_witness() {
-        let (graph, [a, b, c]) = diamondish();
-        let path = shortest_path_edges(&graph, a, c, TraversalDirection::Outgoing).unwrap();
-        assert_eq!(path.len(), 2);
-        assert_eq!(graph.edge(path[0]).source(), a);
-        assert_eq!(graph.edge(path[0]).target(), b);
-        assert_eq!(graph.edge(path[1]).target(), c);
+    fn depth_and_predicate_filters_remain_compatible() {
+        let (graph, [a, _, _]) = fixture();
+        let steps =
+            breadth_first_edges_with(&graph, a, TraversalDirection::Outgoing, Some(1), |edge| {
+                *edge.payload() != "z"
+            });
+        assert_eq!(steps.len(), 1);
+        assert_eq!(*graph.edge(steps[0].edge).payload(), "x");
+    }
 
-        let incoming = shortest_path_edges(&graph, c, a, TraversalDirection::Incoming).unwrap();
-        assert_eq!(incoming.len(), 2);
-        assert_eq!(graph.edge(incoming[0]).source(), b);
-        assert_eq!(graph.edge(incoming[0]).target(), c);
-        assert_eq!(graph.edge(incoming[1]).source(), a);
-        assert_eq!(graph.edge(incoming[1]).target(), b);
+    #[test]
+    fn depth_first_edges_descend_before_examining_the_next_sibling() {
+        let (graph, [a, _, _]) = fixture();
+        let steps = depth_first_edges(&graph, a, TraversalDirection::Outgoing);
+        let payloads: Vec<_> = steps
+            .iter()
+            .map(|step| *graph.edge(step.edge).payload())
+            .collect();
+        assert_eq!(payloads, ["x", "y", "cycle", "z"]);
+    }
 
-        assert_eq!(
-            shortest_path_edges(&graph, a, a, TraversalDirection::Outgoing),
-            Some(Vec::new())
-        );
-
-        // A node unreachable in the chosen direction.
-        let mut disconnected: DirectedGraph<(), ()> = DirectedGraph::new();
-        let lone = disconnected.add_node(());
-        let other = disconnected.add_node(());
-        assert_eq!(
-            shortest_path_edges(&disconnected, lone, other, TraversalDirection::Outgoing),
-            None
-        );
+    #[test]
+    fn depth_first_filters_and_bounds_match_breadth_first_contracts() {
+        let (graph, [a, _, _]) = fixture();
+        let steps =
+            depth_first_edges_with(&graph, a, TraversalDirection::Outgoing, Some(1), |edge| {
+                *edge.payload() != "z"
+            });
+        assert_eq!(steps.len(), 1);
+        assert_eq!(*graph.edge(steps[0].edge).payload(), "x");
     }
 }

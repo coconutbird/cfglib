@@ -2,8 +2,8 @@
 //!
 //! Provides quantitative measurements of graph complexity that are useful
 //! for program analysis, code quality assessment, and heuristic-driven
-//! transformation or decompilation. [`graph_metrics`] serves any rooted
-//! graph view; [`cfg_metrics`] adds instruction-level measurements for a
+//! transformation or decompilation. [`GraphMetrics::compute`] serves any rooted
+//! graph view; [`CfgMetrics::compute`] adds instruction-level measurements for a
 //! [`Cfg`].
 
 extern crate alloc;
@@ -38,7 +38,7 @@ pub struct GraphMetrics {
 /// Instruction-aware metrics for a [`Cfg`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct CfgMetrics {
-    /// Topology metrics (loop depth honours [`EdgeKind::Back`] tags via
+    /// Topology metrics (loop depth honors [`EdgeKind::Back`] tags via
     /// [`detect_loops_tagged`]).
     ///
     /// [`EdgeKind::Back`]: crate::EdgeKind::Back
@@ -102,67 +102,72 @@ fn topology<G: RootedGraphView>(graph: &G) -> GraphMetrics {
     }
 }
 
-/// Compute topology metrics for any rooted graph view.
-///
-/// # Panics
-///
-/// Panics when the view's root index is outside `0..node_count()` — a
-/// broken [`RootedGraphView`] implementation; validate consumer views with
-/// [`verify_view`](crate::verify_view).
-#[must_use]
-pub fn graph_metrics<G: RootedGraphView>(graph: &G) -> GraphMetrics {
-    let mut metrics = topology(graph);
-    if metrics.node_count > 1 {
-        let dom = DominatorTree::compute(graph);
-        let loops = detect_loops(graph, &dom);
-        metrics.max_nesting_depth = loops.iter().map(|lp| lp.depth).max().unwrap_or(0);
+impl GraphMetrics {
+    /// Compute topology metrics for any rooted graph view.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the view's root index is outside `0..node_count()` — a
+    /// broken [`RootedGraphView`] implementation; validate consumer views with
+    /// [`verify_view`](crate::verify_view).
+    #[must_use]
+    pub fn compute<G: RootedGraphView>(graph: &G) -> Self {
+        let mut metrics = topology(graph);
+        if metrics.node_count > 1 {
+            let dom = DominatorTree::compute(graph);
+            let loops = detect_loops(graph, &dom);
+            metrics.max_nesting_depth = loops.iter().map(|lp| lp.depth).max().unwrap_or(0);
+        }
+        metrics
     }
-    metrics
 }
 
-/// Compute comprehensive metrics for a CFG.
-///
-/// # Examples
-///
-/// ```
-/// use cfglib::{Cfg, EdgeKind, cfg_metrics};
-///
-/// let mut cfg = Cfg::<u32>::new();
-/// let b0 = cfg.entry();
-/// let b1 = cfg.new_block();
-/// let b2 = cfg.new_block();
-/// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
-/// cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
-///
-/// let m = cfg_metrics(&cfg);
-/// assert_eq!(m.graph.node_count, 3);
-/// assert_eq!(m.graph.edge_count, 2);
-/// assert_eq!(m.graph.exit_count, 2);
-/// ```
-#[must_use]
-pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
-    let mut graph = topology(cfg);
+impl CfgMetrics {
+    /// Compute comprehensive metrics for a CFG.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use cfglib::{Cfg, CfgMetrics, EdgeKind};
+    ///
+    /// let mut cfg = Cfg::<u32>::new();
+    /// let b0 = cfg.entry();
+    /// let b1 = cfg.new_block();
+    /// let b2 = cfg.new_block();
+    /// cfg.add_edge(b0, b1, EdgeKind::ConditionalTrue);
+    /// cfg.add_edge(b0, b2, EdgeKind::ConditionalFalse);
+    ///
+    /// let m = CfgMetrics::compute(&cfg);
+    /// assert_eq!(m.graph.node_count, 3);
+    /// assert_eq!(m.graph.edge_count, 2);
+    /// assert_eq!(m.graph.exit_count, 2);
+    /// ```
+    #[must_use]
+    pub fn compute<I>(cfg: &Cfg<I>) -> Self {
+        let mut graph = topology(cfg);
 
-    // Honour explicit back-edge tags for loop depth on CFGs (one dominator
-    // computation — not graph_metrics' dominance-only pass plus a second).
-    if cfg.num_blocks() > 1 {
-        let dom = DominatorTree::compute(cfg);
-        let loops = detect_loops_tagged(cfg, &dom);
-        graph.max_nesting_depth = loops.iter().map(|lp| lp.depth).max().unwrap_or(0);
-    }
+        // Honor explicit back-edge tags for loop depth on CFGs (one dominator
+        // computation — not GraphMetrics::compute's dominance-only pass plus a
+        // second).
+        if cfg.block_count() > 1 {
+            let dom = DominatorTree::compute(cfg);
+            let loops = detect_loops_tagged(cfg, &dom);
+            graph.max_nesting_depth = loops.iter().map(|lp| lp.depth).max().unwrap_or(0);
+        }
 
-    let n = cfg.num_blocks();
-    let instruction_count: usize = cfg.blocks().iter().map(|b| b.instructions().len()).sum();
-    let avg_instr = if n > 0 {
-        crate::usize_to_f64(instruction_count) / crate::usize_to_f64(n)
-    } else {
-        0.0
-    };
+        let n = cfg.block_count();
+        let instruction_count: usize = cfg.blocks().iter().map(|b| b.instructions().len()).sum();
+        let avg_instr = if n > 0 {
+            crate::usize_to_f64(instruction_count) / crate::usize_to_f64(n)
+        } else {
+            0.0
+        };
 
-    CfgMetrics {
-        graph,
-        instruction_count,
-        avg_instructions_per_block: avg_instr,
+        CfgMetrics {
+            graph,
+            instruction_count,
+            avg_instructions_per_block: avg_instr,
+        }
     }
 }
 
@@ -171,8 +176,8 @@ pub fn cfg_metrics<I>(cfg: &Cfg<I>) -> CfgMetrics {
 /// Returns a vector indexed by dense node index, where each value is the
 /// number of loops containing that node — **dominance-based** detection,
 /// like every view-generic algorithm. [`Cfg`] callers whose builders tag
-/// explicit `Back` edges want [`cfg_block_nesting_depths`], which honours
-/// the tags exactly as [`cfg_metrics`] does.
+/// explicit `Back` edges want [`cfg_block_nesting_depths`], which honors
+/// the tags exactly as [`CfgMetrics::compute`] does.
 #[must_use]
 pub fn block_nesting_depths<G: RootedGraphView>(graph: &G) -> Vec<usize> {
     let n = graph.node_count();
@@ -180,14 +185,14 @@ pub fn block_nesting_depths<G: RootedGraphView>(graph: &G) -> Vec<usize> {
     depths_of(n, &detect_loops(graph, &dom))
 }
 
-/// Compute the nesting depth of each block of a [`Cfg`], honouring
+/// Compute the nesting depth of each block of a [`Cfg`], honoring
 /// explicit [`EdgeKind::Back`](crate::EdgeKind::Back) tags — the tagged
 /// counterpart of [`block_nesting_depths`], consistent with
-/// [`cfg_metrics`]'s loop depth.
+/// [`CfgMetrics::compute`]'s loop depth.
 #[must_use]
 pub fn cfg_block_nesting_depths<I>(cfg: &Cfg<I>) -> Vec<usize> {
     let dom = DominatorTree::compute(cfg);
-    depths_of(cfg.num_blocks(), &detect_loops_tagged(cfg, &dom))
+    depths_of(cfg.block_count(), &detect_loops_tagged(cfg, &dom))
 }
 
 fn depths_of<N: DenseNodeId>(n: usize, loops: &[crate::NaturalLoop<N>]) -> Vec<usize> {
@@ -211,11 +216,9 @@ mod tests {
     #[test]
     fn single_block_metrics() {
         let mut cfg = Cfg::new();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
 
-        let m = cfg_metrics(&cfg);
+        let m = CfgMetrics::compute(&cfg);
         assert_eq!(m.graph.node_count, 1);
         assert_eq!(m.instruction_count, 1);
         assert_eq!(m.graph.cyclomatic_complexity, 1);
@@ -230,15 +233,13 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         let merge = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, merge, EdgeKind::Fallthrough);
         cfg.add_edge(b, merge, EdgeKind::Fallthrough);
 
-        let m = cfg_metrics(&cfg);
+        let m = CfgMetrics::compute(&cfg);
         // E=4, N=4, CC = 4-4+2 = 2
         assert_eq!(m.graph.cyclomatic_complexity, 2);
     }
@@ -249,9 +250,7 @@ mod tests {
         let header = cfg.new_block();
         let body = cfg.new_block();
         let exit = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("e"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("e"));
         cfg.add_edge(cfg.entry(), header, EdgeKind::Fallthrough);
         cfg.add_edge(header, body, EdgeKind::ConditionalTrue);
         cfg.add_edge(header, exit, EdgeKind::ConditionalFalse);
@@ -267,7 +266,7 @@ mod tests {
     fn tagged_nesting_depths_agree_with_cfg_metrics() {
         // Tagged back-edge without dominance (irreducible shape): the
         // untagged view walk scores 0, the Cfg-tagged walk sees the loop —
-        // and cfg_metrics' loop depth must agree with the tagged depths.
+        // and CfgMetrics::compute's loop depth must agree with the tagged depths.
         let mut cfg = Cfg::<crate::test_util::MockInst>::new();
         let b1 = cfg.new_block();
         let b2 = cfg.new_block();
@@ -295,7 +294,7 @@ mod tests {
         graph.add_edge(b, a, ());
         assert_eq!(graph.node(c), &"c");
 
-        let m = graph_metrics(&Rooted::new(&graph, a));
+        let m = GraphMetrics::compute(&Rooted::new(&graph, a));
         assert_eq!(m.node_count, 3);
         assert_eq!(m.reachable_node_count, 2);
         assert_eq!(m.unreachable_node_count, 1);

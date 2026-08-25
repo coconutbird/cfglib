@@ -1,9 +1,9 @@
-use super::fixtures::WIDE_FACT_WORDS;
+use super::fixtures::{WIDE_FACT_WORDS, fixture_u32};
 use super::structural_oracles::has_directed_edge;
 use super::{
-    BTreeSet, BlockId, Cfg, CommonAncestor, ConstantInst, DenseNodeId, DirectedGraph,
-    DominanceFrontiers, DominatorTree, EdgeStep, FixpointResult, IntervalAnalysis, NodeFacts,
-    NodeId, PhiPlacements, ProgramPoint, SsaForm, SsaValue, TraversalDirection, VecDeque,
+    BTreeSet, BlockId, Cfg, CommonAncestor, ConstantInst, DirectedGraph, DominanceFrontiers,
+    DominatorTree, EdgeStep, Facts, IntervalAnalysis, NodeFacts, NodeId, PhiPlacements,
+    ProgramPoint, SsaForm, SsaValue, TraversalDirection, VecDeque,
 };
 
 pub(super) fn directed_distances(
@@ -38,8 +38,8 @@ pub(super) fn directed_distances(
 }
 
 pub(super) fn reference_cfg_preorder(cfg: &Cfg<u32>) -> Vec<BlockId> {
-    let mut visited = vec![false; cfg.num_blocks()];
-    let mut order = Vec::with_capacity(cfg.num_blocks());
+    let mut visited = vec![false; cfg.block_count()];
+    let mut order = Vec::with_capacity(cfg.block_count());
     let mut stack = vec![cfg.entry()];
     while let Some(block) = stack.pop() {
         if visited[block.index()] {
@@ -59,8 +59,8 @@ pub(super) fn reference_cfg_preorder(cfg: &Cfg<u32>) -> Vec<BlockId> {
 }
 
 pub(super) fn reference_cfg_breadth_first(cfg: &Cfg<u32>) -> Vec<BlockId> {
-    let mut visited = vec![false; cfg.num_blocks()];
-    let mut order = Vec::with_capacity(cfg.num_blocks());
+    let mut visited = vec![false; cfg.block_count()];
+    let mut order = Vec::with_capacity(cfg.block_count());
     let mut queue = VecDeque::from([cfg.entry()]);
     visited[cfg.entry().index()] = true;
     while let Some(block) = queue.pop_front() {
@@ -183,7 +183,7 @@ pub(super) fn assert_dominance_frontiers(
     cfg: &Cfg<u32>,
     dominators: &DominatorTree,
 ) {
-    let mut expected = vec![BTreeSet::new(); cfg.num_blocks()];
+    let mut expected = vec![BTreeSet::new(); cfg.block_count()];
     for block in cfg.blocks() {
         if cfg.predecessor_edges(block.id()).len() < 2 {
             continue;
@@ -228,7 +228,7 @@ pub(super) fn assert_control_dependence_graph(
     cfg: &Cfg<u32>,
     post_dominators: &DominatorTree,
 ) {
-    assert_eq!(result.node_count(), cfg.num_blocks());
+    assert_eq!(result.node_count(), cfg.block_count());
     for node in result.node_ids() {
         assert_eq!(*result.node(node), BlockId::from_index(node.index()));
     }
@@ -276,7 +276,7 @@ pub(super) fn assert_cfg_intervals(result: &IntervalAnalysis, cfg: &Cfg<u32>) {
             }
         }
     }
-    assert_eq!(assigned.len(), cfg.num_blocks());
+    assert_eq!(assigned.len(), cfg.block_count());
     assert_eq!(result.is_reducible, result.levels[0].len() <= 1);
 }
 
@@ -312,19 +312,21 @@ pub(super) fn assert_wide_node_facts(facts: &NodeFacts<Vec<u64>>, node_count: us
     }
 }
 
-pub(super) fn assert_bool_cfg_facts(facts: &FixpointResult<bool>, block_count: usize) {
-    assert_eq!(facts.block_in.len(), block_count);
-    assert_eq!(facts.block_out.len(), block_count);
-    assert!(facts.block_in.iter().all(|fact| *fact));
-    assert!(facts.block_out.iter().all(|fact| *fact));
+pub(super) fn assert_bool_cfg_facts(facts: &Facts<bool>, block_count: usize) {
+    for index in 0..block_count {
+        let block = BlockId::from_index(index);
+        assert!(*facts.fact_in(block));
+        assert!(*facts.fact_out(block));
+    }
 }
 
-pub(super) fn assert_wide_cfg_facts(facts: &FixpointResult<Vec<u64>>, block_count: usize) {
-    assert_eq!(facts.block_in.len(), block_count);
-    assert_eq!(facts.block_out.len(), block_count);
-    for fact in facts.block_in.iter().chain(&facts.block_out) {
-        assert_eq!(fact.len(), WIDE_FACT_WORDS);
-        assert!(fact.iter().all(|&word| word == u64::MAX));
+pub(super) fn assert_wide_cfg_facts(facts: &Facts<Vec<u64>>, block_count: usize) {
+    for index in 0..block_count {
+        let block = BlockId::from_index(index);
+        for fact in [facts.fact_in(block), facts.fact_out(block)] {
+            assert_eq!(fact.len(), WIDE_FACT_WORDS);
+            assert!(fact.iter().all(|&word| word == u64::MAX));
+        }
     }
 }
 
@@ -358,7 +360,7 @@ pub(super) fn assert_phi_placements(
         let at_merge = placements.at(merge);
         assert_eq!(at_merge.len(), variable_count);
         for (variable, placement) in at_merge.iter().enumerate() {
-            assert_eq!(placement.variable, variable as u32);
+            assert_eq!(placement.variable, fixture_u32(variable));
             assert_eq!(placement.predecessors, [left, right]);
         }
     }
@@ -375,7 +377,7 @@ pub(super) fn assert_phi_ssa(
     layer_count: usize,
     variable_count: usize,
 ) {
-    assert_eq!(ssa.blocks().len(), source.num_blocks());
+    assert_eq!(ssa.blocks().len(), source.block_count());
     assert_eq!(ssa.phis().count(), layer_count * variable_count);
     let mut definitions = BTreeSet::new();
     for block in source.blocks() {
@@ -417,7 +419,7 @@ pub(super) fn assert_phi_ssa(
         }
     }
     assert_eq!(definitions.len(), layer_count * variable_count * 3);
-    for variable in 0..variable_count as u32 {
+    for variable in 0..fixture_u32(variable_count) {
         assert_eq!(ssa.max_version(&variable), layer_count * 3);
     }
 }

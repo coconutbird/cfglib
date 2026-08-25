@@ -1,15 +1,19 @@
-use super::fixtures::BuilderInst;
+use super::fixtures::{BuilderInst, fixture_f64, fixture_u32};
 use super::{
     BTreeSet, BlockId, Cfg, DenseNodeId, DirectedGraph, DominatorTree, EdgeKind, FlowEffect, NodeId,
 };
 
 pub(super) fn assert_cfg_shape<I>(cfg: &Cfg<I>, expected_blocks: usize, expected_edges: usize) {
     assert_eq!(
-        cfg.num_blocks(),
+        cfg.block_count(),
         expected_blocks,
         "unexpected CFG block count"
     );
-    assert_eq!(cfg.num_edges(), expected_edges, "unexpected CFG edge count");
+    assert_eq!(
+        cfg.edge_count(),
+        expected_edges,
+        "unexpected CFG edge count"
+    );
     let verification = cfglib::verify(cfg);
     assert!(
         verification.is_ok(),
@@ -108,16 +112,17 @@ pub(super) fn has_directed_edge<N, E>(
 pub(super) fn assert_branchy_cfg(cfg: &Cfg<u32>, node_count: usize) {
     assert_cfg_shape(cfg, node_count, branchy_edge_count(node_count));
     for index in 0..node_count {
-        let block = BlockId::from_raw(index as u32);
+        let block = BlockId::from_index(index);
+        let instruction = fixture_u32(index);
         assert_eq!(
             cfg.block(block).instructions(),
-            &[index as u32, (index as u32).wrapping_mul(17)]
+            &[instruction, instruction.wrapping_mul(17)]
         );
         if index + 1 < node_count {
             assert!(has_cfg_edge(
                 cfg,
                 block,
-                BlockId::from_raw((index + 1) as u32),
+                BlockId::from_index(index + 1),
                 EdgeKind::Fallthrough
             ));
         }
@@ -125,16 +130,16 @@ pub(super) fn assert_branchy_cfg(cfg: &Cfg<u32>, node_count: usize) {
     for index in (0..node_count.saturating_sub(2)).step_by(2) {
         assert!(has_cfg_edge(
             cfg,
-            BlockId::from_raw(index as u32),
-            BlockId::from_raw((index + 2) as u32),
+            BlockId::from_index(index),
+            BlockId::from_index(index + 2),
             EdgeKind::ConditionalTrue
         ));
     }
     for index in (32..node_count).step_by(32) {
         assert!(has_cfg_edge(
             cfg,
-            BlockId::from_raw(index as u32),
-            BlockId::from_raw((index - 16) as u32),
+            BlockId::from_index(index),
+            BlockId::from_index(index - 16),
             EdgeKind::Back
         ));
     }
@@ -218,12 +223,12 @@ pub(super) fn assert_builder_cfg(
 pub(super) fn assert_linear_cfg(cfg: &Cfg<u32>, node_count: usize) {
     assert_cfg_shape(cfg, node_count, node_count - 1);
     for index in 0..node_count {
-        let block = BlockId::from_raw(index as u32);
-        assert_eq!(cfg.block(block).instructions(), &[index as u32]);
+        let block = BlockId::from_index(index);
+        assert_eq!(cfg.block(block).instructions(), &[fixture_u32(index)]);
         if index + 1 < node_count {
             assert_eq!(cfg.successor_edges(block).len(), 1);
             let edge = cfg.edge(cfg.successor_edges(block)[0]);
-            assert_eq!(edge.target(), BlockId::from_raw((index + 1) as u32));
+            assert_eq!(edge.target(), BlockId::from_index(index + 1));
             assert_eq!(edge.kind(), EdgeKind::Fallthrough);
         } else {
             assert_eq!(cfg.successor_edges(block).len(), 0);
@@ -236,16 +241,14 @@ pub(super) fn assert_empty_chain(cfg: &Cfg<u32>, node_count: usize) {
     assert_eq!(cfg.block(cfg.entry()).instructions(), &[0]);
     for index in 1..node_count - 1 {
         assert_eq!(
-            cfg.block(BlockId::from_raw(index as u32))
-                .instructions()
-                .len(),
+            cfg.block(BlockId::from_index(index)).instructions().len(),
             0
         );
     }
     assert_eq!(
-        cfg.block(BlockId::from_raw((node_count - 1) as u32))
+        cfg.block(BlockId::from_index(node_count - 1))
             .instructions(),
-        &[(node_count - 1) as u32]
+        &[fixture_u32(node_count - 1)]
     );
 }
 
@@ -267,7 +270,7 @@ pub(super) fn assert_high_fan_in(
     for (index, &edge_id) in cfg.predecessor_edges(expected_target).iter().enumerate() {
         assert_eq!(edge_id.index(), index);
         let edge = cfg.edge(edge_id);
-        assert_eq!(edge.source(), BlockId::from_raw((index + 3) as u32));
+        assert_eq!(edge.source(), BlockId::from_index(index + 3));
         assert_eq!(edge.target(), expected_target);
         assert_eq!(edge.kind(), EdgeKind::Unconditional);
         assert!(edge.weight().is_none());
@@ -317,7 +320,7 @@ fn assert_weighted_outgoing_edges(
 ) {
     let sink = BlockId::from_raw(2);
     for index in 0..edge_count - 1 {
-        let id = cfglib::EdgeId::from_raw((index + 1) as u32);
+        let id = cfglib::EdgeId::from_raw(fixture_u32(index + 1));
         let edge = cfg.edge(id);
         assert_eq!(edge.id(), id);
         assert_eq!(edge.source(), outgoing_source);
@@ -332,10 +335,10 @@ fn assert_weighted_outgoing_edges(
         );
         assert_eq!(
             edge.weight().map(f64::to_bits),
-            Some((index as f64 + 0.25).to_bits())
+            Some((fixture_f64(index) + 0.25).to_bits())
         );
     }
-    let back = cfg.edge(cfglib::EdgeId::from_raw(edge_count as u32));
+    let back = cfg.edge(cfglib::EdgeId::from_raw(fixture_u32(edge_count)));
     assert_eq!(back.source(), outgoing_source);
     assert_eq!(back.target(), back_target);
     assert_eq!(back.kind(), EdgeKind::Back);
@@ -381,7 +384,7 @@ pub(super) fn assert_weighted_irreducible(cfg: &Cfg<u32>, made_reducible: bool) 
     for index in 0..4 {
         assert_eq!(
             cfg.block(BlockId::from_index(index)).instructions(),
-            &[index as u32]
+            &[fixture_u32(index)]
         );
     }
 
@@ -413,7 +416,7 @@ pub(super) fn assert_weighted_irreducible(cfg: &Cfg<u32>, made_reducible: bool) 
         (second, exit, EdgeKind::SwitchCase, Some(0.25_f64)),
     ];
     for (index, (source, target, kind, weight)) in expected.into_iter().enumerate() {
-        let edge = cfg.edge(cfglib::EdgeId::from_raw(index as u32));
+        let edge = cfg.edge(cfglib::EdgeId::from_raw(fixture_u32(index)));
         assert_eq!(edge.source(), source);
         assert_eq!(edge.target(), target);
         assert_eq!(edge.kind(), kind);
@@ -434,7 +437,7 @@ pub(super) fn assert_weighted_irreducible(cfg: &Cfg<u32>, made_reducible: bool) 
         .into_iter()
         .enumerate()
         {
-            let edge = cfg.edge(cfglib::EdgeId::from_raw((5 + index) as u32));
+            let edge = cfg.edge(cfglib::EdgeId::from_raw(fixture_u32(5 + index)));
             assert_eq!(edge.source(), copy);
             assert_eq!(edge.target(), target);
             assert_eq!(edge.kind(), kind);

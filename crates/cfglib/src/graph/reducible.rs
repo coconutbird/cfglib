@@ -80,8 +80,9 @@ fn split_node<I: Clone>(cfg: &mut Cfg<I>, target: BlockId) {
         let edges = &mut cfg.edges;
         cfg.preds[target.index()].retain(|eid| {
             let eid = *eid;
-            let edge = edges[eid.index()].as_mut().unwrap();
-            // If target can reach the source, they're in a cycle — keep it.
+            let edge = edges[eid.index()]
+                .as_mut()
+                .expect("predecessor adjacency must reference a live edge");
             if cycle_reachable[edge.source.index()] {
                 true
             } else {
@@ -131,13 +132,11 @@ mod tests {
         let b = cfg.new_block();
         let merge = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(merge)
-            .instructions_vec_mut()
-            .push(ff("merge"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
+        cfg.block_mut(merge).instructions_mut().push(ff("merge"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, merge, EdgeKind::Fallthrough);
@@ -158,10 +157,10 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, b, EdgeKind::Fallthrough);
@@ -193,36 +192,33 @@ mod tests {
 
         let before = DominatorTree::compute(&cfg);
         assert!(!is_reducible(&cfg, &before));
-        let original_blocks = cfg.num_blocks();
+        let original_blocks = cfg.block_count();
 
         assert_eq!(make_reducible(&mut cfg), 3);
-        assert_eq!(cfg.num_blocks(), original_blocks + 3);
+        assert_eq!(cfg.block_count(), original_blocks + 3);
         let after = DominatorTree::compute(&cfg);
         assert!(is_reducible(&cfg, &after));
     }
 
     #[test]
     fn splitting_preserves_outgoing_edge_metadata_and_order() {
-        // B is the first irreducible entry witnessed by the DFS. Splitting it
-        // must retain B's original edges and reproduce their complete metadata
-        // on the new copy in adjacency order.
         let mut cfg = Cfg::new();
         let a = cfg.new_block();
         let b = cfg.new_block();
         let exit = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(exit).instructions_vec_mut().push(ff("exit"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
+        cfg.block_mut(exit).instructions_mut().push(ff("exit"));
 
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         let redirected = cfg.add_weighted_edge(cfg.entry(), b, EdgeKind::ConditionalFalse, 0.125);
         cfg.add_edge(a, b, EdgeKind::Fallthrough);
         let back = cfg.add_weighted_edge(b, a, EdgeKind::Back, 0.75);
         let leave = cfg.add_weighted_edge(b, exit, EdgeKind::SwitchCase, 0.25);
-        let original_block_count = cfg.num_blocks();
+        let original_block_count = cfg.block_count();
 
         let dom = DominatorTree::compute(&cfg);
         assert_eq!(find_irreducible_entry(&cfg, &dom), Some(b));

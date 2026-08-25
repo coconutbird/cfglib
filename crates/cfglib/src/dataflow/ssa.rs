@@ -2,8 +2,9 @@
 //!
 //! The SSA representation is independent of an instruction set and of the
 //! concrete instruction type stored in [`Cfg`]. An [`InstrInfo`] adapter
-//! supplies its native variable identity, and [`build_ssa`] produces renamed
-//! definitions, uses, and phi operands keyed by [`ProgramPoint`]. The original
+//! supplies its native variable identity, and [`SsaForm::compute`] produces
+//! renamed definitions, uses, and phi operands keyed by [`ProgramPoint`]. The
+//! original
 //! instructions remain untouched and can be recovered from the source CFG.
 
 extern crate alloc;
@@ -28,8 +29,8 @@ impl DominanceFrontiers {
     /// Compute dominance frontiers using the algorithm from Cooper, Harvey,
     /// and Kennedy.
     #[must_use]
-    pub fn compute<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Self {
-        let mut frontiers = vec![BTreeSet::new(); cfg.num_blocks()];
+    pub fn compute<I, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Self {
+        let mut frontiers = vec![BTreeSet::new(); cfg.block_count()];
 
         for block in cfg.blocks() {
             if cfg.predecessor_edges(block.id()).len() < 2 {
@@ -103,61 +104,64 @@ impl<V> PhiPlacements<V> {
                     .map(move |phi| (BlockId::from_index(index), phi))
             })
     }
-}
 
-/// Place phis for every variable defined in the CFG.
-///
-/// This is the iterated-dominance-frontier phase of SSA construction. Use
-/// [`build_ssa`] when renamed definitions and operands are also required
-/// (and see its precondition: the entry block must not be a branch
-/// target).
-#[must_use]
-pub fn place_phis<I: InstrInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> PhiPlacements<I::Variable> {
-    let frontiers = DominanceFrontiers::compute(cfg, dom);
-    let mut definition_blocks: BTreeMap<I::Variable, Vec<BlockId>> = BTreeMap::new();
+    /// Place phis for every variable defined in the CFG.
+    ///
+    /// This is the iterated-dominance-frontier phase of SSA construction. Use
+    /// [`SsaForm::compute`] when renamed definitions and operands are also
+    /// required (and see its precondition: the entry block must not be a
+    /// branch target).
+    #[must_use]
+    pub fn compute<I: InstrInfo<Variable = V>, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Self
+    where
+        V: VariableId,
+    {
+        let frontiers = DominanceFrontiers::compute(cfg, dom);
+        let mut definition_blocks: BTreeMap<I::Variable, Vec<BlockId>> = BTreeMap::new();
 
-    for block in cfg.blocks() {
-        for instruction in block.instructions() {
-            for variable in instruction.defs() {
-                let blocks = definition_blocks.entry(variable.clone()).or_default();
-                if blocks.last().copied() != Some(block.id()) {
-                    blocks.push(block.id());
+        for block in cfg.blocks() {
+            for instruction in block.instructions() {
+                for variable in instruction.defs() {
+                    let blocks = definition_blocks.entry(variable.clone()).or_default();
+                    if blocks.last().copied() != Some(block.id()) {
+                        blocks.push(block.id());
+                    }
                 }
             }
         }
-    }
 
-    let mut placements = vec![Vec::new(); cfg.num_blocks()];
-    let mut has_phi = EpochMarks::new(cfg.num_blocks());
-    let mut visited = EpochMarks::new(cfg.num_blocks());
-    for (variable, definitions) in definition_blocks {
-        has_phi.reset();
-        visited.reset();
-        for &block in &definitions {
-            visited.mark(block.index());
-        }
-        let mut worklist = definitions;
+        let mut placements = vec![Vec::new(); cfg.block_count()];
+        let mut has_phi = EpochMarks::new(cfg.block_count());
+        let mut visited = EpochMarks::new(cfg.block_count());
+        for (variable, definitions) in definition_blocks {
+            has_phi.reset();
+            visited.reset();
+            for &block in &definitions {
+                visited.mark(block.index());
+            }
+            let mut worklist = definitions;
 
-        while let Some(block) = worklist.pop() {
-            for &frontier_block in frontiers.frontier(block) {
-                if has_phi.is_marked(frontier_block.index()) {
-                    continue;
-                }
-                has_phi.mark(frontier_block.index());
+            while let Some(block) = worklist.pop() {
+                for &frontier_block in frontiers.frontier(block) {
+                    if has_phi.is_marked(frontier_block.index()) {
+                        continue;
+                    }
+                    has_phi.mark(frontier_block.index());
 
-                placements[frontier_block.index()].push(PhiPlacement {
-                    variable: variable.clone(),
-                    predecessors: cfg.predecessors(frontier_block).collect(),
-                });
-                if !visited.is_marked(frontier_block.index()) {
-                    visited.mark(frontier_block.index());
-                    worklist.push(frontier_block);
+                    placements[frontier_block.index()].push(PhiPlacement {
+                        variable: variable.clone(),
+                        predecessors: cfg.predecessors(frontier_block).collect(),
+                    });
+                    if !visited.is_marked(frontier_block.index()) {
+                        visited.mark(frontier_block.index());
+                        worklist.push(frontier_block);
+                    }
                 }
             }
         }
-    }
 
-    PhiPlacements { placements }
+        PhiPlacements { placements }
+    }
 }
 
 /// A per-variable SSA version number.
@@ -316,8 +320,8 @@ fn fresh_value<V: VariableId>(
     SsaValue::new(variable.clone(), *version)
 }
 
-fn create_drafts<I: InstrInfo>(
-    cfg: &Cfg<I>,
+fn create_drafts<I: InstrInfo, E>(
+    cfg: &Cfg<I, E>,
     placements: &PhiPlacements<I::Variable>,
 ) -> Vec<BlockDraft<I::Variable>> {
     cfg.blocks()
@@ -338,8 +342,8 @@ fn create_drafts<I: InstrInfo>(
         .collect()
 }
 
-fn rename_block<I: InstrInfo>(
-    cfg: &Cfg<I>,
+fn rename_block<I: InstrInfo, E>(
+    cfg: &Cfg<I, E>,
     block: BlockId,
     drafts: &mut [BlockDraft<I::Variable>],
     stacks: &mut BTreeMap<I::Variable, Vec<SsaValue<I::Variable>>>,
@@ -389,14 +393,14 @@ fn rename_block<I: InstrInfo>(
     pushed_variables
 }
 
-fn rename_drafts<I: InstrInfo>(
-    cfg: &Cfg<I>,
+fn rename_drafts<I: InstrInfo, E>(
+    cfg: &Cfg<I, E>,
     dom: &DominatorTree,
     drafts: &mut [BlockDraft<I::Variable>],
     max_versions: &mut BTreeMap<I::Variable, SsaVersion>,
 ) {
     let mut stacks = BTreeMap::new();
-    let mut visited = alloc::vec![false; cfg.num_blocks()];
+    let mut visited = vec![false; cfg.block_count()];
     // The event stack consumes siblings in reverse, so descending links
     // preserve `DominatorTree::children`'s ascending DFS visitation.
     let children = dom.child_links(DominatorChildOrder::Descending);
@@ -476,33 +480,35 @@ fn finish_blocks<V: VariableId>(
         .collect()
 }
 
-/// Build a fully renamed SSA view of `cfg`.
-///
-/// The algorithm performs phi placement followed by classic dominator-tree
-/// renaming. It is iterative rather than recursive, so deeply nested control
-/// flow does not consume the host call stack. Variables read before any
-/// dominating definition receive version `0`.
-///
-/// # Precondition
-///
-/// The entry block must not be a branch target. Phi operands come from
-/// predecessor edges, so a phi placed AT the entry (entry doubling as a
-/// loop header) has no operand for the version-`0` live-in value and the
-/// value entering the function is dropped from the web. Every builder in
-/// this workspace guarantees the property; direct constructions that
-/// branch to the entry should canonicalize first
-/// ([`insert_preheader`](crate::insert_preheader) /
-/// [`split_block`](crate::Cfg::split_block)).
-#[must_use]
-pub fn build_ssa<I: InstrInfo>(cfg: &Cfg<I>, dom: &DominatorTree) -> SsaForm<I::Variable> {
-    let placements = place_phis(cfg, dom);
-    let mut drafts = create_drafts(cfg, &placements);
-    let mut max_versions = BTreeMap::new();
-    rename_drafts(cfg, dom, &mut drafts, &mut max_versions);
-    let blocks = finish_blocks(drafts, &mut max_versions);
-    SsaForm {
-        blocks,
-        max_versions,
+impl<V: VariableId> SsaForm<V> {
+    /// Compute a fully renamed SSA view of `cfg`.
+    ///
+    /// The algorithm performs phi placement followed by classic dominator-tree
+    /// renaming. It is iterative rather than recursive, so deeply nested control
+    /// flow does not consume the host call stack. Variables read before any
+    /// dominating definition receive version `0`.
+    ///
+    /// # Precondition
+    ///
+    /// The entry block must not be a branch target. Phi operands come from
+    /// predecessor edges, so a phi placed AT the entry (entry doubling as a
+    /// loop header) has no operand for the version-`0` live-in value and the
+    /// value entering the function is dropped from the web. Every builder in
+    /// this workspace guarantees the property; direct constructions that
+    /// branch to the entry should canonicalize first
+    /// ([`insert_preheader`](crate::insert_preheader) /
+    /// [`split_block`](crate::Cfg::split_block)).
+    #[must_use]
+    pub fn compute<I: InstrInfo<Variable = V>, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Self {
+        let placements = PhiPlacements::compute(cfg, dom);
+        let mut drafts = create_drafts(cfg, &placements);
+        let mut max_versions = BTreeMap::new();
+        rename_drafts(cfg, dom, &mut drafts, &mut max_versions);
+        let blocks = finish_blocks(drafts, &mut max_versions);
+        SsaForm {
+            blocks,
+            max_versions,
+        }
     }
 }
 
@@ -518,7 +524,7 @@ mod tests {
     fn no_phis_in_linear_cfg() {
         let cfg = CfgBuilder::build(vec![df_def("def r0", 0), df_use("use r0", 0)]).unwrap();
         let dom = DominatorTree::compute(&cfg);
-        assert!(place_phis(&cfg, &dom).is_empty());
+        assert!(PhiPlacements::compute(&cfg, &dom).is_empty());
     }
 
     #[test]
@@ -536,22 +542,46 @@ mod tests {
         cfg.block_mut(merge).push(df_use("use", 0));
 
         let dom = DominatorTree::compute(&cfg);
-        let placements = place_phis(&cfg, &dom);
+        let placements = PhiPlacements::compute(&cfg, &dom);
         assert_eq!(placements.len(), 1);
         assert_eq!(placements.at(merge)[0].variable, 0);
     }
 
     #[test]
+    fn edge_payloads_are_preserved_while_computing_ssa() {
+        let mut cfg = Cfg::<DfInst, &'static str>::with_edge_payload();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        let merge = cfg.new_block();
+        cfg.add_edge_with_payload(cfg.entry(), left, EdgeKind::ConditionalTrue, "left");
+        cfg.add_edge_with_payload(cfg.entry(), right, EdgeKind::ConditionalFalse, "right");
+        cfg.add_edge_with_payload(left, merge, EdgeKind::Fallthrough, "left-merge");
+        cfg.add_edge_with_payload(right, merge, EdgeKind::Fallthrough, "right-merge");
+        cfg.block_mut(left).push(df_def("left", 0));
+        cfg.block_mut(right).push(df_def("right", 0));
+        cfg.block_mut(merge).push(df_use("merged", 0));
+
+        let dom = DominatorTree::compute(&cfg);
+        let ssa = SsaForm::compute(&cfg, &dom);
+
+        assert_eq!(ssa.block(merge).phis.len(), 1);
+        assert_eq!(
+            cfg.edges().map(|edge| *edge.payload()).collect::<Vec<_>>(),
+            ["left", "right", "left-merge", "right-merge"]
+        );
+    }
+
+    #[test]
     fn renaming_uses_latest_definition() {
         let mut cfg = Cfg::<DfInst>::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             df_def("first", 0),
             df_def("second", 0),
             df_use("use", 0),
         ]);
 
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
+        let ssa = SsaForm::compute(&cfg, &dom);
         let instructions = &ssa.block(cfg.entry()).instructions;
         assert_eq!(instructions[0].defs[0], SsaValue::new(0, 1));
         assert_eq!(instructions[1].defs[0], SsaValue::new(0, 2));
@@ -562,7 +592,7 @@ mod tests {
     fn read_before_definition_is_live_in() {
         let cfg = CfgBuilder::build(vec![df_use("use", 7), df_def("def", 7)]).unwrap();
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
+        let ssa = SsaForm::compute(&cfg, &dom);
         assert_eq!(
             ssa.block(cfg.entry()).instructions[0].uses[0],
             SsaValue::live_in(7)
@@ -584,7 +614,7 @@ mod tests {
         cfg.block_mut(merge).push(df_use("merged", 0));
 
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
+        let ssa = SsaForm::compute(&cfg, &dom);
         let phi = &ssa.block(merge).phis[0];
         assert_eq!(phi.result.variable, 0);
         assert_ne!(phi.result.version, 0);
@@ -600,7 +630,7 @@ mod tests {
         let unreachable = cfg.new_block();
         cfg.block_mut(unreachable).push(df_def("dead", 3));
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
+        let ssa = SsaForm::compute(&cfg, &dom);
         assert_eq!(ssa.block(unreachable).instructions.len(), 1);
         assert_eq!(ssa.block(unreachable).instructions[0].defs[0].variable, 3);
     }

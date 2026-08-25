@@ -2,11 +2,19 @@
 //!
 //! Supports both **forward** and **backward** analyses via a worklist
 //! algorithm that iterates until the solution stabilizes.
+//!
+//! Every solver in the crate carries the same facility matrix: a full solve,
+//! a seeded solve (`_from`), a deterministically bounded solve
+//! (`_with_config`), and fallible `try_` counterparts — all sharing
+//! [`SolveConfig`], [`SolveError`], and [`TrySolveError`]. The node-level
+//! counterpart lives in [`node_fixpoint`](super::node_fixpoint) and the
+//! edge-sensitive counterpart in [`edge_fixpoint`](super::edge_fixpoint).
 
 extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::convert::Infallible;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
@@ -20,13 +28,116 @@ pub enum Direction {
     Backward,
 }
 
+/// Deterministic solver limits, shared by every fixpoint solver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SolveConfig {
+    max_steps: Option<usize>,
+}
+
+impl SolveConfig {
+    /// An unbounded solve.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { max_steps: None }
+    }
+
+    /// Stop before processing more than `limit` worklist entries.
+    #[must_use]
+    pub const fn with_step_limit(limit: usize) -> Self {
+        Self {
+            max_steps: Some(limit),
+        }
+    }
+
+    /// Configured worklist-entry limit, if any.
+    #[must_use]
+    pub const fn max_steps(self) -> Option<usize> {
+        self.max_steps
+    }
+}
+
+/// A bounded solve did not reach a fixpoint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SolveError {
+    /// The deterministic worklist still contained a node at the limit.
+    StepLimitExceeded {
+        /// Configured limit.
+        limit: usize,
+        /// Worklist entries already processed.
+        steps: usize,
+        /// Dense index of the next node that would have been processed.
+        pending_node: usize,
+    },
+}
+
+impl core::fmt::Display for SolveError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match *self {
+            Self::StepLimitExceeded {
+                limit,
+                steps,
+                pending_node,
+            } => write!(
+                formatter,
+                "dataflow step limit {limit} exceeded after {steps} steps; next node is {pending_node}"
+            ),
+        }
+    }
+}
+
+impl core::error::Error for SolveError {}
+
+/// Failure from a fallible solve.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TrySolveError<E> {
+    /// A boundary, merge, or transfer operation rejected the input.
+    Problem(E),
+    /// The solver reached its configured deterministic work limit.
+    Solver(SolveError),
+}
+
+impl<E> From<SolveError> for TrySolveError<E> {
+    fn from(error: SolveError) -> Self {
+        Self::Solver(error)
+    }
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for TrySolveError<E> {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Problem(error) => error.fmt(formatter),
+            Self::Solver(error) => error.fmt(formatter),
+        }
+    }
+}
+
+impl<E: core::error::Error + 'static> core::error::Error for TrySolveError<E> {
+    fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
+        match self {
+            Self::Problem(error) => Some(error),
+            Self::Solver(error) => Some(error),
+        }
+    }
+}
+
+/// Collapse a fallible-solver result whose consumer error is [`Infallible`].
+pub(crate) fn collapse_infallible<T>(
+    result: Result<T, TrySolveError<Infallible>>,
+) -> Result<T, SolveError> {
+    match result {
+        Ok(facts) => Ok(facts),
+        Err(TrySolveError::Solver(error)) => Err(error),
+        Err(TrySolveError::Problem(error)) => match error {},
+    }
+}
+
 /// A data flow problem to be solved by the fixpoint engine.
 ///
 /// `F` is the flow fact type (e.g. `BTreeSet<DefSite>` for reaching
 /// definitions, or `BTreeSet<I::Variable>` for liveness).
 /// Termination requires `meet` and `transfer` to be monotone over a
 /// finite-height fact lattice.
-pub trait Problem<I> {
+pub trait Problem<I, E = ()> {
     /// The flow fact (lattice element) type.
     type Fact: Clone + PartialEq;
 
@@ -44,19 +155,69 @@ pub trait Problem<I> {
 
     /// Transfer function: given the incoming fact for a block, compute
     /// the outgoing fact after the block's instructions are applied.
-    fn transfer(&self, cfg: &Cfg<I>, block: BlockId, input: &Self::Fact) -> Self::Fact;
+    fn transfer(&self, cfg: &Cfg<I, E>, block: BlockId, input: &Self::Fact) -> Self::Fact;
 }
 
-/// Result of a fixpoint computation.
+/// A fallible data flow problem.
+///
+/// This is the error-preserving counterpart of [`Problem`], for verification
+/// and abstract interpretation where a boundary, merge, or transfer can reject
+/// the input program. The solver reports those consumer errors separately from
+/// its own configured step limit. Termination without a step limit requires
+/// `meet` and `transfer` to be monotone over a finite-height fact lattice.
+pub trait TryProblem<I, E = ()> {
+    /// The flow fact (lattice element) type.
+    type Fact: Clone + PartialEq;
+
+    /// Consumer error produced by a boundary, merge, or transfer operation.
+    type Error;
+
+    /// Analysis direction.
+    fn direction(&self) -> Direction;
+
+    /// Initial (bottom) value for each block.
+    fn bottom(&self) -> Self::Fact;
+
+    /// Initial value for the entry (forward) or each exit (backward) block.
+    ///
+    /// # Errors
+    ///
+    /// Returns a consumer error when constructing the boundary fact fails.
+    fn entry_fact(&self) -> Result<Self::Fact, Self::Error>;
+
+    /// Meet/join operator: merge information from multiple paths.
+    ///
+    /// # Errors
+    ///
+    /// Returns a consumer error when the facts are incompatible.
+    fn meet(&self, a: &Self::Fact, b: &Self::Fact) -> Result<Self::Fact, Self::Error>;
+
+    /// Transfer function: given the incoming fact for a block, compute
+    /// the outgoing fact after the block's instructions are applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns a consumer error when the block rejects the incoming fact.
+    fn transfer(
+        &self,
+        cfg: &Cfg<I, E>,
+        block: BlockId,
+        input: &Self::Fact,
+    ) -> Result<Self::Fact, Self::Error>;
+}
+
+/// Per-block facts computed by a fixpoint solve.
 #[derive(Debug, Clone)]
-pub struct FixpointResult<F> {
+pub struct Facts<F> {
     /// The IN fact for each block (indexed by `BlockId::index()`).
-    pub block_in: Vec<F>,
+    block_in: Vec<F>,
     /// The OUT fact for each block (indexed by `BlockId::index()`).
-    pub block_out: Vec<F>,
+    block_out: Vec<F>,
+    /// Number of worklist entries processed.
+    steps: usize,
 }
 
-impl<F> FixpointResult<F> {
+impl<F> Facts<F> {
     /// Get the IN fact for a block.
     #[must_use]
     pub fn fact_in(&self, block: BlockId) -> &F {
@@ -68,9 +229,22 @@ impl<F> FixpointResult<F> {
     pub fn fact_out(&self, block: BlockId) -> &F {
         &self.block_out[block.index()]
     }
+
+    /// Number of worklist entries processed.
+    #[must_use]
+    pub const fn steps(&self) -> usize {
+        self.steps
+    }
 }
 
-/// Run the fixpoint iteration for the given problem on the CFG.
+/// Run the fixpoint iteration for the given problem on the CFG without a
+/// step limit.
+///
+/// # Errors
+///
+/// The unbounded configuration cannot produce a solver-limit error. The
+/// `Result` matches [`solve_problem_with_config`] so callers can switch
+/// configurations without changing result handling.
 ///
 /// # Examples
 ///
@@ -95,147 +269,295 @@ impl<F> FixpointResult<F> {
 /// let live = Liveness::compute(&cfg);
 /// assert!(live.live_in(cfg.entry()).is_empty()); // r0 defined, not used
 /// ```
-pub fn solve<I, P: Problem<I>>(cfg: &Cfg<I>, problem: &P) -> FixpointResult<P::Fact> {
-    let n = cfg.num_blocks();
-    let bottom = problem.bottom();
+pub fn solve_problem<I, E, P: Problem<I, E>>(
+    cfg: &Cfg<I, E>,
+    problem: &P,
+) -> Result<Facts<P::Fact>, SolveError> {
+    solve_problem_with_config(cfg, problem, SolveConfig::new())
+}
 
-    let mut block_in: Vec<P::Fact> = vec![bottom.clone(); n];
-    let mut block_out: Vec<P::Fact> = vec![bottom.clone(); n];
+/// Run the fixpoint iteration from only the initial `seeds`.
+///
+/// Every fact starts at `bottom`, but only the seeds — and whatever their
+/// transfers reach — are ever visited, so an incremental or dirty-region
+/// analysis pays for the part of the CFG its change actually reaches. A block
+/// with no upstream in the analysis direction receives the problem's entry
+/// fact when visited; unvisited blocks stay at `bottom`.
+///
+/// # Panics
+///
+/// Panics when a seed is not a block in `cfg`.
+///
+/// # Errors
+///
+/// The unbounded configuration cannot produce a solver-limit error.
+pub fn solve_problem_from<I, E, P: Problem<I, E>>(
+    cfg: &Cfg<I, E>,
+    problem: &P,
+    seeds: &[BlockId],
+) -> Result<Facts<P::Fact>, SolveError> {
+    solve_problem_from_with_config(cfg, problem, seeds, SolveConfig::new())
+}
 
-    // Set entry/exit initial fact.
+/// Run the fixpoint iteration with deterministic bounded iteration.
+///
+/// # Errors
+///
+/// Returns [`SolveError::StepLimitExceeded`] when work remains at the
+/// configured limit.
+pub fn solve_problem_with_config<I, E, P: Problem<I, E>>(
+    cfg: &Cfg<I, E>,
+    problem: &P,
+    config: SolveConfig,
+) -> Result<Facts<P::Fact>, SolveError> {
+    let fallible = InfallibleProblem(problem);
+    collapse_infallible(try_solve_with_worklist(
+        cfg,
+        &fallible,
+        reachable_worklist(cfg, &fallible),
+        config,
+    ))
+}
+
+/// Run the fixpoint iteration from `seeds` with a deterministic step limit.
+///
+/// # Panics
+///
+/// Panics when a seed is not a block in `cfg`.
+///
+/// # Errors
+///
+/// Returns [`SolveError::StepLimitExceeded`] when work remains at the
+/// configured limit.
+pub fn solve_problem_from_with_config<I, E, P: Problem<I, E>>(
+    cfg: &Cfg<I, E>,
+    problem: &P,
+    seeds: &[BlockId],
+    config: SolveConfig,
+) -> Result<Facts<P::Fact>, SolveError> {
+    let fallible = InfallibleProblem(problem);
+    collapse_infallible(try_solve_with_worklist(
+        cfg,
+        &fallible,
+        seed_worklist(cfg, seeds),
+        config,
+    ))
+}
+
+/// Run a fallible fixpoint iteration without a step limit.
+///
+/// # Errors
+///
+/// Returns [`TrySolveError::Problem`] for a consumer error. The unbounded
+/// configuration cannot produce a solver-limit error.
+pub fn try_solve_problem<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
+    problem: &P,
+) -> Result<Facts<P::Fact>, TrySolveError<P::Error>> {
+    try_solve_problem_with_config(cfg, problem, SolveConfig::new())
+}
+
+/// Run a fallible fixpoint iteration from only the initial `seeds`.
+///
+/// # Panics
+///
+/// Panics when a seed is not a block in `cfg`.
+///
+/// # Errors
+///
+/// Returns [`TrySolveError::Problem`] for a consumer error. The unbounded
+/// configuration cannot produce a solver-limit error.
+pub fn try_solve_problem_from<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
+    problem: &P,
+    seeds: &[BlockId],
+) -> Result<Facts<P::Fact>, TrySolveError<P::Error>> {
+    try_solve_problem_from_with_config(cfg, problem, seeds, SolveConfig::new())
+}
+
+/// Run a fallible fixpoint iteration with a deterministic step limit.
+///
+/// # Errors
+///
+/// Returns [`TrySolveError::Problem`] for a consumer error or
+/// [`TrySolveError::Solver`] when work remains at the configured limit.
+pub fn try_solve_problem_with_config<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
+    problem: &P,
+    config: SolveConfig,
+) -> Result<Facts<P::Fact>, TrySolveError<P::Error>> {
+    try_solve_with_worklist(cfg, problem, reachable_worklist(cfg, problem), config)
+}
+
+/// Run a fallible fixpoint iteration from `seeds` with a deterministic step
+/// limit.
+///
+/// # Panics
+///
+/// Panics when a seed is not a block in `cfg`.
+///
+/// # Errors
+///
+/// Returns [`TrySolveError::Problem`] for a consumer error or
+/// [`TrySolveError::Solver`] when work remains at the configured limit.
+pub fn try_solve_problem_from_with_config<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
+    problem: &P,
+    seeds: &[BlockId],
+    config: SolveConfig,
+) -> Result<Facts<P::Fact>, TrySolveError<P::Error>> {
+    try_solve_with_worklist(cfg, problem, seed_worklist(cfg, seeds), config)
+}
+
+/// Blocks eligible for the initial raw-ID worklist.
+fn reachable_worklist<I, E, P: TryProblem<I, E>>(cfg: &Cfg<I, E>, problem: &P) -> BTreeSet<u32> {
     match problem.direction() {
-        Direction::Forward => {
-            block_in[cfg.entry().index()] = problem.entry_fact();
-            block_out[cfg.entry().index()] =
-                problem.transfer(cfg, cfg.entry(), &block_in[cfg.entry().index()]);
-        }
-        Direction::Backward => {
-            // For backward analysis, initialise all exit blocks.
-            for b in cfg.blocks() {
-                if cfg.successor_edges(b.id()).is_empty() {
-                    block_out[b.id().index()] = problem.entry_fact();
-                    block_in[b.id().index()] =
-                        problem.transfer(cfg, b.id(), &block_out[b.id().index()]);
-                }
-            }
-        }
-    }
-
-    // Forward solving ignores blocks unreachable from the entry. Backward
-    // solving starts from every allocated block because every exit receives
-    // the boundary fact, including exits in disconnected components.
-    let mut worklist: BTreeSet<u32> = match problem.direction() {
         Direction::Forward => cfg
-            .dfs_preorder()
+            .depth_first_preorder()
             .into_iter()
             .map(|block| block.0)
             .collect(),
         Direction::Backward => cfg.blocks().iter().map(|block| block.id().0).collect(),
-    };
+    }
+}
 
-    while let Some(raw_block) = worklist.pop_first() {
-        let block = BlockId(raw_block);
-        match problem.direction() {
-            Direction::Forward => {
-                // IN = meet of all predecessors' OUT.
-                let mut preds = cfg.predecessors(block);
-                let merged = match preds.next() {
-                    None => problem.entry_fact(),
-                    Some(first) => {
-                        let mut m = block_out[first.index()].clone();
-                        for p in preds {
-                            m = problem.meet(&m, &block_out[p.index()]);
-                        }
-                        m
-                    }
-                };
-                block_in[block.index()] = merged;
+fn seed_worklist<I, E>(cfg: &Cfg<I, E>, seeds: &[BlockId]) -> BTreeSet<u32> {
+    seeds
+        .iter()
+        .map(|seed| {
+            assert!(
+                seed.index() < cfg.block_count(),
+                "seed block is out of range"
+            );
+            seed.0
+        })
+        .collect()
+}
 
-                let new_out = problem.transfer(cfg, block, &block_in[block.index()]);
-                if new_out != block_out[block.index()] {
-                    block_out[block.index()] = new_out;
-                    for s in cfg.successors(block) {
-                        worklist.insert(s.0);
+fn try_solve_with_worklist<I, E, P: TryProblem<I, E>>(
+    cfg: &Cfg<I, E>,
+    problem: &P,
+    mut worklist: BTreeSet<u32>,
+    config: SolveConfig,
+) -> Result<Facts<P::Fact>, TrySolveError<P::Error>> {
+    let n = cfg.block_count();
+    let bottom = problem.bottom();
+    let forward = matches!(problem.direction(), Direction::Forward);
+
+    let mut block_in: Vec<P::Fact> = vec![bottom.clone(); n];
+    let mut block_out: Vec<P::Fact> = vec![bottom; n];
+
+    let mut steps = 0;
+    while let Some(block_raw) = worklist.pop_first() {
+        if let Some(limit) = config.max_steps {
+            if steps >= limit {
+                return Err(SolveError::StepLimitExceeded {
+                    limit,
+                    steps,
+                    pending_node: block_raw as usize,
+                }
+                .into());
+            }
+        }
+        steps += 1;
+        let block = BlockId(block_raw);
+
+        // Meet over the upstream facts in the analysis direction; a block
+        // with no upstream receives the problem's entry fact.
+        let merged = if forward {
+            let mut upstream = cfg.predecessors(block);
+            match upstream.next() {
+                None => problem.entry_fact().map_err(TrySolveError::Problem)?,
+                Some(first) => {
+                    let mut met = block_out[first.index()].clone();
+                    for from in upstream {
+                        met = problem
+                            .meet(&met, &block_out[from.index()])
+                            .map_err(TrySolveError::Problem)?;
                     }
+                    met
                 }
             }
-            Direction::Backward => {
-                // OUT = meet of all successors' IN.
-                let mut succs = cfg.successors(block);
-                let merged = match succs.next() {
-                    None => problem.entry_fact(),
-                    Some(first) => {
-                        let mut m = block_in[first.index()].clone();
-                        for s in succs {
-                            m = problem.meet(&m, &block_in[s.index()]);
-                        }
-                        m
+        } else {
+            let mut upstream = cfg.successors(block);
+            match upstream.next() {
+                None => problem.entry_fact().map_err(TrySolveError::Problem)?,
+                Some(first) => {
+                    let mut met = block_in[first.index()].clone();
+                    for from in upstream {
+                        met = problem
+                            .meet(&met, &block_in[from.index()])
+                            .map_err(TrySolveError::Problem)?;
                     }
-                };
-                block_out[block.index()] = merged;
+                    met
+                }
+            }
+        };
 
-                let new_in = problem.transfer(cfg, block, &block_out[block.index()]);
-                if new_in != block_in[block.index()] {
-                    block_in[block.index()] = new_in;
-                    for p in cfg.predecessors(block) {
-                        worklist.insert(p.0);
-                    }
+        if forward {
+            block_in[block.index()] = merged;
+            let new_out = problem
+                .transfer(cfg, block, &block_in[block.index()])
+                .map_err(TrySolveError::Problem)?;
+            if new_out != block_out[block.index()] {
+                block_out[block.index()] = new_out;
+                for downstream in cfg.successors(block) {
+                    worklist.insert(downstream.0);
+                }
+            }
+        } else {
+            block_out[block.index()] = merged;
+            let new_in = problem
+                .transfer(cfg, block, &block_out[block.index()])
+                .map_err(TrySolveError::Problem)?;
+            if new_in != block_in[block.index()] {
+                block_in[block.index()] = new_in;
+                for downstream in cfg.predecessors(block) {
+                    worklist.insert(downstream.0);
                 }
             }
         }
     }
 
-    FixpointResult {
+    Ok(Facts {
         block_in,
         block_out,
+        steps,
+    })
+}
+
+/// Adapter that runs an infallible [`Problem`] on the fallible solver core.
+struct InfallibleProblem<'p, P>(&'p P);
+
+impl<I, E, P: Problem<I, E>> TryProblem<I, E> for InfallibleProblem<'_, P> {
+    type Fact = P::Fact;
+    type Error = Infallible;
+
+    fn direction(&self) -> Direction {
+        Problem::direction(self.0)
+    }
+
+    fn bottom(&self) -> Self::Fact {
+        Problem::bottom(self.0)
+    }
+
+    fn entry_fact(&self) -> Result<Self::Fact, Self::Error> {
+        Ok(Problem::entry_fact(self.0))
+    }
+
+    fn meet(&self, a: &Self::Fact, b: &Self::Fact) -> Result<Self::Fact, Self::Error> {
+        Ok(Problem::meet(self.0, a, b))
+    }
+
+    fn transfer(
+        &self,
+        cfg: &Cfg<I, E>,
+        block: BlockId,
+        input: &Self::Fact,
+    ) -> Result<Self::Fact, Self::Error> {
+        Ok(Problem::transfer(self.0, cfg, block, input))
     }
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::edge::EdgeKind;
-
-    #[test]
-    fn backward_solver_propagates_through_disconnected_components() {
-        struct BackwardReachability;
-
-        impl Problem<()> for BackwardReachability {
-            type Fact = bool;
-
-            fn direction(&self) -> Direction {
-                Direction::Backward
-            }
-
-            fn bottom(&self) -> Self::Fact {
-                false
-            }
-
-            fn entry_fact(&self) -> Self::Fact {
-                true
-            }
-
-            fn meet(&self, a: &Self::Fact, b: &Self::Fact) -> Self::Fact {
-                *a || *b
-            }
-
-            fn transfer(&self, _cfg: &Cfg<()>, _block: BlockId, input: &Self::Fact) -> Self::Fact {
-                *input
-            }
-        }
-
-        let mut cfg = Cfg::new();
-        let disconnected_predecessor = cfg.new_block();
-        let disconnected_exit = cfg.new_block();
-        cfg.add_edge(
-            disconnected_predecessor,
-            disconnected_exit,
-            EdgeKind::Fallthrough,
-        );
-        let result = solve(&cfg, &BackwardReachability);
-        assert!(*result.fact_in(disconnected_predecessor));
-        assert!(*result.fact_out(disconnected_predecessor));
-        assert!(*result.fact_in(disconnected_exit));
-        assert!(*result.fact_out(disconnected_exit));
-    }
-}
+mod tests;

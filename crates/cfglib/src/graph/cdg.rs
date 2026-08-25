@@ -271,7 +271,7 @@ mod tests {
         let post_dominators = DominatorTree::compute_post(&cfg);
         let graph = control_dependence_graph(&cfg, &post_dominators);
 
-        assert_eq!(graph.node_count(), cfg.num_blocks());
+        assert_eq!(graph.node_count(), cfg.block_count());
         assert_eq!(graph.edge_count(), 0);
     }
 }

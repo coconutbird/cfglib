@@ -110,7 +110,7 @@ impl<V: VariableId> AliasSets<V> {
     }
 
     /// Number of distinct alias sets.
-    pub fn num_sets(&mut self) -> usize {
+    pub fn set_count(&mut self) -> usize {
         let n = self.parent.len();
         let mut roots = alloc::collections::BTreeSet::new();
         for i in 0..n {
@@ -126,48 +126,50 @@ impl<V: VariableId> Default for AliasSets<V> {
     }
 }
 
-/// Run Steensgaard-style alias analysis on a CFG.
-///
-/// Unifies locations that are stored to/loaded from the same base.
-/// This is a flow-insensitive, context-insensitive analysis.
-#[must_use]
-pub fn alias_analysis<I: MemoryInfo>(cfg: &Cfg<I>) -> AliasSets<I::Variable> {
-    let mut sets = AliasSets::new();
+impl<V: VariableId> AliasSets<V> {
+    /// Run Steensgaard-style alias analysis on a CFG.
+    ///
+    /// Unifies locations that are stored to/loaded from the same base.
+    /// This is a flow-insensitive, context-insensitive analysis.
+    #[must_use]
+    pub fn compute<I: MemoryInfo + InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
+        let mut sets = AliasSets::new();
 
-    // Register all locations.
-    for block in cfg.blocks() {
-        for inst in block.instructions() {
-            for d in inst.defs() {
-                sets.get_or_insert(d.clone());
-            }
-            for u in inst.uses() {
-                sets.get_or_insert(u.clone());
-            }
-        }
-    }
-
-    // Unify locations involved in the same memory operations.
-    for block in cfg.blocks() {
-        for inst in block.instructions() {
-            let ops = inst.memory_ops();
-            if ops.len() >= 2 {
-                let first = &ops[0].0;
-                for (variable, _) in &ops[1..] {
-                    sets.merge(first.clone(), variable.clone());
+        // Register all locations.
+        for block in cfg.blocks() {
+            for inst in block.instructions() {
+                for d in inst.defs() {
+                    sets.get_or_insert(d.clone());
+                }
+                for u in inst.uses() {
+                    sets.get_or_insert(u.clone());
                 }
             }
-            // Also unify defs with store targets.
-            for (memory_variable, op) in ops {
-                if *op == MemoryOp::Store {
-                    for d in inst.defs() {
-                        sets.merge(memory_variable.clone(), d.clone());
+        }
+
+        // Unify locations involved in the same memory operations.
+        for block in cfg.blocks() {
+            for inst in block.instructions() {
+                let ops = inst.memory_ops();
+                if ops.len() >= 2 {
+                    let first = &ops[0].0;
+                    for (variable, _) in &ops[1..] {
+                        sets.merge(first.clone(), variable.clone());
+                    }
+                }
+                // Also unify defs with store targets.
+                for (memory_variable, op) in ops {
+                    if *op == MemoryOp::Store {
+                        for d in inst.defs() {
+                            sets.merge(memory_variable.clone(), d.clone());
+                        }
                     }
                 }
             }
         }
-    }
 
-    sets
+        sets
+    }
 }
 
 #[cfg(test)]
@@ -205,8 +207,8 @@ mod tests {
         sets.get_or_insert(0_u16);
         sets.get_or_insert(1_u16);
         sets.get_or_insert(2_u16);
-        assert_eq!(sets.num_sets(), 3);
+        assert_eq!(sets.set_count(), 3);
         sets.merge(0, 1);
-        assert_eq!(sets.num_sets(), 2);
+        assert_eq!(sets.set_count(), 2);
     }
 }

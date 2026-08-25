@@ -10,7 +10,7 @@
 //! let program = /* decoded dxbc::shex::ir::Program */;
 //! let cfg = cfglib_dxbc::build_cfg(&program)?;
 //! let dominators = cfglib::DominatorTree::compute(&cfg);
-//! let ssa = cfglib::build_ssa(&cfg, &dominators);
+//! let ssa = cfglib::SsaForm::compute(&cfg, &dominators);
 //! println!("{}", cfg.to_dot());
 //! ```
 

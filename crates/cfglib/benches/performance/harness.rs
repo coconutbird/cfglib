@@ -3,6 +3,7 @@ use super::Instant;
 #[cfg(cfglib_bench_alloc)]
 use super::{AtomicBool, AtomicU64, GlobalAlloc, Layout, Ordering};
 use super::{Duration, System, black_box};
+use std::collections::{BTreeMap, BTreeSet};
 
 #[cfg(cfglib_bench_alloc)]
 struct CountingAllocator;
@@ -20,7 +21,7 @@ static PEAK_LIVE_BYTES: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(cfglib_bench_alloc)]
 fn record_allocation(size: usize) {
-    let size = size as u64;
+    let size = u64::try_from(size).expect("allocator request size must fit in u64");
     let live = LIVE_BYTES.fetch_add(size, Ordering::Relaxed) + size;
     if COUNT_ALLOCATIONS.load(Ordering::Relaxed) {
         ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
@@ -31,7 +32,8 @@ fn record_allocation(size: usize) {
 
 #[cfg(cfglib_bench_alloc)]
 fn record_deallocation(size: usize) {
-    LIVE_BYTES.fetch_sub(size as u64, Ordering::Relaxed);
+    let size = u64::try_from(size).expect("allocator request size must fit in u64");
+    LIVE_BYTES.fetch_sub(size, Ordering::Relaxed);
 }
 
 #[cfg(cfglib_bench_alloc)]
@@ -60,8 +62,9 @@ unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn realloc(&self, ptr: *mut u8, old: Layout, new_size: usize) -> *mut u8 {
         let pointer = unsafe { System.realloc(ptr, old, new_size) };
         if !pointer.is_null() {
-            let old_size = old.size() as u64;
-            let new_size = new_size as u64;
+            let old_size =
+                u64::try_from(old.size()).expect("allocator request size must fit in u64");
+            let new_size = u64::try_from(new_size).expect("allocator request size must fit in u64");
             let live = if new_size >= old_size {
                 LIVE_BYTES.fetch_add(new_size - old_size, Ordering::Relaxed) + new_size - old_size
             } else {
@@ -128,6 +131,10 @@ fn run_iterations<T>(iterations: u64, operation: &mut impl FnMut() -> T) -> Dura
 }
 
 #[cfg(not(cfglib_bench_alloc))]
+// Nanoseconds per operation are intentionally a floating-point statistic; the
+// calibrated iteration count is far below the range where integer precision
+// would affect the printed tenth of a nanosecond.
+#[allow(clippy::cast_precision_loss)]
 pub(super) fn benchmark<T>(name: &str, target: Duration, mut operation: impl FnMut() -> T) {
     let mut iterations = 1_u64;
     loop {
@@ -196,3 +203,118 @@ pub(super) fn run_semantic_oracle<T>(operation: &mut impl FnMut() -> T, oracle: 
     oracle(&result);
     drop(result);
 }
+
+pub(super) struct BenchmarkSuite<'filter> {
+    filter: &'filter str,
+    target: Duration,
+    registered: BTreeSet<&'static str>,
+    matched: usize,
+    coverage: BTreeMap<&'static str, &'static str>,
+}
+
+impl<'filter> BenchmarkSuite<'filter> {
+    pub(super) fn new(filter: &'filter str, target: Duration) -> Self {
+        Self {
+            filter,
+            target,
+            registered: BTreeSet::new(),
+            matched: 0,
+            coverage: BTreeMap::new(),
+        }
+    }
+
+    pub(super) fn case<T>(
+        &mut self,
+        name: &'static str,
+        covered_api: &'static [&'static str],
+        mut operation: impl FnMut() -> T,
+        oracle: impl FnOnce(&T),
+    ) {
+        assert!(
+            self.registered.insert(name),
+            "benchmark case `{name}` is registered more than once"
+        );
+        for &api in covered_api {
+            assert!(
+                self.coverage.insert(api, name).is_none(),
+                "public API operation `{api}` is assigned to more than one benchmark case"
+            );
+        }
+
+        if !self.filter.is_empty() && !name.contains(self.filter) {
+            return;
+        }
+        self.matched += 1;
+        run_semantic_oracle(&mut operation, oracle);
+        benchmark(name, self.target, operation);
+    }
+
+    pub(super) fn cover(&mut self, case: &'static str, covered_api: &'static [&'static str]) {
+        assert!(
+            self.registered.contains(case),
+            "API coverage names unregistered benchmark case `{case}`"
+        );
+        for &api in covered_api {
+            assert!(
+                self.coverage.insert(api, case).is_none(),
+                "public API operation `{api}` is assigned to more than one benchmark case"
+            );
+        }
+    }
+
+    pub(super) fn finish(self, required_api: &[&str]) {
+        if !self.filter.is_empty() && self.matched == 0 {
+            configuration_error(&format!(
+                "benchmark filter `{}` matched no registered cases",
+                self.filter
+            ));
+        }
+
+        let missing: Vec<_> = required_api
+            .iter()
+            .copied()
+            .filter(|api| !self.coverage.contains_key(api))
+            .collect();
+        assert!(
+            missing.is_empty(),
+            "public API operations without a benchmark case: {missing:?}"
+        );
+        let unexpected: Vec<_> = self
+            .coverage
+            .keys()
+            .copied()
+            .filter(|api| !required_api.contains(api))
+            .collect();
+        assert!(
+            unexpected.is_empty(),
+            "benchmark cases name unknown public API operations: {unexpected:?}"
+        );
+        println!(
+            "coverage: {} public facade functions across {} benchmark cases",
+            required_api.len(),
+            self.registered.len()
+        );
+    }
+}
+
+macro_rules! benchmark_case {
+    ($suite:expr, $name:literal, covers [$($api:path),+ $(,)?], $operation:expr, $oracle:expr $(,)?) => {{
+        $suite.case(
+            $name,
+            &[$(stringify!($api)),+],
+            $operation,
+            $oracle,
+        );
+    }};
+    ($suite:expr, $name:literal, $operation:expr, $oracle:expr $(,)?) => {{
+        $suite.case($name, &[], $operation, $oracle);
+    }};
+}
+
+macro_rules! benchmark_coverage {
+    ($suite:expr, $case:literal, [$($api:path),+ $(,)?] $(,)?) => {{
+        $suite.cover($case, &[$(stringify!($api)),+]);
+    }};
+}
+
+pub(super) use {benchmark_case, benchmark_coverage};

@@ -238,28 +238,35 @@ where
 /// # Examples
 ///
 /// ```
-/// use cfglib::{Cfg, EdgeKind, interval_analysis};
+/// use cfglib::{Cfg, EdgeKind, IntervalAnalysis};
 ///
 /// let mut cfg = Cfg::<u32>::new();
 /// let b1 = cfg.new_block();
 /// cfg.add_edge(cfg.entry(), b1, EdgeKind::Fallthrough);
 ///
-/// let result = interval_analysis(&cfg);
+/// let result = IntervalAnalysis::compute(&cfg);
 /// assert!(result.is_reducible);
 /// ```
-#[must_use]
-pub fn interval_analysis<G: RootedGraphView>(graph: &G) -> IntervalAnalysis<G::NodeId> {
-    let mut levels = Vec::new();
+impl<N: DenseNodeId> IntervalAnalysis<N> {
+    /// Compute the source graph's first-level interval partition.
+    #[must_use]
+    pub fn compute<G>(graph: &G) -> Self
+    where
+        G: RootedGraphView<NodeId = N>,
+    {
+        let mut levels = Vec::new();
 
-    let intervals = compute_intervals_from_graph(graph);
-    let num_intervals = intervals.len();
-    levels.push(intervals);
+        let intervals = compute_intervals_from_graph(graph);
+        let interval_count = intervals.len();
+        levels.push(intervals);
 
-    // A single first-level interval is sufficient to establish reducibility.
-    // Use `structure::is_reducible` when a complete Boolean answer is needed.
-    IntervalAnalysis {
-        is_reducible: num_intervals <= 1,
-        levels,
+        // A single first-level interval is sufficient to establish
+        // reducibility. Use `structure::is_reducible` when a complete
+        // Boolean answer is needed.
+        Self {
+            is_reducible: interval_count <= 1,
+            levels,
+        }
     }
 }
 
@@ -308,7 +315,7 @@ mod tests {
     #[test]
     fn single_block_is_one_interval() {
         let cfg = CfgBuilder::build(vec![ff("a")]).unwrap();
-        let result = interval_analysis(&cfg);
+        let result = IntervalAnalysis::compute(&cfg);
         assert_eq!(result.levels.len(), 1);
         assert_eq!(result.levels[0].len(), 1);
         assert!(result.is_reducible);
@@ -319,7 +326,7 @@ mod tests {
         let graph = DirectedGraph::<(), ()>::new();
         let view = Rooted::new(&graph, NodeId::from_index(0));
 
-        let result = interval_analysis(&view);
+        let result = IntervalAnalysis::compute(&view);
 
         assert_eq!(result.levels, vec![Vec::new()]);
         assert!(result.is_reducible);
@@ -328,7 +335,7 @@ mod tests {
     #[test]
     fn linear_cfg_is_one_interval() {
         let cfg = CfgBuilder::build(vec![ff("a"), ff("b"), ff("c")]).unwrap();
-        let result = interval_analysis(&cfg);
+        let result = IntervalAnalysis::compute(&cfg);
         assert_eq!(result.levels.len(), 1);
         // All blocks should be in a single interval since each block
         // has only one predecessor from within the interval.
@@ -349,7 +356,7 @@ mod tests {
         cfg.add_edge(b1, b3, crate::edge::EdgeKind::Fallthrough);
         cfg.add_edge(b2, b3, crate::edge::EdgeKind::Fallthrough);
 
-        let result = interval_analysis(&cfg);
+        let result = IntervalAnalysis::compute(&cfg);
         assert_eq!(result.levels.len(), 1);
         assert_ne!(result.levels[0].len(), 0);
     }
@@ -363,7 +370,7 @@ mod tests {
             MockInst(FlowEffect::Return, "ret"),
         ])
         .unwrap();
-        let result = interval_analysis(&cfg);
+        let result = IntervalAnalysis::compute(&cfg);
         assert_eq!(result.levels.len(), 1);
         assert_ne!(result.levels[0].len(), 0);
     }
@@ -376,7 +383,7 @@ mod tests {
             graph.add_edge(nodes[index], nodes[index - 1], ());
         }
 
-        let result = interval_analysis(&Rooted::new(&graph, nodes[7]));
+        let result = IntervalAnalysis::compute(&Rooted::new(&graph, nodes[7]));
 
         assert_eq!(result.levels[0].len(), 1);
         assert_eq!(
@@ -400,7 +407,7 @@ mod tests {
             root,
         };
 
-        let result = interval_analysis(&view);
+        let result = IntervalAnalysis::compute(&view);
 
         assert_eq!(result.levels[0].len(), 1);
         assert_eq!(
@@ -422,7 +429,7 @@ mod tests {
             graph.add_edge(root, child, ());
         }
 
-        let result = interval_analysis(&Rooted::new(&graph, root));
+        let result = IntervalAnalysis::compute(&Rooted::new(&graph, root));
 
         assert_eq!(result.levels[0].len(), 1);
         assert_eq!(result.levels[0][0].blocks.len(), 2);
@@ -466,7 +473,7 @@ mod tests {
         graph.add_edge(loop_header, loop_header, ());
         graph.add_edge(loop_header, exit, ());
 
-        let result = interval_analysis(&Rooted::new(&graph, root));
+        let result = IntervalAnalysis::compute(&Rooted::new(&graph, root));
 
         assert_eq!(result.levels[0].len(), 2);
         assert_eq!(result.levels[0][0].header, root);
@@ -492,7 +499,7 @@ mod tests {
         graph.add_edge(root, reachable, ());
         graph.add_edge(unreachable, unreachable_successor, ());
 
-        let result = interval_analysis(&Rooted::new(&graph, root));
+        let result = IntervalAnalysis::compute(&Rooted::new(&graph, root));
 
         assert_eq!(result.levels[0].len(), 1);
         assert_eq!(result.levels[0][0].blocks.len(), 2);

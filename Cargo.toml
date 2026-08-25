@@ -24,6 +24,7 @@ unused = { level = "deny", priority = -1 }
 nonstandard_style = { level = "deny", priority = -1 }
 rust_2018_idioms = { level = "deny", priority = -1 }
 future_incompatible = { level = "deny", priority = -1 }
+unexpected_cfgs = { level = "deny", check-cfg = ['cfg(cfglib_bench_alloc)'] }
 
 [workspace.lints.clippy]
 correctness = { level = "deny", priority = -1 }
