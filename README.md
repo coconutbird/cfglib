@@ -287,8 +287,8 @@ let ssa = SsaForm::compute(&cfg, &dominators);
 register-component identities from decoded masks and swizzles, retains relative
 index expressions, classifies multi-result and UAV read-modify-write operations,
 and reports observable shader effects through its own `Sm4Effect` vocabulary.
-Its `dxbc` dependency comes directly from the `d3dasm` Git repository;
-`Cargo.lock` records the exact upstream commit used by the test suite.
+Its `dxbc` dependency comes directly from the `d3dasm` Git repository's
+`main` branch, so builds track that branch's head.
 
 The `tests/source-cfg.rs` integration test is the executable specification of
 the source-language side: interned symbol variables, string/bool constants

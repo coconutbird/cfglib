@@ -148,7 +148,6 @@ def cargo_package_roots() -> tuple[Path, list[Path]]:
                 "--format-version",
                 "1",
                 "--no-deps",
-                "--locked",
             ]
         )
     )
@@ -165,7 +164,7 @@ def cargo_package_roots() -> tuple[Path, list[Path]]:
 
 def check_workspace_files(workspace_root: Path, violations: list[str]) -> None:
     """Check conventional files at the Cargo workspace root."""
-    for name in ("Cargo.toml", "Cargo.lock"):
+    for name in ("Cargo.toml",):
         if not (workspace_root / name).is_file():
             relative = workspace_root.relative_to(REPOSITORY_ROOT).as_posix()
             location = f"{relative}/" if relative != "." else ""

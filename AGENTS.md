@@ -20,14 +20,14 @@ then run all of these from the workspace root:
 ```text
 python scripts/check_repository_policy.py
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -D clippy::pedantic
-cargo test --workspace --all-features --locked
+cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic
+cargo test --workspace --all-features
 ```
 
 Also build documentation with warnings denied when public APIs or docs change:
 
 ```text
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
+RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 ```
 
 In PowerShell, set `RUSTDOCFLAGS` with

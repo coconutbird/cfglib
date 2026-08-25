@@ -31,20 +31,20 @@ repos:
         always_run: true
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -D clippy::pedantic
+        entry: cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic
         language: system
         pass_filenames: false
         always_run: true
       - id: cargo-test
         name: cargo test
-        entry: cargo test --workspace --all-features --locked
+        entry: cargo test --workspace --all-features
         language: system
         pass_filenames: false
         always_run: true
         stages: [pre-push]
       - id: cargo-doc
         name: cargo doc
-        entry: cargo doc --workspace --all-features --no-deps --locked
+        entry: cargo doc --workspace --all-features --no-deps
         language: system
         pass_filenames: false
         always_run: true
