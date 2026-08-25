@@ -9,7 +9,8 @@ use crate::rewrite::RewriteMap;
 /// Contract an edge by merging `target` into `source`.
 ///
 /// This compatibility entry point reports only whether contraction happened.
-/// Use [`contract_edge_mapped`] when clients retain graph identities.
+/// Use [`contract_edge_mapped`] when clients retain graph identities. The CFG
+/// entry is never accepted as `target`, and self-loops are not contracted.
 pub fn contract_edge<I, E>(cfg: &mut Cfg<I, E>, source: BlockId, target: BlockId) -> bool {
     contract_edge_inner(cfg, source, target, None)
 }
@@ -20,7 +21,8 @@ pub fn contract_edge<I, E>(cfg: &mut Cfg<I, E>, source: BlockId, target: BlockId
 /// Returns `None` unless `source` has exactly one outgoing edge, that edge
 /// targets `target`, and it is `target`'s sole incoming edge. The connecting
 /// edge maps to removal, `target` maps to `source`, and redirected outgoing
-/// edges map to themselves.
+/// edges map to themselves. The CFG entry is never accepted as `target`, and
+/// self-loops are not contracted.
 pub fn contract_edge_mapped<I, E>(
     cfg: &mut Cfg<I, E>,
     source: BlockId,
@@ -139,6 +141,26 @@ mod tests {
         assert_eq!(mapping.block_replacements(target), Some([entry].as_slice()));
         assert_eq!(cfg.edge(outgoing).source(), entry);
         assert_eq!(cfg.edge(outgoing).payload(), &"provenance");
+    }
+
+    #[test]
+    fn contract_refuses_to_consume_the_entry_block() {
+        let mut cfg = Cfg::<u32>::new();
+        let entry = cfg.entry();
+        let source = cfg.new_block();
+        cfg.block_mut(entry).push(0);
+        cfg.block_mut(source).push(1);
+        let outgoing = cfg.add_edge(entry, source, EdgeKind::Fallthrough);
+        let back = cfg.add_edge(source, entry, EdgeKind::Back);
+
+        assert!(!contract_edge(&mut cfg, source, entry));
+
+        assert_eq!(cfg.block(entry).instructions(), &[0]);
+        assert_eq!(cfg.block(source).instructions(), &[1]);
+        assert_eq!(cfg.successor_edges(entry), &[outgoing]);
+        assert_eq!(cfg.successor_edges(source), &[back]);
+        assert_eq!(cfg.edge(back).target(), entry);
+        assert!(crate::verify(&cfg).is_ok());
     }
 
     #[test]

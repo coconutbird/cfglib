@@ -23,10 +23,8 @@ use crate::cfg::Cfg;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
     /// Forward: information flows from predecessors to successors.
-    /// Iteration order: reverse postorder.
     Forward,
     /// Backward: information flows from successors to predecessors.
-    /// Iteration order: postorder.
     Backward,
 }
 
@@ -137,6 +135,8 @@ pub(crate) fn collapse_infallible<T>(
 ///
 /// `F` is the flow fact type (e.g. `BTreeSet<DefSite>` for reaching
 /// definitions, or `BTreeSet<I::Variable>` for liveness).
+/// Termination requires `meet` and `transfer` to be monotone over a
+/// finite-height fact lattice.
 pub trait Problem<I, E = ()> {
     /// The flow fact (lattice element) type.
     type Fact: Clone + PartialEq;
@@ -147,7 +147,7 @@ pub trait Problem<I, E = ()> {
     /// Initial (bottom) value for each block.
     fn bottom(&self) -> Self::Fact;
 
-    /// Initial value for the entry (forward) or exit (backward) block.
+    /// Initial value for the entry (forward) or each exit (backward) block.
     fn entry_fact(&self) -> Self::Fact;
 
     /// Meet/join operator: merge information from multiple paths.
@@ -163,7 +163,8 @@ pub trait Problem<I, E = ()> {
 /// This is the error-preserving counterpart of [`Problem`], for verification
 /// and abstract interpretation where a boundary, merge, or transfer can reject
 /// the input program. The solver reports those consumer errors separately from
-/// its own configured step limit.
+/// its own configured step limit. Termination without a step limit requires
+/// `meet` and `transfer` to be monotone over a finite-height fact lattice.
 pub trait TryProblem<I, E = ()> {
     /// The flow fact (lattice element) type.
     type Fact: Clone + PartialEq;
@@ -177,7 +178,7 @@ pub trait TryProblem<I, E = ()> {
     /// Initial (bottom) value for each block.
     fn bottom(&self) -> Self::Fact;
 
-    /// Initial value for the entry (forward) or exit (backward) block.
+    /// Initial value for the entry (forward) or each exit (backward) block.
     ///
     /// # Errors
     ///
@@ -408,11 +409,11 @@ pub fn try_solve_problem_from_with_config<I, E, P: TryProblem<I, E>>(
     try_solve_with_worklist(cfg, problem, seed_worklist(cfg, seeds), config)
 }
 
-/// Every reachable block, in the traversal order matching the direction.
+/// Blocks eligible for the initial raw-ID worklist.
 fn reachable_worklist<I, E, P: TryProblem<I, E>>(cfg: &Cfg<I, E>, problem: &P) -> BTreeSet<u32> {
     match problem.direction() {
         Direction::Forward => cfg
-            .reverse_postorder()
+            .depth_first_preorder()
             .into_iter()
             .map(|block| block.0)
             .collect(),

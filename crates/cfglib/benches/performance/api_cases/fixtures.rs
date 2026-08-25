@@ -132,12 +132,7 @@ impl ConstantFolder for ApiInst {
         &self,
         _known: &BTreeMap<Self::Variable, Self::Const>,
     ) -> Option<(Self::Variable, Self::Const)> {
-        self.constant.and_then(|value| {
-            self.defs
-                .first()
-                .copied()
-                .map(|definition| (definition, value))
-        })
+        self.defs.first().copied().zip(self.constant)
     }
 }
 

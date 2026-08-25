@@ -141,6 +141,41 @@ fn redirect_edges_rejects_an_invalid_target_before_mutating() {
 }
 
 #[test]
+fn move_outgoing_edges_preserves_order_identity_and_metadata() {
+    let mut cfg = Cfg::<MockInst>::new();
+    let old = cfg.new_block();
+    let new_source = cfg.new_block();
+    let sink = cfg.new_block();
+    let existing = cfg.add_edge(new_source, sink, EdgeKind::Fallthrough);
+    let first = cfg.add_weighted_edge(old, sink, EdgeKind::ConditionalTrue, 0.25);
+    let second = cfg.add_weighted_edge(old, sink, EdgeKind::ConditionalFalse, 0.75);
+    let becomes_self = cfg.add_weighted_edge(old, new_source, EdgeKind::Back, 0.875);
+    let old_self = cfg.add_weighted_edge(old, old, EdgeKind::Unconditional, 0.5);
+
+    cfg.move_outgoing_edges(old, new_source);
+
+    assert_eq!(cfg.successor_edges(old), &[]);
+    assert_eq!(
+        cfg.successor_edges(new_source),
+        &[existing, first, second, becomes_self, old_self]
+    );
+    assert_eq!(cfg.edge(first).source(), new_source);
+    assert_eq!(cfg.edge(first).target(), sink);
+    assert_eq!(cfg.edge(first).kind(), EdgeKind::ConditionalTrue);
+    assert_eq!(cfg.edge(first).weight(), Some(0.25));
+    assert_eq!(cfg.edge(second).weight(), Some(0.75));
+    assert_eq!(cfg.edge(becomes_self).source(), new_source);
+    assert_eq!(cfg.edge(becomes_self).target(), new_source);
+    assert_eq!(cfg.edge(becomes_self).weight(), Some(0.875));
+    assert_eq!(cfg.edge(old_self).source(), new_source);
+    assert_eq!(cfg.edge(old_self).target(), old);
+    assert_eq!(cfg.edge(old_self).weight(), Some(0.5));
+    assert_eq!(cfg.predecessor_edges(sink), &[existing, first, second]);
+    assert_eq!(cfg.predecessor_edges(new_source), &[becomes_self]);
+    assert_eq!(cfg.predecessor_edges(old), &[old_self]);
+}
+
+#[test]
 fn exit_blocks_iterator() {
     let mut cfg = Cfg::<MockInst>::new();
     let b1 = cfg.new_block();

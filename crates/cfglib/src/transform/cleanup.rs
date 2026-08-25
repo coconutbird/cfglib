@@ -61,6 +61,8 @@ pub fn remove_unreachable_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMa
 
 /// Merge blocks connected by a sole-successor, sole-predecessor edge.
 ///
+/// The entry block is never consumed as a merge target.
+///
 /// This compatibility entry point returns only the number of merges. Use
 /// [`merge_blocks_mapped`] to retain the identity relationship.
 pub fn merge_blocks<I, E>(cfg: &mut Cfg<I, E>) -> usize {
@@ -68,7 +70,7 @@ pub fn merge_blocks<I, E>(cfg: &mut Cfg<I, E>) -> usize {
 }
 
 /// Merge linear blocks while preserving every surviving edge identity and
-/// payload.
+/// payload. The entry block is never consumed as a merge target.
 pub fn merge_blocks_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
     let mut mapping = RewriteMap::new();
     let merged = merge_blocks_inner(cfg, Some(&mut mapping));
@@ -292,6 +294,36 @@ mod tests {
         assert_eq!(cfg.edge(back).kind(), EdgeKind::Back);
         assert_eq!(cfg.edge(back).weight(), Some(0.875));
         assert_eq!(cfg.edge_count(), 3);
+    }
+
+    #[test]
+    fn merge_never_consumes_the_entry_block() {
+        let mut cfg = Cfg::<u32>::new();
+        let entry = cfg.entry();
+        let back_edge_source = cfg.new_block();
+        let branch = cfg.new_block();
+        let exit = cfg.new_block();
+        for (index, block) in [entry, back_edge_source, branch, exit]
+            .into_iter()
+            .enumerate()
+        {
+            cfg.block_mut(block)
+                .push(u32::try_from(index).expect("test block index fits in u32"));
+        }
+        let to_back_edge = cfg.add_edge(entry, back_edge_source, EdgeKind::ConditionalTrue);
+        let to_branch = cfg.add_edge(entry, branch, EdgeKind::ConditionalFalse);
+        let back = cfg.add_edge(back_edge_source, entry, EdgeKind::Back);
+        cfg.add_edge(branch, exit, EdgeKind::Fallthrough);
+
+        assert_eq!(merge_blocks(&mut cfg), 1);
+
+        assert_eq!(cfg.block(entry).instructions(), &[0]);
+        assert_eq!(cfg.successor_edges(entry), &[to_back_edge, to_branch]);
+        assert_eq!(cfg.edge(back).source(), back_edge_source);
+        assert_eq!(cfg.edge(back).target(), entry);
+        assert_eq!(cfg.block(branch).instructions(), &[2, 3]);
+        assert_eq!(cfg.successor_edges(branch).len(), 0);
+        assert!(crate::verify(&cfg).is_ok());
     }
 
     #[test]
