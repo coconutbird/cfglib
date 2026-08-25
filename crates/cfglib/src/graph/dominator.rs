@@ -596,7 +596,7 @@ impl DominatorTree<BlockId> {
     /// behavior. See [`compute_post_from`](Self::compute_post_from) for
     /// the view-generic entry point with caller-chosen exits.
     #[must_use]
-    pub fn compute_post<I>(cfg: &Cfg<I>) -> Self {
+    pub fn compute_post<I, E>(cfg: &Cfg<I, E>) -> Self {
         let node_count = cfg.block_count();
         if node_count == 0 {
             return DominatorTree {

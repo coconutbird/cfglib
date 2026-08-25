@@ -5,6 +5,20 @@ use crate::test_util::{MockInst, df_ff, df_pred, ff};
 use alloc::vec;
 
 #[test]
+fn lift_accepts_caller_owned_edge_payloads() {
+    let mut cfg = Cfg::<MockInst, &'static str>::with_edge_payload();
+    let exit = cfg.new_block();
+    cfg.block_mut(cfg.entry()).push(ff("entry"));
+    cfg.block_mut(exit)
+        .push(MockInst(FlowEffect::Return, "return"));
+    cfg.add_edge_with_payload(cfg.entry(), exit, EdgeKind::Fallthrough, "source identity");
+
+    let pseudo = lift(&cfg).to_pseudocode();
+    assert!(pseudo.contains("entry"), "{pseudo}");
+    assert!(pseudo.contains("return"), "{pseudo}");
+}
+
+#[test]
 fn lift_predicated_regionizes_same_predicate_runs() {
     let cfg = CfgBuilder::build(vec![
         df_ff("plain"),

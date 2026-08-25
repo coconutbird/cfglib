@@ -42,7 +42,7 @@ struct LiftState<'a> {
     goto_targets: BTreeSet<u32>,
 }
 
-fn has_edge_kind<I>(cfg: &Cfg<I>, edges: &[crate::EdgeId], kind: EdgeKind) -> bool {
+fn has_edge_kind<I, E>(cfg: &Cfg<I, E>, edges: &[crate::EdgeId], kind: EdgeKind) -> bool {
     edges.iter().any(|&edge| cfg.edge(edge).kind() == kind)
 }
 
@@ -61,7 +61,7 @@ fn is_exception_edge(kind: EdgeKind) -> bool {
 }
 
 /// Successors reached by sequential control flow, excluding exception edges.
-fn flow_successors<I>(cfg: &Cfg<I>, block: BlockId) -> Vec<BlockId> {
+fn flow_successors<I, E>(cfg: &Cfg<I, E>, block: BlockId) -> Vec<BlockId> {
     cfg.successor_edges(block)
         .iter()
         .filter(|&&edge| !is_exception_edge(cfg.edge(edge).kind()))
@@ -83,7 +83,10 @@ fn intersect_bounds(
 
 /// Group regions by anchor — their first protected block in reverse
 /// postorder, i.e. the region's entry in flow order rather than by block id.
-fn region_anchors<'c, I>(cfg: &'c Cfg<I>, order: &[BlockId]) -> BTreeMap<u32, Vec<&'c Region>> {
+fn region_anchors<'c, I, E>(
+    cfg: &'c Cfg<I, E>,
+    order: &[BlockId],
+) -> BTreeMap<u32, Vec<&'c Region>> {
     let mut position: BTreeMap<u32, usize> = BTreeMap::new();
     for (index, block) in order.iter().enumerate() {
         position.insert(block.0, index);
@@ -105,7 +108,7 @@ fn region_anchors<'c, I>(cfg: &'c Cfg<I>, order: &[BlockId]) -> BTreeMap<u32, Ve
     anchors
 }
 
-fn classify_block<I>(cfg: &Cfg<I>, block: BlockId) -> BlockFlow {
+fn classify_block<I, E>(cfg: &Cfg<I, E>, block: BlockId) -> BlockFlow {
     let successors = cfg.successor_edges(block);
     let predecessors = cfg.predecessor_edges(block);
     let kind = if has_edge_kind(cfg, predecessors, EdgeKind::Back) {
@@ -129,7 +132,7 @@ fn classify_block<I>(cfg: &Cfg<I>, block: BlockId) -> BlockFlow {
     }
 }
 
-fn push_block<I: Clone>(result: &mut Vec<AstNode<I>>, cfg: &Cfg<I>, block: BlockId) {
+fn push_block<I: Clone, E>(result: &mut Vec<AstNode<I>>, cfg: &Cfg<I, E>, block: BlockId) {
     let instructions = cfg.block(block).instructions().to_vec();
     if !instructions.is_empty() {
         result.push(AstNode::Block {
@@ -144,9 +147,9 @@ fn block_is_allowed(allowed_blocks: Option<&BTreeSet<BlockId>>, block: BlockId) 
 }
 
 /// Push `node`, wrapped in `block`'s label when something jumps to it.
-fn push_labeled<I: Clone>(
+fn push_labeled<I: Clone, E>(
     result: &mut Vec<AstNode<I>>,
-    cfg: &Cfg<I>,
+    cfg: &Cfg<I, E>,
     block: BlockId,
     needs_label: bool,
     node: AstNode<I>,
@@ -185,7 +188,7 @@ fn push_labeled<I: Clone>(
 /// omits its own handler entry — a frontend bug; release builds treat such
 /// a region as unstructured flow.
 #[must_use]
-pub fn lift<I: Clone>(cfg: &Cfg<I>) -> AstNode<I> {
+pub fn lift<I: Clone, E>(cfg: &Cfg<I, E>) -> AstNode<I> {
     let pdom = DominatorTree::compute_post(cfg);
     let order = cfg.reverse_postorder();
     let anchors = region_anchors(cfg, &order);
@@ -238,8 +241,8 @@ pub fn lift<I: Clone>(cfg: &Cfg<I>) -> AstNode<I> {
 }
 
 /// Recursively lift a region starting at `head`.
-fn lift_region<I: Clone>(
-    cfg: &Cfg<I>,
+fn lift_region<I: Clone, E>(
+    cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
     head: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
@@ -282,8 +285,8 @@ fn lift_region<I: Clone>(
 /// This is the single classification path: [`lift_region`]'s walk and
 /// [`lift_try_catch`]'s try-body anchor both run it, so a region anchored at
 /// a branch, dispatch, or loop header keeps its structure inside the try.
-fn lift_block<I: Clone>(
-    cfg: &Cfg<I>,
+fn lift_block<I: Clone, E>(
+    cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
@@ -383,7 +386,7 @@ fn lift_block<I: Clone>(
 /// [`SwitchCase`]'s `header_instructions` are not regionized (the case
 /// structure has no place to hoist them to).
 #[must_use]
-pub fn lift_predicated<I: Clone + Predicated>(cfg: &Cfg<I>) -> AstNode<I> {
+pub fn lift_predicated<I: Clone + Predicated, E>(cfg: &Cfg<I, E>) -> AstNode<I> {
     wrap_predicated(lift(cfg)).simplify()
 }
 
@@ -619,7 +622,7 @@ fn with_prefix<I>(prefix: Vec<AstNode<I>>, node: AstNode<I>) -> AstNode<I> {
 }
 
 /// Produce a label name for a block (used in Goto/Label nodes).
-fn block_label_name<I>(cfg: &Cfg<I>, id: BlockId) -> alloc::string::String {
+fn block_label_name<I, E>(cfg: &Cfg<I, E>, id: BlockId) -> alloc::string::String {
     cfg.block(id).label().map_or_else(
         || alloc::format!(".bb{}", id.0),
         alloc::string::String::from,
@@ -628,7 +631,7 @@ fn block_label_name<I>(cfg: &Cfg<I>, id: BlockId) -> alloc::string::String {
 
 /// Wrap a node in a Label node named like the [`AstNode::Goto`]s that
 /// target the block.
-fn wrap_label<I>(cfg: &Cfg<I>, block: BlockId, inner: AstNode<I>) -> AstNode<I> {
+fn wrap_label<I, E>(cfg: &Cfg<I, E>, block: BlockId, inner: AstNode<I>) -> AstNode<I> {
     AstNode::Label {
         name: block_label_name(cfg, block),
         body: alloc::vec![inner],
@@ -666,8 +669,8 @@ fn complete_handler_bodies(region: &Region) -> Option<Vec<&BTreeSet<BlockId>>> {
 /// remain ordinary control flow. Bounds intersect with the enclosing
 /// `allowed_blocks`, so a nested region never escapes the extent it was
 /// entered under.
-fn lift_try_catch<I: Clone>(
-    cfg: &Cfg<I>,
+fn lift_try_catch<I: Clone, E>(
+    cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
@@ -732,8 +735,8 @@ fn advance_merge(pdom: &DominatorTree, block: BlockId, visited: &BTreeSet<u32>) 
 }
 
 /// Lift an if/else conditional starting at `block`.
-fn lift_conditional<I: Clone>(
-    cfg: &Cfg<I>,
+fn lift_conditional<I: Clone, E>(
+    cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
@@ -768,8 +771,8 @@ fn lift_conditional<I: Clone>(
 }
 
 /// Lift a switch starting at `block`.
-fn lift_switch<I: Clone>(
-    cfg: &Cfg<I>,
+fn lift_switch<I: Clone, E>(
+    cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
@@ -814,8 +817,8 @@ fn lift_switch<I: Clone>(
 }
 
 /// Lift a loop starting at `header`.
-fn lift_loop<I: Clone>(
-    cfg: &Cfg<I>,
+fn lift_loop<I: Clone, E>(
+    cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
     header: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
@@ -863,8 +866,8 @@ fn lift_loop<I: Clone>(
 }
 
 /// Lift an arm (then/else) stopping at the merge point.
-fn lift_arm<I: Clone>(
-    cfg: &Cfg<I>,
+fn lift_arm<I: Clone, E>(
+    cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
     start: BlockId,
     stop: Option<BlockId>,
@@ -880,8 +883,8 @@ fn lift_arm<I: Clone>(
 }
 
 /// Lift the body of a switch case from its successors.
-fn lift_case_body<I: Clone>(
-    cfg: &Cfg<I>,
+fn lift_case_body<I: Clone, E>(
+    cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
     case_block: BlockId,
     stop: Option<BlockId>,
@@ -906,8 +909,8 @@ fn lift_case_body<I: Clone>(
 /// Instead of scanning every edge in the CFG, this only examines the
 /// successor edges of visited (in-loop) blocks, making it proportional
 /// to the loop body size rather than the entire CFG.
-fn find_loop_exit<I>(
-    cfg: &Cfg<I>,
+fn find_loop_exit<I, E>(
+    cfg: &Cfg<I, E>,
     header: BlockId,
     visited: &BTreeSet<u32>,
     allowed_blocks: Option<&BTreeSet<BlockId>>,

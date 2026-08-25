@@ -620,6 +620,35 @@ mod tests {
             cleanup
         );
         assert_eq!(alloc::format!("{finally}"), "region0.handler1");
+        assert_eq!(cfg.handler(catch).map(|handler| handler.entry), Some(pad));
+        assert_eq!(
+            cfg.handler(finally).map(|handler| handler.entry),
+            Some(cleanup)
+        );
+        assert!(
+            cfg.handler(HandlerRef::new(RegionId::from_raw(99), 0))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn identity_checked_accessors_update_regions_and_handlers() {
+        let (mut cfg, region, [pad, _, _, _]) = try_catch_finally();
+        let catch = HandlerRef::new(region, 0);
+        let replacement = cfg.new_block();
+
+        cfg.region_mut(region).unwrap().parent = Some(region);
+        cfg.handler_mut(catch).unwrap().entry = replacement;
+
+        assert_eq!(
+            cfg.region(region).and_then(|item| item.parent),
+            Some(region)
+        );
+        assert_eq!(
+            cfg.handler(catch).map(|handler| handler.entry),
+            Some(replacement)
+        );
+        assert_ne!(cfg.handler(catch).map(|handler| handler.entry), Some(pad));
     }
 
     #[test]
