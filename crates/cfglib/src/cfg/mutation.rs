@@ -239,10 +239,10 @@ impl<I, E> Cfg<I, E> {
                     instruction_count,
                 });
             }
-            if let Some(previous) = previous
-                && point <= previous
-            {
-                return Err(SplitPointError::NotStrictlyIncreasing { previous, point });
+            if let Some(previous) = previous {
+                if point <= previous {
+                    return Err(SplitPointError::NotStrictlyIncreasing { previous, point });
+                }
             }
             previous = Some(point);
         }

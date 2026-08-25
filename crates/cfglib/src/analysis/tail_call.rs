@@ -37,20 +37,20 @@ pub fn detect_tail_calls<I: FlowControl>(cfg: &Cfg<I>) -> Vec<TailCall> {
     for block in cfg.blocks() {
         let bid = block.id();
         let succs: Vec<BlockId> = cfg.successors(bid).collect();
-        if succs.len() == 1
-            && exit_blocks.contains(&succs[0])
-            && let Some(last) = block.instructions().last()
-            && matches!(
-                last.flow_effect(),
-                FlowEffect::Call | FlowEffect::ConditionalCall
-            )
-        {
-            let idx = block.instructions().len().saturating_sub(1);
-            results.push(TailCall {
-                block: bid,
-                inst_idx: Some(idx),
-                explicit: false,
-            });
+        if succs.len() == 1 && exit_blocks.contains(&succs[0]) {
+            if let Some(last) = block.instructions().last() {
+                if matches!(
+                    last.flow_effect(),
+                    FlowEffect::Call | FlowEffect::ConditionalCall
+                ) {
+                    let idx = block.instructions().len().saturating_sub(1);
+                    results.push(TailCall {
+                        block: bid,
+                        inst_idx: Some(idx),
+                        explicit: false,
+                    });
+                }
+            }
         }
     }
 

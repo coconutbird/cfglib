@@ -522,11 +522,12 @@ pub struct JumpResolution<T> {
 pub fn resolve_jump_edges<I: JumpTargets>(cfg: &mut Cfg<I>) -> JumpResolution<I::Target> {
     let mut labels: BTreeMap<I::Target, BlockId> = BTreeMap::new();
     for block in cfg.blocks() {
-        if let Some(first) = block.instructions().first()
-            && first.flow_effect() == FlowEffect::Label
-            && let Some(token) = first.label()
-        {
-            labels.insert(token, block.id());
+        if let Some(first) = block.instructions().first() {
+            if first.flow_effect() == FlowEffect::Label {
+                if let Some(token) = first.label() {
+                    labels.insert(token, block.id());
+                }
+            }
         }
     }
 

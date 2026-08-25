@@ -116,12 +116,12 @@ fn lift_region<I: Clone>(
         visited.insert(block.0);
         current = None;
 
-        if region_entries.contains(&block.0)
-            && let Some(node) = lift_try_catch(cfg, dom, pdom, block, visited, region_entries)
-        {
-            result.push(node);
-            current = advance_merge(pdom, block, visited);
-            continue;
+        if region_entries.contains(&block.0) {
+            if let Some(node) = lift_try_catch(cfg, dom, pdom, block, visited, region_entries) {
+                result.push(node);
+                current = advance_merge(pdom, block, visited);
+                continue;
+            }
         }
 
         let successor_edges = cfg.successor_edges(block);
@@ -640,18 +640,18 @@ fn lift_loop<I: Clone>(
     if is_conditional {
         let node = lift_conditional(cfg, dom, pdom, header, visited, region_entries);
         body.push(node);
-        if let Some(merge) = pdom.idom(header)
-            && !visited.contains(&merge.0)
-        {
-            body.extend(lift_region(cfg, dom, pdom, merge, visited, region_entries));
+        if let Some(merge) = pdom.idom(header) {
+            if !visited.contains(&merge.0) {
+                body.extend(lift_region(cfg, dom, pdom, merge, visited, region_entries));
+            }
         }
     } else if has_switch {
         let node = lift_switch(cfg, dom, pdom, header, visited, region_entries);
         body.push(node);
-        if let Some(merge) = pdom.idom(header)
-            && !visited.contains(&merge.0)
-        {
-            body.extend(lift_region(cfg, dom, pdom, merge, visited, region_entries));
+        if let Some(merge) = pdom.idom(header) {
+            if !visited.contains(&merge.0) {
+                body.extend(lift_region(cfg, dom, pdom, merge, visited, region_entries));
+            }
         }
     } else {
         let header_insts = cfg.block(header).instructions().to_vec();

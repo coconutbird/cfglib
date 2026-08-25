@@ -44,10 +44,10 @@ pub fn contract_edge_mapped<I, E>(
     cfg.block_mut(source)
         .instructions_mut()
         .extend(target_instructions);
-    if cfg.block(source).label().is_none()
-        && let Some(label) = target_label
-    {
-        cfg.block_mut(source).set_label(label);
+    if cfg.block(source).label().is_none() {
+        if let Some(label) = target_label {
+            cfg.block_mut(source).set_label(label);
+        }
     }
 
     let mut mapping = RewriteMap::new();

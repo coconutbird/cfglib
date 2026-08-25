@@ -395,15 +395,15 @@ where
 
     let mut steps = 0;
     while let Some(node_index) = worklist.pop_first() {
-        if let Some(limit) = config.max_steps()
-            && steps >= limit
-        {
-            return Err(SolveError::StepLimitExceeded {
-                limit,
-                steps,
-                pending_node: node_index,
+        if let Some(limit) = config.max_steps() {
+            if steps >= limit {
+                return Err(SolveError::StepLimitExceeded {
+                    limit,
+                    steps,
+                    pending_node: node_index,
+                }
+                .into());
             }
-            .into());
         }
         steps += 1;
         let node = G::NodeId::from_index(node_index);
