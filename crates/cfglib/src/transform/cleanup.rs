@@ -64,30 +64,29 @@ pub fn remove_unreachable_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMa
 /// This compatibility entry point returns only the number of merges. Use
 /// [`merge_blocks_mapped`] to retain the identity relationship.
 pub fn merge_blocks<I, E>(cfg: &mut Cfg<I, E>) -> usize {
-    merge_blocks_mapped(cfg).0
+    merge_blocks_inner(cfg, None)
 }
 
 /// Merge linear blocks while preserving every surviving edge identity and
 /// payload.
 pub fn merge_blocks_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
-    let mut merged = 0;
     let mut mapping = RewriteMap::new();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let order = cfg.depth_first_preorder();
-        for &source in &order {
-            let successor_edges = cfg.successor_edges(source).to_vec();
-            if successor_edges.len() != 1 {
-                continue;
-            }
-            let connecting = successor_edges[0];
+    let merged = merge_blocks_inner(cfg, Some(&mut mapping));
+    (merged, mapping)
+}
+
+fn merge_blocks_inner<I, E>(cfg: &mut Cfg<I, E>, mut mapping: Option<&mut RewriteMap>) -> usize {
+    let mut merged = 0;
+    let order = cfg.depth_first_preorder();
+    for source in order {
+        while let [connecting] = cfg.successor_edges(source) {
+            let connecting = *connecting;
             let target = cfg.edge(connecting).target();
             if target == source || target == cfg.entry() {
-                continue;
+                break;
             }
             if cfg.predecessor_edges(target).len() != 1 {
-                continue;
+                break;
             }
 
             let target_instructions = core::mem::take(cfg.block_mut(target).instructions_mut());
@@ -95,21 +94,24 @@ pub fn merge_blocks_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
                 .instructions_mut()
                 .extend(target_instructions);
 
-            let (_, removed_edge) = cfg.remove_edge_mapped(connecting);
-            mapping.compose(removed_edge);
-            let target_outgoing = cfg.successor_edges(target).to_vec();
-            for edge in target_outgoing {
-                let (_, redirected) = cfg.redirect_edge_source_mapped(edge, source);
-                mapping.compose(redirected);
+            cfg.remove_edge(connecting);
+            if let Some(mapping) = mapping.as_deref_mut() {
+                mapping.record_edge(connecting, []);
             }
-            mapping.record_block(target, [source]);
+            cfg.move_outgoing_edges(target, source);
+            for &edge in cfg.successor_edges(source) {
+                if let Some(mapping) = mapping.as_deref_mut() {
+                    mapping.record_edge(edge, [edge]);
+                }
+            }
+            if let Some(mapping) = mapping.as_deref_mut() {
+                mapping.record_block(target, [source]);
+            }
 
             merged += 1;
-            changed = true;
-            break;
         }
     }
-    (merged, mapping)
+    merged
 }
 
 /// Bypass empty blocks with one fallthrough-like successor.
@@ -117,46 +119,53 @@ pub fn merge_blocks_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
 /// This compatibility entry point returns only the count. Use
 /// [`remove_empty_blocks_mapped`] when clients retain graph identities.
 pub fn remove_empty_blocks<I, E>(cfg: &mut Cfg<I, E>) -> usize {
-    remove_empty_blocks_mapped(cfg).0
+    remove_empty_blocks_inner(cfg, None)
 }
 
 /// Bypass empty blocks without reallocating their incoming edges.
 pub fn remove_empty_blocks_mapped<I, E>(cfg: &mut Cfg<I, E>) -> (usize, RewriteMap) {
-    let mut removed = 0;
     let mut mapping = RewriteMap::new();
-    let mut changed = true;
-    while changed {
-        changed = false;
-        let order = cfg.depth_first_preorder();
-        for &id in &order {
-            if id == cfg.entry() || !cfg.block(id).is_empty() {
-                continue;
-            }
-            let successor_edges = cfg.successor_edges(id).to_vec();
-            if successor_edges.len() != 1 {
-                continue;
-            }
-            let outgoing = successor_edges[0];
-            let edge = cfg.edge(outgoing);
-            if !matches!(edge.kind(), EdgeKind::Fallthrough | EdgeKind::Unconditional) {
-                continue;
-            }
-            let target = edge.target();
-            if target == id {
-                continue;
-            }
-
-            let redirected = cfg.redirect_edges_to_mapped(id, target);
-            mapping.compose(redirected);
-            let (_, removed_edge) = cfg.remove_edge_mapped(outgoing);
-            mapping.compose(removed_edge);
-            mapping.record_block(id, []);
-            removed += 1;
-            changed = true;
-            break;
-        }
-    }
+    let removed = remove_empty_blocks_inner(cfg, Some(&mut mapping));
     (removed, mapping)
+}
+
+fn remove_empty_blocks_inner<I, E>(
+    cfg: &mut Cfg<I, E>,
+    mut mapping: Option<&mut RewriteMap>,
+) -> usize {
+    let mut removed = 0;
+    let order = cfg.depth_first_preorder();
+    for id in order {
+        if id == cfg.entry() || !cfg.block(id).is_empty() {
+            continue;
+        }
+        let outgoing = match cfg.successor_edges(id) {
+            [edge] => *edge,
+            _ => continue,
+        };
+        let edge = cfg.edge(outgoing);
+        if !matches!(edge.kind(), EdgeKind::Fallthrough | EdgeKind::Unconditional) {
+            continue;
+        }
+        let target = edge.target();
+        if target == id {
+            continue;
+        }
+
+        if let Some(mapping) = mapping.as_deref_mut() {
+            for &edge in cfg.predecessor_edges(id) {
+                mapping.record_edge(edge, [edge]);
+            }
+        }
+        cfg.redirect_edges_to(id, target);
+        cfg.remove_edge(outgoing);
+        if let Some(mapping) = mapping.as_deref_mut() {
+            mapping.record_edge(outgoing, []);
+            mapping.record_block(id, []);
+        }
+        removed += 1;
+    }
+    removed
 }
 
 /// Run all simplification passes until no more changes occur.
@@ -252,6 +261,37 @@ mod tests {
         cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
         let merged = merge_blocks(&mut cfg);
         assert_eq!(merged, 0);
+    }
+
+    #[test]
+    fn merge_preserves_parallel_weighted_edges_and_back_edge_identity() {
+        let mut cfg = Cfg::<u32>::new();
+        let source = cfg.entry();
+        let target = cfg.new_block();
+        let sink = cfg.new_block();
+        cfg.block_mut(source).push(0);
+        cfg.block_mut(target).push(1);
+        cfg.block_mut(sink).push(2);
+        cfg.add_edge(source, target, EdgeKind::Fallthrough);
+        let first = cfg.add_weighted_edge(target, sink, EdgeKind::ConditionalTrue, 0.25);
+        let second = cfg.add_weighted_edge(target, sink, EdgeKind::ConditionalFalse, 0.75);
+        let back = cfg.add_weighted_edge(target, source, EdgeKind::Back, 0.875);
+
+        assert_eq!(merge_blocks(&mut cfg), 1);
+
+        assert_eq!(cfg.successor_edges(target), &[]);
+        assert_eq!(cfg.successor_edges(source), &[first, second, back]);
+        assert_eq!(cfg.edge(first).source(), source);
+        assert_eq!(cfg.edge(first).target(), sink);
+        assert_eq!(cfg.edge(first).kind(), EdgeKind::ConditionalTrue);
+        assert_eq!(cfg.edge(first).weight(), Some(0.25));
+        assert_eq!(cfg.edge(second).kind(), EdgeKind::ConditionalFalse);
+        assert_eq!(cfg.edge(second).weight(), Some(0.75));
+        assert_eq!(cfg.edge(back).source(), source);
+        assert_eq!(cfg.edge(back).target(), source);
+        assert_eq!(cfg.edge(back).kind(), EdgeKind::Back);
+        assert_eq!(cfg.edge(back).weight(), Some(0.875));
+        assert_eq!(cfg.edge_count(), 3);
     }
 
     #[test]

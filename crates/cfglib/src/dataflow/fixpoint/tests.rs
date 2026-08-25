@@ -122,3 +122,47 @@ fn a_fallible_solve_succeeds_on_clean_input() {
     let facts = try_solve_problem(&cfg, &Rejecting).unwrap();
     assert!(facts.fact_in(a).is_empty());
 }
+
+#[test]
+fn backward_solver_propagates_through_disconnected_components() {
+    struct BackwardReachability;
+
+    impl Problem<()> for BackwardReachability {
+        type Fact = bool;
+
+        fn direction(&self) -> Direction {
+            Direction::Backward
+        }
+
+        fn bottom(&self) -> Self::Fact {
+            false
+        }
+
+        fn entry_fact(&self) -> Self::Fact {
+            true
+        }
+
+        fn meet(&self, a: &Self::Fact, b: &Self::Fact) -> Self::Fact {
+            *a || *b
+        }
+
+        fn transfer(&self, _cfg: &Cfg<()>, _block: BlockId, input: &Self::Fact) -> Self::Fact {
+            *input
+        }
+    }
+
+    let mut cfg = Cfg::new();
+    let disconnected_predecessor = cfg.new_block();
+    let disconnected_exit = cfg.new_block();
+    cfg.add_edge(
+        disconnected_predecessor,
+        disconnected_exit,
+        EdgeKind::Fallthrough,
+    );
+
+    let facts = solve_problem(&cfg, &BackwardReachability).unwrap();
+    assert!(*facts.fact_in(disconnected_predecessor));
+    assert!(*facts.fact_out(disconnected_predecessor));
+    assert!(*facts.fact_in(disconnected_exit));
+    assert!(*facts.fact_out(disconnected_exit));
+}

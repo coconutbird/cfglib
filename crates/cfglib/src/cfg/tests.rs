@@ -1,4 +1,5 @@
 extern crate alloc;
+extern crate std;
 use super::*;
 use crate::edge::EdgeKind;
 use crate::test_util::MockInst;
@@ -68,6 +69,75 @@ fn remove_edge_tombstones_correctly() {
 
     // Double-remove returns None.
     assert!(cfg.remove_edge(e1).is_none());
+}
+
+#[test]
+fn split_block_preserves_outgoing_edge_identity_and_metadata() {
+    let mut cfg = Cfg::<u32>::new();
+    let source = cfg.entry();
+    let sink = cfg.new_block();
+    cfg.block_mut(source).instructions_mut().extend([1, 2]);
+    let outgoing = cfg.add_weighted_edge(source, sink, EdgeKind::ConditionalTrue, 0.75);
+
+    let split = cfg.split_block(source, 1);
+    let [fallthrough] = cfg.successor_edges(source) else {
+        panic!("split source should have one fallthrough edge");
+    };
+
+    assert_eq!(cfg.successor_edges(split), &[outgoing]);
+    assert_eq!(cfg.edge(outgoing).source(), split);
+    assert_eq!(cfg.edge(outgoing).target(), sink);
+    assert_eq!(cfg.edge(outgoing).kind(), EdgeKind::ConditionalTrue);
+    assert_eq!(cfg.edge(outgoing).weight(), Some(0.75));
+    assert_eq!(cfg.edge(*fallthrough).source(), source);
+    assert_eq!(cfg.edge(*fallthrough).target(), split);
+    assert_eq!(cfg.predecessor_edges(sink), &[outgoing]);
+}
+
+#[test]
+fn redirect_edges_moves_predecessors_in_order() {
+    let mut cfg = Cfg::<MockInst>::new();
+    let old = cfg.new_block();
+    let new_target = cfg.new_block();
+    let first = cfg.add_edge(cfg.entry(), new_target, EdgeKind::Fallthrough);
+    let second = cfg.add_edge(cfg.entry(), old, EdgeKind::ConditionalTrue);
+    let third = cfg.add_weighted_edge(cfg.entry(), old, EdgeKind::ConditionalFalse, 0.25);
+
+    cfg.redirect_edges_to(old, new_target);
+
+    assert_eq!(cfg.predecessor_edges(old), &[]);
+    assert_eq!(cfg.predecessor_edges(new_target), &[first, second, third]);
+    assert_eq!(cfg.edge(second).target(), new_target);
+    assert_eq!(cfg.edge(third).target(), new_target);
+    assert_eq!(cfg.edge(third).weight(), Some(0.25));
+}
+
+#[test]
+fn redirect_edges_to_same_block_is_a_noop() {
+    let mut cfg = Cfg::<MockInst>::new();
+    let target = cfg.new_block();
+    let edge = cfg.add_edge(cfg.entry(), target, EdgeKind::Fallthrough);
+
+    cfg.redirect_edges_to(target, target);
+
+    assert_eq!(cfg.predecessor_edges(target), &[edge]);
+    assert_eq!(cfg.edge(edge).target(), target);
+}
+
+#[test]
+fn redirect_edges_rejects_an_invalid_target_before_mutating() {
+    let mut cfg = Cfg::<MockInst>::new();
+    let old_target = cfg.new_block();
+    let edge = cfg.add_edge(cfg.entry(), old_target, EdgeKind::Fallthrough);
+    let invalid = BlockId::from_index(cfg.block_count());
+
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        cfg.redirect_edges_to(old_target, invalid);
+    }));
+
+    assert!(panic.is_err());
+    assert_eq!(cfg.predecessor_edges(old_target), &[edge]);
+    assert_eq!(cfg.edge(edge).target(), old_target);
 }
 
 #[test]

@@ -11,7 +11,7 @@ use crate::rewrite::RewriteMap;
 /// This compatibility entry point reports only whether contraction happened.
 /// Use [`contract_edge_mapped`] when clients retain graph identities.
 pub fn contract_edge<I, E>(cfg: &mut Cfg<I, E>, source: BlockId, target: BlockId) -> bool {
-    contract_edge_mapped(cfg, source, target).is_some()
+    contract_edge_inner(cfg, source, target, None)
 }
 
 /// Contract an edge while retaining all surviving outgoing edge identities
@@ -26,17 +26,27 @@ pub fn contract_edge_mapped<I, E>(
     source: BlockId,
     target: BlockId,
 ) -> Option<RewriteMap> {
+    let mut mapping = RewriteMap::new();
+    contract_edge_inner(cfg, source, target, Some(&mut mapping)).then_some(mapping)
+}
+
+fn contract_edge_inner<I, E>(
+    cfg: &mut Cfg<I, E>,
+    source: BlockId,
+    target: BlockId,
+    mut mapping: Option<&mut RewriteMap>,
+) -> bool {
     if source == target || target == cfg.entry() {
-        return None;
+        return false;
     }
     let source_outgoing = cfg.successor_edges(source);
     let target_incoming = cfg.predecessor_edges(target);
     if source_outgoing.len() != 1 || target_incoming.len() != 1 {
-        return None;
+        return false;
     }
     let connecting = source_outgoing[0];
     if target_incoming[0] != connecting || cfg.edge(connecting).target() != target {
-        return None;
+        return false;
     }
 
     let target_label = cfg.block(target).label().map(alloc::string::String::from);
@@ -50,16 +60,20 @@ pub fn contract_edge_mapped<I, E>(
         }
     }
 
-    let mut mapping = RewriteMap::new();
-    let (_, removed) = cfg.remove_edge_mapped(connecting);
-    mapping.compose(removed);
-    let target_outgoing = cfg.successor_edges(target).to_vec();
-    for edge in target_outgoing {
-        let (_, redirected) = cfg.redirect_edge_source_mapped(edge, source);
-        mapping.compose(redirected);
+    cfg.remove_edge(connecting);
+    if let Some(mapping) = mapping.as_deref_mut() {
+        mapping.record_edge(connecting, []);
     }
-    mapping.record_block(target, [source]);
-    Some(mapping)
+    cfg.move_outgoing_edges(target, source);
+    for &edge in cfg.successor_edges(source) {
+        if let Some(mapping) = mapping.as_deref_mut() {
+            mapping.record_edge(edge, [edge]);
+        }
+    }
+    if let Some(mapping) = mapping {
+        mapping.record_block(target, [source]);
+    }
+    true
 }
 
 /// Split a block at one instruction index with a default edge payload.
@@ -125,6 +139,37 @@ mod tests {
         assert_eq!(mapping.block_replacements(target), Some([entry].as_slice()));
         assert_eq!(cfg.edge(outgoing).source(), entry);
         assert_eq!(cfg.edge(outgoing).payload(), &"provenance");
+    }
+
+    #[test]
+    fn contract_preserves_parallel_weighted_edges_and_back_edge_identity() {
+        let mut cfg = Cfg::<u32>::new();
+        let source = cfg.entry();
+        let target = cfg.new_block();
+        let sink = cfg.new_block();
+        cfg.block_mut(source).push(0);
+        cfg.block_mut(target).push(1);
+        cfg.block_mut(sink).push(2);
+        cfg.add_edge(source, target, EdgeKind::Fallthrough);
+        let first = cfg.add_weighted_edge(target, sink, EdgeKind::ConditionalTrue, 0.25);
+        let second = cfg.add_weighted_edge(target, sink, EdgeKind::ConditionalFalse, 0.75);
+        let back = cfg.add_weighted_edge(target, source, EdgeKind::Back, 0.875);
+
+        assert!(contract_edge(&mut cfg, source, target));
+
+        assert_eq!(cfg.successor_edges(target), &[]);
+        assert_eq!(cfg.successor_edges(source), &[first, second, back]);
+        assert_eq!(cfg.edge(first).source(), source);
+        assert_eq!(cfg.edge(first).target(), sink);
+        assert_eq!(cfg.edge(first).kind(), EdgeKind::ConditionalTrue);
+        assert_eq!(cfg.edge(first).weight(), Some(0.25));
+        assert_eq!(cfg.edge(second).kind(), EdgeKind::ConditionalFalse);
+        assert_eq!(cfg.edge(second).weight(), Some(0.75));
+        assert_eq!(cfg.edge(back).source(), source);
+        assert_eq!(cfg.edge(back).target(), source);
+        assert_eq!(cfg.edge(back).kind(), EdgeKind::Back);
+        assert_eq!(cfg.edge(back).weight(), Some(0.875));
+        assert_eq!(cfg.edge_count(), 3);
     }
 
     #[test]

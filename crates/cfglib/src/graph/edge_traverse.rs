@@ -7,8 +7,56 @@ use alloc::vec::Vec;
 
 use super::directed::{DirectedEdge, DirectedGraph, EdgeId, NodeId};
 use super::edge_view::{DenseEdgeId, EdgeGraphView, EdgeRef};
-use super::traverse::TraversalDirection;
+use super::traverse::{Incoming, Outgoing, TraversalDirection, by_axis};
 use super::view::DenseNodeId;
+
+trait EdgeAdjacency: Copy {
+    fn edges<G: EdgeGraphView>(
+        self,
+        graph: &G,
+        node: G::NodeId,
+    ) -> impl Iterator<Item = G::EdgeId> + '_;
+
+    fn next<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N;
+
+    fn previous<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N;
+}
+
+impl EdgeAdjacency for Outgoing {
+    fn edges<G: EdgeGraphView>(
+        self,
+        graph: &G,
+        node: G::NodeId,
+    ) -> impl Iterator<Item = G::EdgeId> + '_ {
+        graph.outgoing_edges(node)
+    }
+
+    fn next<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N {
+        edge.target()
+    }
+
+    fn previous<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N {
+        edge.source()
+    }
+}
+
+impl EdgeAdjacency for Incoming {
+    fn edges<G: EdgeGraphView>(
+        self,
+        graph: &G,
+        node: G::NodeId,
+    ) -> impl Iterator<Item = G::EdgeId> + '_ {
+        graph.incoming_edges(node)
+    }
+
+    fn next<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N {
+        edge.source()
+    }
+
+    fn previous<N: Copy, E: Copy, D: ?Sized>(self, edge: EdgeRef<'_, N, E, D>) -> N {
+        edge.target()
+    }
+}
 
 /// One traversed edge, with endpoints as exposed by the traversed view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,16 +97,27 @@ pub fn breadth_first_view_edges_with<G: EdgeGraphView>(
     start: G::NodeId,
     direction: TraversalDirection,
     max_depth: Option<usize>,
+    filter: impl FnMut(EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>) -> bool,
+) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
+    by_axis!(
+        direction,
+        breadth_first_view_edges_from(graph, start, max_depth, filter)
+    )
+}
+
+fn breadth_first_view_edges_from<G: EdgeGraphView, A: EdgeAdjacency>(
+    axis: A,
+    graph: &G,
+    start: G::NodeId,
+    max_depth: Option<usize>,
     mut filter: impl FnMut(EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>) -> bool,
 ) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
     assert!(
         start.index() < graph.node_count(),
         "start node is out of range"
     );
-    let forward = matches!(direction, TraversalDirection::Outgoing);
     let mut steps = Vec::new();
     let mut seen_node = vec![false; graph.node_count()];
-    let mut seen_edge = vec![false; graph.edge_slot_count()];
     let mut queue = VecDeque::new();
     seen_node[start.index()] = true;
     queue.push_back((start, 0));
@@ -67,30 +126,17 @@ pub fn breadth_first_view_edges_with<G: EdgeGraphView>(
         if max_depth.is_some_and(|limit| depth >= limit) {
             continue;
         }
-        let adjacency: Vec<_> = if forward {
-            graph.outgoing_edges(node).collect()
-        } else {
-            graph.incoming_edges(node).collect()
-        };
-        for edge_id in adjacency {
-            if seen_edge[edge_id.index()] {
-                continue;
-            }
+        for edge_id in axis.edges(graph, node) {
             let edge = graph.edge_ref(edge_id);
             if !filter(edge) {
                 continue;
             }
-            seen_edge[edge_id.index()] = true;
             steps.push(EdgeStep {
                 edge: edge_id,
                 source: edge.source(),
                 target: edge.target(),
             });
-            let next = if forward {
-                edge.target()
-            } else {
-                edge.source()
-            };
+            let next = axis.next(edge);
             if !seen_node[next.index()] {
                 seen_node[next.index()] = true;
                 queue.push_back((next, depth + 1));
@@ -127,18 +173,29 @@ pub fn depth_first_view_edges_with<G: EdgeGraphView>(
     start: G::NodeId,
     direction: TraversalDirection,
     max_depth: Option<usize>,
+    filter: impl FnMut(EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>) -> bool,
+) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
+    by_axis!(
+        direction,
+        depth_first_view_edges_from(graph, start, max_depth, filter)
+    )
+}
+
+fn depth_first_view_edges_from<G: EdgeGraphView, A: EdgeAdjacency>(
+    axis: A,
+    graph: &G,
+    start: G::NodeId,
+    max_depth: Option<usize>,
     mut filter: impl FnMut(EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>) -> bool,
 ) -> Vec<EdgeStep<G::NodeId, G::EdgeId>> {
     assert!(
         start.index() < graph.node_count(),
         "start node is out of range"
     );
-    let forward = matches!(direction, TraversalDirection::Outgoing);
     let mut steps = Vec::new();
     let mut seen_node = vec![false; graph.node_count()];
-    let mut seen_edge = vec![false; graph.edge_slot_count()];
     let mut arena = Vec::new();
-    append_adjacency(graph, start, direction, &mut arena);
+    append_adjacency(axis, graph, start, &mut arena);
     let mut stack = vec![EdgeDfsFrame {
         depth: 0,
         start: 0,
@@ -158,31 +215,23 @@ pub fn depth_first_view_edges_with<G: EdgeGraphView>(
         let edge_id = arena[frame.cursor];
         let depth = frame.depth;
         frame.cursor += 1;
-        if seen_edge[edge_id.index()] {
-            continue;
-        }
         let edge = graph.edge_ref(edge_id);
         if !filter(edge) {
             continue;
         }
-        seen_edge[edge_id.index()] = true;
         steps.push(EdgeStep {
             edge: edge_id,
             source: edge.source(),
             target: edge.target(),
         });
-        let next = if forward {
-            edge.target()
-        } else {
-            edge.source()
-        };
+        let next = axis.next(edge);
         if seen_node[next.index()] {
             continue;
         }
 
         seen_node[next.index()] = true;
         let start = arena.len();
-        append_adjacency(graph, next, direction, &mut arena);
+        append_adjacency(axis, graph, next, &mut arena);
         stack.push(EdgeDfsFrame {
             depth: depth + 1,
             start,
@@ -200,16 +249,13 @@ struct EdgeDfsFrame {
     cursor: usize,
 }
 
-fn append_adjacency<G: EdgeGraphView>(
+fn append_adjacency<G: EdgeGraphView, A: EdgeAdjacency>(
+    axis: A,
     graph: &G,
     node: G::NodeId,
-    direction: TraversalDirection,
     arena: &mut Vec<G::EdgeId>,
 ) {
-    match direction {
-        TraversalDirection::Outgoing => arena.extend(graph.outgoing_edges(node)),
-        TraversalDirection::Incoming => arena.extend(graph.incoming_edges(node)),
-    }
+    arena.extend(axis.edges(graph, node));
 }
 
 /// Compatibility alias for [`breadth_first_view_edges_with`].
@@ -237,6 +283,15 @@ pub fn shortest_path_view_edges<G: EdgeGraphView>(
     to: G::NodeId,
     direction: TraversalDirection,
 ) -> Option<Vec<G::EdgeId>> {
+    by_axis!(direction, shortest_path_view_edges_from(graph, from, to))
+}
+
+fn shortest_path_view_edges_from<G: EdgeGraphView, A: EdgeAdjacency>(
+    axis: A,
+    graph: &G,
+    from: G::NodeId,
+    to: G::NodeId,
+) -> Option<Vec<G::EdgeId>> {
     assert!(
         from.index() < graph.node_count(),
         "source node is out of range"
@@ -248,31 +303,21 @@ pub fn shortest_path_view_edges<G: EdgeGraphView>(
     if from == to {
         return Some(Vec::new());
     }
-    let forward = matches!(direction, TraversalDirection::Outgoing);
-    let mut parent_edge = vec![None; graph.node_count()];
+    let mut parent_edge = vec![G::EdgeId::from_index(0); graph.node_count()];
     let mut seen = vec![false; graph.node_count()];
     let mut queue = VecDeque::new();
     seen[from.index()] = true;
     queue.push_back(from);
 
     'search: while let Some(node) = queue.pop_front() {
-        let adjacency: Vec<_> = if forward {
-            graph.outgoing_edges(node).collect()
-        } else {
-            graph.incoming_edges(node).collect()
-        };
-        for edge_id in adjacency {
+        for edge_id in axis.edges(graph, node) {
             let edge = graph.edge_ref(edge_id);
-            let next = if forward {
-                edge.target()
-            } else {
-                edge.source()
-            };
+            let next = axis.next(edge);
             if seen[next.index()] {
                 continue;
             }
             seen[next.index()] = true;
-            parent_edge[next.index()] = Some(edge_id);
+            parent_edge[next.index()] = edge_id;
             if next == to {
                 break 'search;
             }
@@ -280,17 +325,16 @@ pub fn shortest_path_view_edges<G: EdgeGraphView>(
         }
     }
 
-    parent_edge[to.index()]?;
+    if !seen[to.index()] {
+        return None;
+    }
     let mut path = Vec::new();
     let mut current = to;
-    while let Some(edge_id) = parent_edge[current.index()] {
+    while current != from {
+        let edge_id = parent_edge[current.index()];
         path.push(edge_id);
         let edge = graph.edge_ref(edge_id);
-        current = if forward {
-            edge.source()
-        } else {
-            edge.target()
-        };
+        current = axis.previous(edge);
     }
     path.reverse();
     Some(path)
@@ -388,7 +432,7 @@ mod tests {
 
     #[test]
     fn edge_bfs_reports_parallel_and_cycle_edges_once() {
-        let (graph, [a, _, _]) = fixture();
+        let (graph, [a, _, c]) = fixture();
         let steps = breadth_first_edges(&graph, a, TraversalDirection::Outgoing);
         assert_eq!(steps.len(), 4);
         let payloads: Vec<_> = steps
@@ -396,6 +440,13 @@ mod tests {
             .map(|step| *graph.edge(step.edge).payload())
             .collect();
         assert_eq!(payloads, ["x", "z", "y", "cycle"]);
+
+        let backward = breadth_first_edges(&graph, c, TraversalDirection::Incoming);
+        let backward_payloads: Vec<_> = backward
+            .iter()
+            .map(|step| *graph.edge(step.edge).payload())
+            .collect();
+        assert_eq!(backward_payloads, ["y", "x", "z", "cycle"]);
     }
 
     #[test]
@@ -415,6 +466,11 @@ mod tests {
                 .len(),
             2
         );
+        let incoming =
+            shortest_path_view_edges(&filtered, c, a, TraversalDirection::Incoming).unwrap();
+        assert_eq!(incoming.len(), 2);
+        assert_eq!(*filtered.edge_ref(incoming[0]).data(), "y");
+        assert_eq!(*filtered.edge_ref(incoming[1]).data(), "x");
     }
 
     #[test]

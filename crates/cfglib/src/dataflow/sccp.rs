@@ -167,9 +167,13 @@ impl<V: VariableId, C: Clone + Eq> SccpAnalysis<V, C> {
                 }
             }
 
-            // Drain lowered values: both instructions AND phis must re-evaluate
-            // (a phi's operand can lower long after all its edges activated).
-            while ssa_worklist.pop().is_some() {
+            // Re-evaluate once per batch of lowered values. The value identity
+            // is not yet used to target a consumer, so K entries must not
+            // trigger K identical whole-program scans. Changes found during a
+            // scan form the next batch, which still handles phis whose operands
+            // lower after all incoming edges activated.
+            while !ssa_worklist.is_empty() {
+                ssa_worklist.clear();
                 for &block in &reachable_blocks {
                     evaluate_phis::<I>(
                         ssa,

@@ -5,6 +5,7 @@
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
+use alloc::vec;
 use alloc::vec::Vec;
 
 use smallvec::SmallVec;
@@ -12,7 +13,7 @@ use smallvec::SmallVec;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::dataflow::InstrInfo;
-use crate::graph::dominator::DominatorTree;
+use crate::graph::dominator::{DominatorChildOrder, DominatorTree};
 
 /// A value number — opaque identifier for a computed value.
 pub type ValueNumber = u32;
@@ -151,16 +152,36 @@ impl ValueNumbering {
         let mut variable_values: BTreeMap<I::Variable, ValueNumber> = BTreeMap::new();
         let mut expr_to_vn: BTreeMap<ExprKey<I::Operator>, ValueNumber> = BTreeMap::new();
         let mut next_vn: ValueNumber = 0;
+        let children = dom.child_links(DominatorChildOrder::Ascending);
+        let mut events = vec![GvnEvent::Enter(cfg.entry())];
 
-        gvn_dfs(
-            cfg,
-            dom,
-            cfg.entry(),
-            &mut variable_values,
-            &mut expr_to_vn,
-            &mut next_vn,
-            &mut blocks,
-        );
+        while let Some(event) = events.pop() {
+            match event {
+                GvnEvent::Enter(block) => {
+                    let scope = number_block(
+                        cfg,
+                        block,
+                        &mut variable_values,
+                        &mut expr_to_vn,
+                        &mut next_vn,
+                        &mut blocks,
+                    );
+                    events.push(GvnEvent::Exit(scope));
+                    if let Some(child) = children.first_child(block) {
+                        events.push(GvnEvent::Sibling(child));
+                    }
+                }
+                GvnEvent::Sibling(block) => {
+                    if let Some(sibling) = children.next_sibling(block) {
+                        events.push(GvnEvent::Sibling(sibling));
+                    }
+                    events.push(GvnEvent::Enter(block));
+                }
+                GvnEvent::Exit(scope) => {
+                    exit_scope(scope, &mut variable_values, &mut expr_to_vn);
+                }
+            }
+        }
 
         ValueNumbering {
             blocks,
@@ -169,16 +190,26 @@ impl ValueNumbering {
     }
 }
 
-/// Recursive DFS over the dominator tree with push/pop scoping.
-fn gvn_dfs<I: ValueNumberInfo>(
+struct GvnScope<V, Op> {
+    saved_variables: BTreeMap<V, Option<ValueNumber>>,
+    expressions: Vec<ExprKey<Op>>,
+}
+
+enum GvnEvent<V, Op> {
+    Enter(BlockId),
+    Sibling(BlockId),
+    Exit(GvnScope<V, Op>),
+}
+
+/// Number one block and return the mutations to undo when its scope exits.
+fn number_block<I: ValueNumberInfo>(
     cfg: &Cfg<I>,
-    dom: &DominatorTree,
     bid: BlockId,
     variable_values: &mut BTreeMap<I::Variable, ValueNumber>,
     expr_to_vn: &mut BTreeMap<ExprKey<I::Operator>, ValueNumber>,
     next_vn: &mut ValueNumber,
     blocks: &mut BTreeMap<BlockId, BlockValueNumbers>,
-) {
+) -> GvnScope<I::Variable, I::Operator> {
     // Snapshot the current scope so we can restore on exit.
     let mut saved_variables: BTreeMap<I::Variable, Option<ValueNumber>> = BTreeMap::new();
     let mut expr_added: Vec<ExprKey<I::Operator>> = Vec::new();
@@ -252,26 +283,21 @@ fn gvn_dfs<I: ValueNumberInfo>(
     }
 
     blocks.insert(bid, BlockValueNumbers { inst_vn, redundant });
-
-    // Recurse into dominator-tree children.
-    let children = dom.children(bid);
-    for child in children {
-        gvn_dfs(
-            cfg,
-            dom,
-            child,
-            variable_values,
-            expr_to_vn,
-            next_vn,
-            blocks,
-        );
+    GvnScope {
+        saved_variables,
+        expressions: expr_added,
     }
+}
 
-    // Pop scope: undo all insertions/overwrites from this block.
-    for key in expr_added {
+fn exit_scope<V: Ord, Op: Ord>(
+    scope: GvnScope<V, Op>,
+    variable_values: &mut BTreeMap<V, ValueNumber>,
+    expr_to_vn: &mut BTreeMap<ExprKey<Op>, ValueNumber>,
+) {
+    for key in scope.expressions {
         expr_to_vn.remove(&key);
     }
-    for (variable, previous) in saved_variables {
+    for (variable, previous) in scope.saved_variables {
         if let Some(value_number) = previous {
             variable_values.insert(variable, value_number);
         } else {
@@ -436,5 +462,33 @@ mod tests {
         let vn = ValueNumbering::compute(&cfg, &dom);
         assert!(vn.blocks[&a].redundant.is_empty());
         assert!(vn.blocks[&b].redundant.is_empty());
+    }
+
+    #[test]
+    fn gvn_handles_a_deep_dominator_tree_iteratively() {
+        const BLOCK_COUNT: usize = 4_096;
+
+        let mut cfg: Cfg<VnInst> = Cfg::new();
+        let mut block = cfg.entry();
+        for index in 0..BLOCK_COUNT {
+            let operation = u32::try_from(index).expect("test block index fits in u32");
+            cfg.block_mut(block)
+                .instructions_mut()
+                .push(vn_inst(operation, &[], &[0]));
+            if index + 1 < BLOCK_COUNT {
+                let next = cfg.new_block();
+                cfg.add_edge(block, next, EdgeKind::Fallthrough);
+                block = next;
+            }
+        }
+
+        let dominators = DominatorTree::compute(&cfg);
+        let numbering = ValueNumbering::compute(&cfg, &dominators);
+
+        assert_eq!(numbering.blocks.len(), BLOCK_COUNT);
+        assert_eq!(
+            numbering.value_count,
+            ValueNumber::try_from(BLOCK_COUNT).expect("test block count fits in a value number")
+        );
     }
 }

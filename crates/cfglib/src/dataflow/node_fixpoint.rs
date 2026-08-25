@@ -16,12 +16,13 @@
 //! [`TryNodeProblem`].
 
 extern crate alloc;
-use alloc::collections::BTreeSet;
+use alloc::collections::VecDeque;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::convert::Infallible;
 
 use super::fixpoint::{Direction, SolveConfig, SolveError, TrySolveError, collapse_infallible};
+use crate::graph::traverse::{Adjacency, Incoming, Outgoing};
 use crate::graph::view::{DenseNodeId, DirectedGraphView};
 
 /// A node-level dataflow problem over a graph view `G`.
@@ -242,7 +243,7 @@ where
     collapse_infallible(try_solve_with_worklist(
         graph,
         &fallible,
-        (0..graph.node_count()).collect(),
+        NodeWorklist::all(graph.node_count()),
         config,
     ))
 }
@@ -330,7 +331,12 @@ where
     G: DirectedGraphView,
     P: TryNodeProblem<G>,
 {
-    try_solve_with_worklist(graph, problem, (0..graph.node_count()).collect(), config)
+    try_solve_with_worklist(
+        graph,
+        problem,
+        NodeWorklist::all(graph.node_count()),
+        config,
+    )
 }
 
 /// Solve a fallible [`TryNodeProblem`] from `seeds` with a deterministic step
@@ -357,8 +363,8 @@ where
     try_solve_with_worklist(graph, problem, seed_worklist(graph, seeds), config)
 }
 
-fn seed_worklist<G: DirectedGraphView>(graph: &G, seeds: &[G::NodeId]) -> BTreeSet<usize> {
-    seeds
+fn seed_worklist<G: DirectedGraphView>(graph: &G, seeds: &[G::NodeId]) -> NodeWorklist {
+    let mut nodes: Vec<_> = seeds
         .iter()
         .map(|seed| {
             assert!(
@@ -367,7 +373,48 @@ fn seed_worklist<G: DirectedGraphView>(graph: &G, seeds: &[G::NodeId]) -> BTreeS
             );
             seed.index()
         })
-        .collect()
+        .collect();
+    nodes.sort_unstable();
+    nodes.dedup();
+    NodeWorklist::from_sorted(nodes, graph.node_count())
+}
+
+struct NodeWorklist {
+    queue: VecDeque<usize>,
+    queued: Vec<bool>,
+}
+
+impl NodeWorklist {
+    fn all(node_count: usize) -> Self {
+        Self {
+            queue: (0..node_count).collect(),
+            queued: vec![true; node_count],
+        }
+    }
+
+    fn from_sorted(nodes: Vec<usize>, node_count: usize) -> Self {
+        let mut queued = vec![false; node_count];
+        for &node in &nodes {
+            queued[node] = true;
+        }
+        Self {
+            queue: nodes.into_iter().collect(),
+            queued,
+        }
+    }
+
+    fn pop(&mut self) -> Option<usize> {
+        let node = self.queue.pop_front()?;
+        self.queued[node] = false;
+        Some(node)
+    }
+
+    fn insert(&mut self, node: usize) {
+        if !self.queued[node] {
+            self.queued[node] = true;
+            self.queue.push_back(node);
+        }
+    }
 }
 
 /// The worklist solver every entry point runs, differing only in which nodes
@@ -375,21 +422,44 @@ fn seed_worklist<G: DirectedGraphView>(graph: &G, seeds: &[G::NodeId]) -> BTreeS
 fn try_solve_with_worklist<G, P>(
     graph: &G,
     problem: &P,
-    mut worklist: BTreeSet<usize>,
+    worklist: NodeWorklist,
     config: SolveConfig,
 ) -> Result<NodeFacts<P::Fact>, TrySolveError<P::Error>>
 where
     G: DirectedGraphView,
     P: TryNodeProblem<G>,
 {
+    match problem.direction() {
+        Direction::Forward => {
+            try_solve_by_axis(graph, problem, Incoming, Outgoing, worklist, config)
+        }
+        Direction::Backward => {
+            try_solve_by_axis(graph, problem, Outgoing, Incoming, worklist, config)
+        }
+    }
+}
+
+fn try_solve_by_axis<G, P, U, D>(
+    graph: &G,
+    problem: &P,
+    upstream: U,
+    downstream: D,
+    mut worklist: NodeWorklist,
+    config: SolveConfig,
+) -> Result<NodeFacts<P::Fact>, TrySolveError<P::Error>>
+where
+    G: DirectedGraphView,
+    P: TryNodeProblem<G>,
+    U: Adjacency,
+    D: Adjacency,
+{
     let node_count = graph.node_count();
-    let forward = matches!(problem.direction(), Direction::Forward);
     let boundary = problem.boundary(graph).map_err(TrySolveError::Problem)?;
     let mut input = vec![problem.bottom(graph); node_count];
     let mut output = vec![problem.bottom(graph); node_count];
 
     let mut steps = 0;
-    while let Some(node_index) = worklist.pop_first() {
+    while let Some(node_index) = worklist.pop() {
         if let Some(limit) = config.max_steps() {
             if steps >= limit {
                 return Err(SolveError::StepLimitExceeded {
@@ -403,22 +473,18 @@ where
         steps += 1;
         let node = G::NodeId::from_index(node_index);
 
-        let upstream: Vec<G::NodeId> = if forward {
-            graph.predecessors(node).collect()
+        let mut neighbors = upstream.neighbors(graph, node);
+        let met = if let Some(first) = neighbors.next() {
+            let mut current = output[first.index()].clone();
+            for from in neighbors {
+                current = problem
+                    .meet(&current, &output[from.index()])
+                    .map_err(TrySolveError::Problem)?;
+            }
+            current
         } else {
-            graph.successors(node).collect()
+            boundary.clone()
         };
-        let mut met: Option<P::Fact> = None;
-        for from in upstream {
-            let fact = &output[from.index()];
-            met = Some(match met {
-                Some(current) => problem
-                    .meet(&current, fact)
-                    .map_err(TrySolveError::Problem)?,
-                None => fact.clone(),
-            });
-        }
-        let met = met.unwrap_or_else(|| boundary.clone());
 
         let transferred = problem
             .transfer(graph, node, &met)
@@ -426,12 +492,7 @@ where
         input[node_index] = met;
         if transferred != output[node_index] {
             output[node_index] = transferred;
-            let downstream: Vec<G::NodeId> = if forward {
-                graph.successors(node).collect()
-            } else {
-                graph.predecessors(node).collect()
-            };
-            for next in downstream {
+            for next in downstream.neighbors(graph, node) {
                 worklist.insert(next.index());
             }
         }

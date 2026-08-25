@@ -46,6 +46,12 @@ KEBAB_CASE = re.compile(r"^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$")
 SNAKE_CASE = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 DECORATIVE_DIVIDER = re.compile(r"^\s*//.*[=_─═-]{3,}\s*$")
 CARGO_TARGET_DIRECTORIES = ("benches", "examples", "tests")
+PUBLIC_FUNCTION = re.compile(r"^pub fn\s+([a-z][a-z0-9_]*)\s*(?:<|\()", re.MULTILINE)
+PUBLIC_USE = re.compile(r"^pub use\s+(.+?);", re.MULTILINE | re.DOTALL)
+BENCHMARK_API_LIST = re.compile(
+    r"PUBLIC_API_FUNCTIONS:\s*&\[&str\]\s*=\s*&\[(.*?)\];",
+    re.DOTALL,
+)
 
 
 def run(command: list[str]) -> bytes:
@@ -278,6 +284,69 @@ def check_cargo_layout(
         check_package_source(package_root, path, violations)
 
 
+def facade_export_names(source: str) -> set[str]:
+    """Return item names explicitly re-exported by the crate facade."""
+    names: set[str] = set()
+    for statement in PUBLIC_USE.findall(source):
+        if "{" in statement:
+            items = statement.split("{", 1)[1].rsplit("}", 1)[0]
+        else:
+            items = statement
+        for item in items.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            exported = item.rsplit(" as ", 1)[-1].rsplit("::", 1)[-1].strip()
+            if SNAKE_CASE.fullmatch(exported):
+                names.add(exported)
+    return names
+
+
+def check_benchmark_api_inventory(violations: list[str]) -> int:
+    """Keep the performance inventory aligned with facade free functions."""
+    crate_root = REPOSITORY_ROOT / "crates" / "cfglib"
+    lib_path = crate_root / "src" / "lib.rs"
+    inventory_path = crate_root / "benches" / "performance" / "api_cases.rs"
+    if not inventory_path.is_file():
+        violations.append(
+            "crates/cfglib/benches/performance/api_cases.rs: missing benchmark API inventory"
+        )
+        return 0
+
+    lib_source = lib_path.read_text(encoding="utf-8")
+    exported = facade_export_names(lib_source)
+    definitions: set[str] = set()
+    for source_path in (crate_root / "src").rglob("*.rs"):
+        definitions.update(
+            PUBLIC_FUNCTION.findall(source_path.read_text(encoding="utf-8"))
+        )
+    expected = exported & definitions
+
+    inventory_source = inventory_path.read_text(encoding="utf-8")
+    inventory_match = BENCHMARK_API_LIST.search(inventory_source)
+    if inventory_match is None:
+        violations.append(
+            "crates/cfglib/benches/performance/api_cases.rs: "
+            "PUBLIC_API_FUNCTIONS inventory is missing"
+        )
+        return 0
+    actual = set(re.findall(r'"([a-z][a-z0-9_]*)"', inventory_match.group(1)))
+
+    missing = sorted(expected - actual)
+    stale = sorted(actual - expected)
+    if missing:
+        violations.append(
+            "crates/cfglib/benches/performance/api_cases.rs: "
+            f"public facade functions missing from benchmark inventory: {missing}"
+        )
+    if stale:
+        violations.append(
+            "crates/cfglib/benches/performance/api_cases.rs: "
+            f"non-facade functions in benchmark inventory: {stale}"
+        )
+    return len(expected)
+
+
 def main() -> int:
     """Run all repository-policy checks."""
     try:
@@ -291,6 +360,7 @@ def main() -> int:
     source_count = check_source_sizes(files, violations)
     check_comment_style(files, violations)
     check_cargo_layout(files, workspace_root, package_roots, violations)
+    benchmark_api_count = check_benchmark_api_inventory(violations)
 
     if violations:
         print("Repository policy violations:", file=sys.stderr)
@@ -300,7 +370,8 @@ def main() -> int:
 
     print(
         "Repository policy checks passed "
-        f"({source_count} source files, {len(package_roots)} Cargo packages)."
+        f"({source_count} source files, {len(package_roots)} Cargo packages, "
+        f"{benchmark_api_count} benchmarked facade functions)."
     )
     return 0
 
