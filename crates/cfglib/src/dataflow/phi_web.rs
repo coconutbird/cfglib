@@ -68,60 +68,62 @@ pub struct PhiWebs<V> {
     pub web_of: BTreeMap<SsaValue<V>, usize>,
 }
 
-/// Compute phi congruence classes from a renamed SSA form.
-#[must_use]
-pub fn compute_phi_webs<V: VariableId>(ssa: &SsaForm<V>) -> PhiWebs<V> {
-    let mut all_values = Vec::new();
-    let mut value_to_index = BTreeMap::new();
+impl<V: VariableId> PhiWebs<V> {
+    /// Compute phi congruence classes from a renamed SSA form.
+    #[must_use]
+    pub fn compute(ssa: &SsaForm<V>) -> Self {
+        let mut all_values = Vec::new();
+        let mut value_to_index = BTreeMap::new();
 
-    for (_, phi) in ssa.phis() {
-        for value in
-            core::iter::once(&phi.result).chain(phi.operands.iter().map(|(_, value)| value))
-        {
-            if !value_to_index.contains_key(value) {
-                let index = all_values.len();
-                value_to_index.insert(value.clone(), index);
-                all_values.push(value.clone());
+        for (_, phi) in ssa.phis() {
+            for value in
+                core::iter::once(&phi.result).chain(phi.operands.iter().map(|(_, value)| value))
+            {
+                if !value_to_index.contains_key(value) {
+                    let index = all_values.len();
+                    value_to_index.insert(value.clone(), index);
+                    all_values.push(value.clone());
+                }
             }
         }
-    }
 
-    let mut union_find = UnionFind::new(all_values.len());
-    for (_, phi) in ssa.phis() {
-        let result_index = value_to_index[&phi.result];
-        for (_, operand) in &phi.operands {
-            union_find.union(result_index, value_to_index[operand]);
+        let mut union_find = UnionFind::new(all_values.len());
+        for (_, phi) in ssa.phis() {
+            let result_index = value_to_index[&phi.result];
+            for (_, operand) in &phi.operands {
+                union_find.union(result_index, value_to_index[operand]);
+            }
         }
+
+        let mut root_to_web = BTreeMap::new();
+        let mut webs: Vec<PhiWeb<V>> = Vec::new();
+        let mut web_of = BTreeMap::new();
+
+        for (index, value) in all_values.into_iter().enumerate() {
+            let root = union_find.find(index);
+            let web_index = if let Some(existing) = root_to_web.get(&root) {
+                *existing
+            } else {
+                let new_index = webs.len();
+                webs.push(PhiWeb {
+                    values: BTreeSet::new(),
+                });
+                root_to_web.insert(root, new_index);
+                new_index
+            };
+            webs[web_index].values.insert(value.clone());
+            web_of.insert(value, web_index);
+        }
+
+        PhiWebs { webs, web_of }
     }
-
-    let mut root_to_web = BTreeMap::new();
-    let mut webs: Vec<PhiWeb<V>> = Vec::new();
-    let mut web_of = BTreeMap::new();
-
-    for (index, value) in all_values.into_iter().enumerate() {
-        let root = union_find.find(index);
-        let web_index = if let Some(existing) = root_to_web.get(&root) {
-            *existing
-        } else {
-            let new_index = webs.len();
-            webs.push(PhiWeb {
-                values: BTreeSet::new(),
-            });
-            root_to_web.insert(root, new_index);
-            new_index
-        };
-        webs[web_index].values.insert(value.clone());
-        web_of.insert(value, web_index);
-    }
-
-    PhiWebs { webs, web_of }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::ssa::build_ssa;
+
     use crate::edge::EdgeKind;
     use crate::graph::dominator::DominatorTree;
     use crate::test_util::{DfInst, df_def, df_use};
@@ -130,8 +132,8 @@ mod tests {
     fn empty_ssa_has_no_webs() {
         let cfg = Cfg::<DfInst>::new();
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
-        assert!(compute_phi_webs(&ssa).webs.is_empty());
+        let ssa = SsaForm::compute(&cfg, &dom);
+        assert!(PhiWebs::compute(&ssa).webs.is_empty());
     }
 
     #[test]
@@ -149,8 +151,8 @@ mod tests {
         cfg.add_edge(right, merge, EdgeKind::Fallthrough);
 
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
-        let webs = compute_phi_webs(&ssa);
+        let ssa = SsaForm::compute(&cfg, &dom);
+        let webs = PhiWebs::compute(&ssa);
         assert_eq!(webs.webs.len(), 1);
         assert_eq!(webs.webs[0].values.len(), 3);
     }

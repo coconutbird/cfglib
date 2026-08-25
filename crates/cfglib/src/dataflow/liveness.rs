@@ -10,7 +10,7 @@
 extern crate alloc;
 use alloc::collections::BTreeSet;
 
-use super::fixpoint::{self, Direction, FixpointResult, Problem};
+use super::fixpoint::{self, Direction, Facts, Problem};
 use super::{InstrInfo, VariableId};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
@@ -91,14 +91,20 @@ impl<I: InstrInfo> Problem<I> for LivenessProblem {
 /// assert!(live.is_live_out(&r0, b0));
 /// ```
 pub struct Liveness<V> {
-    inner: FixpointResult<BTreeSet<V>>,
+    inner: Facts<BTreeSet<V>>,
 }
 
 impl<V: VariableId> Liveness<V> {
     /// Run liveness analysis on the given CFG.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the unbounded fixpoint solve reports a step-limit
+    /// error, which the unbounded configuration cannot produce.
     #[must_use]
     pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
-        let result = fixpoint::solve(cfg, &LivenessProblem);
+        let result = fixpoint::solve_problem(cfg, &LivenessProblem)
+            .expect("an unbounded solve cannot exceed a step limit");
         Self { inner: result }
     }
 
@@ -220,7 +226,7 @@ mod tests {
 
         let mut cfg: Cfg<DfInst> = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(use_("use_r0", 0));
         cfg.add_edge(cfg.entry(), cfg.entry(), EdgeKind::Back);
         let live = Liveness::compute(&cfg);

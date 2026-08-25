@@ -68,7 +68,13 @@ impl DenseNodeId for NodeId {
 pub struct EdgeId(pub(crate) u32);
 
 impl EdgeId {
-    pub(crate) fn from_index(index: usize) -> Self {
+    /// Create an `EdgeId` from a dense zero-based index.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `index` exceeds `u32::MAX`.
+    #[must_use]
+    pub fn from_index(index: usize) -> Self {
         Self(u32::try_from(index).expect("edge index exceeds u32::MAX"))
     }
 
@@ -81,7 +87,7 @@ impl EdgeId {
     /// Returns the raw index.
     #[inline]
     #[must_use]
-    pub fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         self.0 as usize
     }
 }

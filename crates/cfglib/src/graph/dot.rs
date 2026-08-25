@@ -60,7 +60,25 @@ pub fn write_view_dot<G: DirectedGraphView>(
     writeln!(w, "}}")
 }
 
-impl<I> Cfg<I> {
+/// Render any graph view in DOT format with consumer-provided node labels.
+///
+/// The allocating counterpart of [`write_view_dot`], matching
+/// [`Cfg::to_dot_with`].
+///
+/// # Panics
+///
+/// Panics only if writing to an in-memory [`String`] unexpectedly fails.
+#[must_use]
+pub fn to_view_dot<G: DirectedGraphView>(
+    graph: &G,
+    node_label: impl FnMut(G::NodeId) -> String,
+) -> String {
+    let mut out = String::new();
+    write_view_dot(graph, &mut out, node_label).expect("writing DOT to a String cannot fail");
+    out
+}
+
+impl<I, E> Cfg<I, E> {
     /// Write the CFG in DOT format using a caller-supplied instruction label.
     ///
     /// This is the bound-free escape hatch: rendering needs no trait on `I`
@@ -126,6 +144,8 @@ impl<I> Cfg<I> {
                 EdgeKind::ExceptionHandler => ("darkred", "solid", "handler"),
                 EdgeKind::ExceptionUnwind => ("darkred", "dashed", "unwind"),
                 EdgeKind::ExceptionLeave => ("darkred", "dotted", "leave"),
+                EdgeKind::ExceptionResume => ("darkred", "bold", "resume"),
+                EdgeKind::ExceptionContinue => ("darkgreen", "dashed", "continue"),
             };
             write!(
                 w,
@@ -171,7 +191,7 @@ impl<I> Cfg<I> {
     }
 }
 
-impl<I: DisplayInstr> Cfg<I> {
+impl<I: DisplayInstr, E> Cfg<I, E> {
     /// Write the CFG in DOT format to any `fmt::Write` sink.
     ///
     /// # Errors
@@ -241,7 +261,7 @@ mod tests {
     fn to_dot_contains_digraph_wrapper() {
         let mut cfg = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("nop"));
         let dot = cfg.to_dot();
         assert!(dot.starts_with("digraph cfg {"));
@@ -253,11 +273,9 @@ mod tests {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry_inst"));
-        cfg.block_mut(b)
-            .instructions_vec_mut()
-            .push(ff("second_inst"));
+        cfg.block_mut(b).instructions_mut().push(ff("second_inst"));
         cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         let dot = cfg.to_dot();
         assert!(dot.contains("entry_inst"), "should contain mnemonic");
@@ -269,9 +287,7 @@ mod tests {
         let mut cfg = Cfg::new();
         let a = cfg.new_block();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("br"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("br"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         let dot = cfg.to_dot();
@@ -292,9 +308,7 @@ mod tests {
     fn to_dot_edge_weight_shows_penwidth() {
         let mut cfg = Cfg::new();
         let b = cfg.new_block();
-        cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
-            .push(ff("a"));
+        cfg.block_mut(cfg.entry()).instructions_mut().push(ff("a"));
         let eid = cfg.add_edge(cfg.entry(), b, EdgeKind::Fallthrough);
         cfg.edge_mut(eid).set_weight(Some(0.75));
         let dot = cfg.to_dot();

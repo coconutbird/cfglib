@@ -15,7 +15,7 @@ use crate::graph::structure::NaturalLoop;
 
 /// Result of loop rotation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RotationResult {
+pub struct LoopRotation {
     /// The new header block (was the first body block).
     pub new_header: BlockId,
     /// The duplicated test block (copy of original header at bottom).
@@ -37,7 +37,7 @@ pub struct RotationResult {
 /// not applicable.
 ///
 /// Requires `I: Clone` to duplicate the header block's instructions.
-pub fn rotate_loop<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<RotationResult> {
+pub fn rotate_loop<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<LoopRotation> {
     // Only rotate loops with exactly one latch.
     if lp.latches.len() != 1 {
         return None;
@@ -66,7 +66,7 @@ pub fn rotate_loop<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<Rotat
     // Create a copy of the header at the bottom (new latch test).
     let bottom_test = cfg.new_block();
     let header_instrs = cfg.block(header).instructions().to_vec();
-    *cfg.block_mut(bottom_test).instructions_vec_mut() = header_instrs;
+    *cfg.block_mut(bottom_test).instructions_mut() = header_instrs;
 
     // Redirect the old latch → header edge to latch → bottom_test.
     let latch_edges: Vec<_> = cfg
@@ -84,7 +84,7 @@ pub fn rotate_loop<I: Clone>(cfg: &mut Cfg<I>, lp: &NaturalLoop) -> Option<Rotat
     // Bottom test loops back to body_succ (not header) on continue.
     cfg.add_edge(bottom_test, body_succ, EdgeKind::Back);
 
-    Some(RotationResult {
+    Some(LoopRotation {
         new_header: body_succ,
         bottom_test,
     })
@@ -153,17 +153,13 @@ mod tests {
         let exit = cfg.new_block();
 
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(df_def("def0", 0));
-        cfg.block_mut(header)
-            .instructions_vec_mut()
-            .push(df_ff("cmp"));
+        cfg.block_mut(header).instructions_mut().push(df_ff("cmp"));
         cfg.block_mut(body)
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(df_use("use0", 0));
-        cfg.block_mut(exit)
-            .instructions_vec_mut()
-            .push(df_ff("ret"));
+        cfg.block_mut(exit).instructions_mut().push(df_ff("ret"));
 
         cfg.add_edge(cfg.entry(), header, EdgeKind::Fallthrough);
         cfg.add_edge(header, body, EdgeKind::ConditionalTrue);
@@ -189,17 +185,11 @@ mod tests {
         let exit = cfg.new_block();
 
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(df_ff("init"));
-        cfg.block_mut(header)
-            .instructions_vec_mut()
-            .push(df_ff("cmp"));
-        cfg.block_mut(body)
-            .instructions_vec_mut()
-            .push(df_ff("work"));
-        cfg.block_mut(exit)
-            .instructions_vec_mut()
-            .push(df_ff("ret"));
+        cfg.block_mut(header).instructions_mut().push(df_ff("cmp"));
+        cfg.block_mut(body).instructions_mut().push(df_ff("work"));
+        cfg.block_mut(exit).instructions_mut().push(df_ff("ret"));
 
         cfg.add_edge(cfg.entry(), header, EdgeKind::Fallthrough);
         cfg.add_edge(header, body, EdgeKind::ConditionalTrue);

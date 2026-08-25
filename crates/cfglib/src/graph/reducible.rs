@@ -70,7 +70,7 @@ fn find_irreducible_entries<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BlockId
     const GRAY: u8 = 1;
     const BLACK: u8 = 2;
 
-    let n = cfg.num_blocks();
+    let n = cfg.block_count();
     if n == 0 {
         return Vec::new();
     }
@@ -108,7 +108,7 @@ fn find_irreducible_entries<I>(cfg: &Cfg<I>, dom: &DominatorTree) -> Vec<BlockId
 
 /// Check if `from` can reach `to` by following edges in the CFG.
 fn can_reach<I>(cfg: &Cfg<I>, from: BlockId, to: BlockId) -> bool {
-    let n = cfg.num_blocks();
+    let n = cfg.block_count();
     let mut visited = alloc::vec![false; n];
     let mut stack = alloc::vec![from];
     while let Some(node) = stack.pop() {
@@ -193,13 +193,11 @@ mod tests {
         let b = cfg.new_block();
         let merge = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
-        cfg.block_mut(merge)
-            .instructions_vec_mut()
-            .push(ff("merge"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
+        cfg.block_mut(merge).instructions_mut().push(ff("merge"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, merge, EdgeKind::Fallthrough);
@@ -220,10 +218,10 @@ mod tests {
         let a = cfg.new_block();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .push(ff("entry"));
-        cfg.block_mut(a).instructions_vec_mut().push(ff("a"));
-        cfg.block_mut(b).instructions_vec_mut().push(ff("b"));
+        cfg.block_mut(a).instructions_mut().push(ff("a"));
+        cfg.block_mut(b).instructions_mut().push(ff("b"));
         cfg.add_edge(cfg.entry(), a, EdgeKind::ConditionalTrue);
         cfg.add_edge(cfg.entry(), b, EdgeKind::ConditionalFalse);
         cfg.add_edge(a, b, EdgeKind::Fallthrough);

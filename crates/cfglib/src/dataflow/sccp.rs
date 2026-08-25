@@ -9,13 +9,13 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::dataflow::VariableId;
-use crate::dataflow::constprop::{ConstValue, ConstantFolder};
+use crate::dataflow::constant_propagation::{ConstValue, ConstantFolder};
 use crate::dataflow::ssa::{SsaForm, SsaValue};
+use crate::dataflow::{InstrInfo, VariableId};
 
 /// Result of SCCP analysis.
 #[derive(Debug, Clone)]
-pub struct SccpResult<V, C> {
+pub struct SccpAnalysis<V, C> {
     /// Lattice value computed for each renamed SSA value.
     pub values: BTreeMap<SsaValue<V>, ConstValue<C>>,
     /// CFG edges proven executable.
@@ -122,91 +122,93 @@ fn evaluate_phis<I: ConstantFolder>(
     }
 }
 
-/// Run sparse conditional constant propagation over a renamed SSA form.
-///
-/// `ssa` must have been built from `cfg`. The current control-flow adapter
-/// exposes reachability but not branch predicates, so SCCP conservatively marks
-/// every successor of a reachable block executable.
-#[must_use]
-pub fn sccp<I: ConstantFolder>(
-    cfg: &Cfg<I>,
-    ssa: &SsaForm<I::Variable>,
-) -> SccpResult<I::Variable, I::Const> {
-    let mut values = BTreeMap::new();
-    let mut executable_edges = BTreeSet::new();
-    let mut reachable_blocks = BTreeSet::new();
-    let mut cfg_worklist = Vec::new();
-    let mut ssa_worklist = Vec::new();
+impl<V: VariableId, C: Clone + Eq> SccpAnalysis<V, C> {
+    /// Run sparse conditional constant propagation over a renamed SSA form.
+    ///
+    /// `ssa` must have been computed from `cfg`. The current control-flow
+    /// adapter exposes reachability but not branch predicates, so SCCP
+    /// conservatively marks every successor of a reachable block executable.
+    #[must_use]
+    pub fn compute<I>(cfg: &Cfg<I>, ssa: &SsaForm<V>) -> Self
+    where
+        I: ConstantFolder<Const = C> + InstrInfo<Variable = V>,
+    {
+        let mut values = BTreeMap::new();
+        let mut executable_edges = BTreeSet::new();
+        let mut reachable_blocks = BTreeSet::new();
+        let mut cfg_worklist = Vec::new();
+        let mut ssa_worklist = Vec::new();
 
-    reachable_blocks.insert(cfg.entry());
-    cfg_worklist.extend(
-        cfg.successors(cfg.entry())
-            .map(|target| (cfg.entry(), target)),
-    );
-    evaluate_block(cfg, ssa, cfg.entry(), &mut values, &mut ssa_worklist);
+        reachable_blocks.insert(cfg.entry());
+        cfg_worklist.extend(
+            cfg.successors(cfg.entry())
+                .map(|target| (cfg.entry(), target)),
+        );
+        evaluate_block(cfg, ssa, cfg.entry(), &mut values, &mut ssa_worklist);
 
-    while !cfg_worklist.is_empty() || !ssa_worklist.is_empty() {
-        while let Some((source, target)) = cfg_worklist.pop() {
-            if !executable_edges.insert((source, target)) {
-                continue;
-            }
+        while !cfg_worklist.is_empty() || !ssa_worklist.is_empty() {
+            while let Some((source, target)) = cfg_worklist.pop() {
+                if !executable_edges.insert((source, target)) {
+                    continue;
+                }
 
-            let newly_reachable = reachable_blocks.insert(target);
-            evaluate_phis::<I>(
-                ssa,
-                target,
-                &executable_edges,
-                &mut values,
-                &mut ssa_worklist,
-            );
-
-            if newly_reachable {
-                evaluate_block(cfg, ssa, target, &mut values, &mut ssa_worklist);
-                cfg_worklist.extend(cfg.successors(target).map(|next| (target, next)));
-            }
-        }
-
-        // Drain lowered values: both instructions AND phis must re-evaluate
-        // (a phi's operand can lower long after all its edges activated).
-        while ssa_worklist.pop().is_some() {
-            for &block in &reachable_blocks {
+                let newly_reachable = reachable_blocks.insert(target);
                 evaluate_phis::<I>(
                     ssa,
-                    block,
+                    target,
                     &executable_edges,
                     &mut values,
                     &mut ssa_worklist,
                 );
-                evaluate_block(cfg, ssa, block, &mut values, &mut ssa_worklist);
+
+                if newly_reachable {
+                    evaluate_block(cfg, ssa, target, &mut values, &mut ssa_worklist);
+                    cfg_worklist.extend(cfg.successors(target).map(|next| (target, next)));
+                }
+            }
+
+            // Drain lowered values: both instructions AND phis must re-evaluate
+            // (a phi's operand can lower long after all its edges activated).
+            while ssa_worklist.pop().is_some() {
+                for &block in &reachable_blocks {
+                    evaluate_phis::<I>(
+                        ssa,
+                        block,
+                        &executable_edges,
+                        &mut values,
+                        &mut ssa_worklist,
+                    );
+                    evaluate_block(cfg, ssa, block, &mut values, &mut ssa_worklist);
+                }
             }
         }
-    }
 
-    SccpResult {
-        values,
-        executable_edges,
-        reachable_blocks,
+        SccpAnalysis {
+            values,
+            executable_edges,
+            reachable_blocks,
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dataflow::ssa::build_ssa;
+
     use crate::edge::EdgeKind;
     use crate::graph::dominator::DominatorTree;
     use crate::test_util::{DfInst, df_const, df_def, df_use};
 
-    fn analyse(cfg: &Cfg<DfInst>) -> SccpResult<u16, i64> {
+    fn analyze(cfg: &Cfg<DfInst>) -> SccpAnalysis<u16, i64> {
         let dom = DominatorTree::compute(cfg);
-        let ssa = build_ssa(cfg, &dom);
-        sccp(cfg, &ssa)
+        let ssa = SsaForm::compute(cfg, &dom);
+        SccpAnalysis::compute(cfg, &ssa)
     }
 
     #[test]
     fn entry_is_reachable() {
         let cfg = Cfg::<DfInst>::new();
-        assert!(analyse(&cfg).reachable_blocks.contains(&cfg.entry()));
+        assert!(analyze(&cfg).reachable_blocks.contains(&cfg.entry()));
     }
 
     #[test]
@@ -216,7 +218,7 @@ mod tests {
         cfg.block_mut(cfg.entry()).push(df_def("def", 0));
         cfg.block_mut(next).push(df_use("use", 0));
         cfg.add_edge(cfg.entry(), next, EdgeKind::Fallthrough);
-        assert!(analyse(&cfg).reachable_blocks.contains(&next));
+        assert!(analyze(&cfg).reachable_blocks.contains(&next));
     }
 
     #[test]
@@ -224,9 +226,9 @@ mod tests {
         let mut cfg = Cfg::<DfInst>::new();
         cfg.block_mut(cfg.entry()).push(df_const("constant", 0, 42));
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
+        let ssa = SsaForm::compute(&cfg, &dom);
         let definition = ssa.block(cfg.entry()).instructions[0].defs[0].clone();
-        let result = sccp(&cfg, &ssa);
+        let result = SccpAnalysis::compute(&cfg, &ssa);
         assert_eq!(result.values[&definition], ConstValue::Const(42));
     }
 
@@ -236,7 +238,7 @@ mod tests {
         let reachable = cfg.new_block();
         let unreachable = cfg.new_block();
         cfg.add_edge(cfg.entry(), reachable, EdgeKind::Fallthrough);
-        let result = analyse(&cfg);
+        let result = analyze(&cfg);
         assert!(result.reachable_blocks.contains(&reachable));
         assert!(!result.reachable_blocks.contains(&unreachable));
     }
@@ -261,8 +263,8 @@ mod tests {
         cfg.add_edge(arm_b, merge, EdgeKind::Fallthrough);
 
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
-        let result = sccp(&cfg, &ssa);
+        let ssa = SsaForm::compute(&cfg, &dom);
+        let result = SccpAnalysis::compute(&cfg, &ssa);
         let phi = &ssa.block(merge).phis[0];
         assert_eq!(
             result.values.get(&phi.result),
@@ -295,8 +297,8 @@ mod tests {
         cfg.add_edge(body, header, EdgeKind::Back);
 
         let dom = DominatorTree::compute(&cfg);
-        let ssa = build_ssa(&cfg, &dom);
-        let result = sccp(&cfg, &ssa);
+        let ssa = SsaForm::compute(&cfg, &dom);
+        let result = SccpAnalysis::compute(&cfg, &ssa);
         let phi = &ssa.block(header).phis[0];
         assert_eq!(
             result.values.get(&phi.result),

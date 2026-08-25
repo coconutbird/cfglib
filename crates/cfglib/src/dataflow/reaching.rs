@@ -8,7 +8,7 @@ extern crate alloc;
 use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
-use super::fixpoint::{self, Direction, FixpointResult, Problem};
+use super::fixpoint::{self, Direction, Facts, Problem};
 use super::{DefSite, InstrInfo, VariableId};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
@@ -102,14 +102,20 @@ impl<I: InstrInfo> Problem<I> for ReachingDefsProblem {
 /// assert!(!rd.reaching_in(b1).is_empty());
 /// ```
 pub struct ReachingDefs<V> {
-    inner: FixpointResult<BTreeSet<ReachingDef<V>>>,
+    inner: Facts<BTreeSet<ReachingDef<V>>>,
 }
 
 impl<V: VariableId> ReachingDefs<V> {
     /// Run reaching definitions on the given CFG.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the unbounded fixpoint solve reports a step-limit
+    /// error, which the unbounded configuration cannot produce.
     #[must_use]
     pub fn compute<I: InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
-        let result = fixpoint::solve(cfg, &ReachingDefsProblem);
+        let result = fixpoint::solve_problem(cfg, &ReachingDefsProblem)
+            .expect("an unbounded solve cannot exceed a step limit");
         Self { inner: result }
     }
 
@@ -148,8 +154,6 @@ mod tests {
     };
     use alloc::vec;
 
-    // --- Linear CFG tests ---
-
     #[test]
     fn reaching_linear_single_def() {
         // bb0: def r0; use r0
@@ -180,8 +184,6 @@ mod tests {
         assert_eq!(out.len(), 2);
     }
 
-    // --- Branching CFG tests ---
-
     #[test]
     fn reaching_branch_merges_both_defs() {
         // bb0: if
@@ -206,8 +208,6 @@ mod tests {
             "both branch defs should reach merge"
         );
     }
-
-    // --- Loop CFG tests ---
 
     #[test]
     fn reaching_loop_def_reaches_through_backedge() {

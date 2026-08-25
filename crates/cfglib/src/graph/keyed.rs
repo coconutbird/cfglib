@@ -13,6 +13,7 @@ extern crate alloc;
 use alloc::collections::BTreeMap;
 
 use super::directed::{DirectedGraph, EdgeId, NodeId};
+use super::edge_view::{EdgeGraphView, EdgeRef};
 use super::view::DirectedGraphView;
 
 /// A directed multigraph keyed by a consumer identity `K`.
@@ -117,6 +118,31 @@ impl<K: Ord, N, E> DirectedGraphView for KeyedGraph<K, N, E> {
 
     fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
         self.graph.predecessors(node)
+    }
+}
+
+impl<K: Ord, N, E> EdgeGraphView for KeyedGraph<K, N, E> {
+    type EdgeId = EdgeId;
+    type EdgeData = E;
+
+    fn edge_slot_count(&self) -> usize {
+        EdgeGraphView::edge_slot_count(&self.graph)
+    }
+
+    fn edge_ids(&self) -> impl Iterator<Item = EdgeId> + '_ {
+        EdgeGraphView::edge_ids(&self.graph)
+    }
+
+    fn outgoing_edges(&self, node: NodeId) -> impl Iterator<Item = EdgeId> + '_ {
+        EdgeGraphView::outgoing_edges(&self.graph, node)
+    }
+
+    fn incoming_edges(&self, node: NodeId) -> impl Iterator<Item = EdgeId> + '_ {
+        EdgeGraphView::incoming_edges(&self.graph, node)
+    }
+
+    fn edge_ref(&self, edge: EdgeId) -> EdgeRef<'_, NodeId, EdgeId, E> {
+        EdgeGraphView::edge_ref(&self.graph, edge)
     }
 }
 

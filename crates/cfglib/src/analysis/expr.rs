@@ -119,7 +119,7 @@ pub struct BlockExprTrees<V, Op, C> {
     /// **intra-block** use count alone (this is a per-block recovery with
     /// no cross-block liveness), so a def used once here and again in
     /// another block is inlined and absent from `roots` — consumers
-    /// needing every cross-block-live def materialised should consult
+    /// needing every cross-block-live def materialized should consult
     /// [`Liveness`](crate::Liveness) or
     /// [`DefUseChains`](crate::DefUseChains) alongside.
     pub roots: Vec<(V, ExprNode<V, Op, C>)>,
@@ -138,7 +138,6 @@ pub fn recover_block_expressions<I: ExprInstr>(
 
     // Map from variable → the expression that defines it (within this block).
     let mut variable_expressions = BTreeMap::new();
-    // Count uses of each variable within this block.
     let mut use_count = BTreeMap::new();
 
     // First pass: count intra-block uses.
@@ -151,7 +150,6 @@ pub fn recover_block_expressions<I: ExprInstr>(
     // Second pass: build expressions.
     for (idx, inst) in insts.iter().enumerate() {
         if let Some(c) = inst.as_const() {
-            // Constant load.
             if let Some(destination) = inst.defs().first() {
                 variable_expressions.insert(destination.clone(), ExprNode::Const(c));
             }
@@ -161,10 +159,10 @@ pub fn recover_block_expressions<I: ExprInstr>(
                 .iter()
                 .map(|variable| {
                     // Inline if this is a single-use temporary defined in this block.
-                    if use_count.get(variable).copied().unwrap_or(0) == 1
-                        && let Some(subexpression) = variable_expressions.remove(variable)
-                    {
-                        return subexpression;
+                    if use_count.get(variable).copied().unwrap_or(0) == 1 {
+                        if let Some(subexpression) = variable_expressions.remove(variable) {
+                            return subexpression;
+                        }
                     }
                     ExprNode::Leaf(variable.clone())
                 })
@@ -221,7 +219,7 @@ mod tests {
         // mul t0, r1, r2    (t0 = r1 * r2)
         // add t1, r0, t0    (t1 = r0 + t0 = r0 + r1 * r2)
         let mut cfg: Cfg<DfInst> = Cfg::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             df_op("mul", "mul", 10, &[1, 2]),  // t0(loc10) = r1 * r2
             df_op("add", "add", 11, &[0, 10]), // t1(loc11) = r0 + t0
         ]);
@@ -259,7 +257,7 @@ mod tests {
         // const t0 = 42; add t1, r0, t0 → add(Leaf(r0), Const(42))
         let mut cfg: Cfg<DfInst> = Cfg::new();
         cfg.block_mut(cfg.entry())
-            .instructions_vec_mut()
+            .instructions_mut()
             .extend([df_const("ldc", 10, 42), df_op("add", "add", 11, &[0, 10])]);
 
         let trees = recover_block_expressions(&cfg, cfg.entry());
@@ -278,7 +276,7 @@ mod tests {
         // mul t0, r1, r2; add t1, r0, t0; sub t2, t0, r3
         // t0 has 2 uses → should NOT be inlined, stays as Leaf.
         let mut cfg: Cfg<DfInst> = Cfg::new();
-        cfg.block_mut(cfg.entry()).instructions_vec_mut().extend([
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
             df_op("mul", "mul", 10, &[1, 2]),
             df_op("add", "add", 11, &[0, 10]),
             df_op("sub", "sub", 12, &[10, 3]),
@@ -291,10 +289,10 @@ mod tests {
         for (_, expr) in &trees.roots {
             if let ExprNode::Op { operands, .. } = expr {
                 for op in operands {
-                    if let ExprNode::Leaf(loc) = op
-                        && *loc == 10
-                    {
-                        // Good — t0 is a leaf, not inlined.
+                    if let ExprNode::Leaf(loc) = op {
+                        if *loc == 10 {
+                            // Good — t0 is a leaf, not inlined.
+                        }
                     }
                 }
             }

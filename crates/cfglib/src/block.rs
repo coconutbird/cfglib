@@ -11,7 +11,13 @@ use alloc::vec::Vec;
 pub struct BlockId(pub(crate) u32);
 
 impl BlockId {
-    pub(crate) fn from_index(index: usize) -> Self {
+    /// Create a `BlockId` from a dense zero-based index.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `index` exceeds `u32::MAX`.
+    #[must_use]
+    pub fn from_index(index: usize) -> Self {
         Self(u32::try_from(index).expect("block index exceeds u32::MAX"))
     }
 
@@ -21,14 +27,14 @@ impl BlockId {
     /// decoding and need to construct IDs directly.
     #[inline]
     #[must_use]
-    pub fn from_raw(raw: u32) -> Self {
+    pub const fn from_raw(raw: u32) -> Self {
         Self(raw)
     }
 
     /// Returns the raw index.
     #[inline]
     #[must_use]
-    pub fn index(self) -> usize {
+    pub const fn index(self) -> usize {
         self.0 as usize
     }
 }
@@ -54,7 +60,7 @@ impl crate::graph::view::DenseNodeId for BlockId {
 /// Predication (ARM IT blocks, GPU wave predication, CMOV sequences) is not
 /// block state: instructions declare their guards through
 /// [`Predicated`](crate::Predicated), and
-/// [`lift_predicated`](crate::lift_predicated) regionises them.
+/// [`lift_predicated`](crate::lift_predicated) regionizes them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BasicBlock<I> {
@@ -81,9 +87,12 @@ impl<I> BasicBlock<I> {
         &self.instructions
     }
 
-    /// Mutable access to the instructions (as a slice).
+    /// Mutable access to the instruction vector.
+    ///
+    /// Blocks impose no invariants on their instruction list, so full `Vec`
+    /// control (insert, remove, drain) is available directly.
     #[inline]
-    pub fn instructions_mut(&mut self) -> &mut [I] {
+    pub fn instructions_mut(&mut self) -> &mut Vec<I> {
         &mut self.instructions
     }
 
@@ -111,15 +120,5 @@ impl<I> BasicBlock<I> {
     #[inline]
     pub fn set_label(&mut self, label: impl Into<String>) {
         self.label = Some(label.into());
-    }
-
-    /// Mutable access to the instruction vector.
-    ///
-    /// This gives full `Vec` control (insert, remove, drain, etc.)
-    /// unlike [`instructions_mut`](Self::instructions_mut) which
-    /// returns only a mutable slice.
-    #[inline]
-    pub fn instructions_vec_mut(&mut self) -> &mut Vec<I> {
-        &mut self.instructions
     }
 }

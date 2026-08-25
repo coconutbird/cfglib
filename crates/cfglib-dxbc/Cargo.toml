@@ -6,12 +6,17 @@ license.workspace = true
 repository.workspace = true
 authors.workspace = true
 rust-version.workspace = true
-description = "SM4/SM5 shader bytecode CFG and SSA adapter for cfglib"
 keywords = ["dxbc", "shader", "cfg", "control-flow", "directx"]
-categories = ["compilers", "no-std"]
+categories.workspace = true
+description = "SM4/SM5 shader bytecode CFG and SSA adapter for cfglib"
+readme = "../../README.md"
 
 [lints]
 workspace = true
+
+[features]
+default = []
+serde = ["cfglib/serde"]
 
 [dependencies]
 cfglib.workspace = true

@@ -49,7 +49,7 @@ fn collect_effects<E: Clone + Ord>(mut all: Vec<E>) -> Purity<E> {
     }
 }
 
-/// Analyse purity of a single block.
+/// Analyze purity of a single block.
 #[must_use]
 pub fn block_purity<I: EffectInfo>(cfg: &Cfg<I>, block: BlockId) -> Purity<I::Effect> {
     let mut all = Vec::new();
@@ -59,7 +59,7 @@ pub fn block_purity<I: EffectInfo>(cfg: &Cfg<I>, block: BlockId) -> Purity<I::Ef
     collect_effects(all)
 }
 
-/// Analyse purity of the entire CFG.
+/// Analyze purity of the entire CFG.
 #[must_use]
 pub fn cfg_purity<I: EffectInfo>(cfg: &Cfg<I>) -> Purity<I::Effect> {
     let mut all = Vec::new();
@@ -73,7 +73,7 @@ pub fn cfg_purity<I: EffectInfo>(cfg: &Cfg<I>) -> Purity<I::Effect> {
 
 /// Collect per-block purity for every block in the CFG.
 #[must_use]
-pub fn all_block_purities<I: EffectInfo>(cfg: &Cfg<I>) -> Vec<(BlockId, Purity<I::Effect>)> {
+pub fn block_purities<I: EffectInfo>(cfg: &Cfg<I>) -> Vec<(BlockId, Purity<I::Effect>)> {
     cfg.blocks()
         .iter()
         .map(|b| (b.id(), block_purity(cfg, b.id())))

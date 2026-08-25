@@ -10,7 +10,7 @@ use dxbc::shex::{ComponentSelect, Instruction, Opcode, Operand, OperandIndex, Re
 ///
 /// Shader-native categories: resource loads/stores, exports observable
 /// outside the invocation (render targets, streams, `discard`), subroutine
-/// calls, and synchronisation.
+/// calls, and synchronization.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Sm4Effect {
     /// Reads a resource (texture sample, typed/raw/structured load).
@@ -21,7 +21,7 @@ pub enum Sm4Effect {
     Export,
     /// Calls a subroutine or interface method.
     Call,
-    /// Synchronisation barrier.
+    /// Synchronization barrier.
     Sync,
     /// A store through a dynamically-indexed indexable temp (`x#[reg]`).
     ///
@@ -270,7 +270,7 @@ impl Sm4Instruction {
 
     /// Consume the adapter and recover the decoded instruction.
     #[must_use]
-    pub fn into_inner(self) -> Instruction {
+    pub fn into_instruction(self) -> Instruction {
         self.instruction
     }
 }

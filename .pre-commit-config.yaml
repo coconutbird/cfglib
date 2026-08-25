@@ -1,3 +1,8 @@
+# Single source of truth for local quality gates, served to both pre-commit
+# and prek. Hygiene and fast gates run at commit time; the full test and doc
+# suites run at push time. CI (.github/workflows/lint.yml) runs everything.
+default_install_hook_types: [pre-commit, pre-push]
+
 repos:
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
@@ -12,6 +17,12 @@ repos:
 
   - repo: local
     hooks:
+      - id: repository-policy
+        name: repository policy
+        entry: python scripts/check_repository_policy.py
+        language: python
+        pass_filenames: false
+        always_run: true
       - id: cargo-fmt
         name: cargo fmt
         entry: cargo fmt --all -- --check
@@ -20,7 +31,21 @@ repos:
         always_run: true
       - id: cargo-clippy
         name: cargo clippy
-        entry: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -D clippy::pedantic
+        entry: cargo clippy --workspace --all-targets --all-features -- -D warnings -D clippy::pedantic
         language: system
         pass_filenames: false
         always_run: true
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test --workspace --all-features
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
+      - id: cargo-doc
+        name: cargo doc
+        entry: cargo doc --workspace --all-features --no-deps
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-push]
