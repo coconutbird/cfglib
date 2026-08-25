@@ -321,7 +321,7 @@ impl<N, E> DirectedGraph<N, E> {
     }
 
     /// Iterate over outgoing neighbor identities, retaining parallel entries.
-    #[must_use]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn successors(&self, node: NodeId) -> impl ExactSizeIterator<Item = NodeId> + '_ {
         self.outgoing[node.index()]
             .iter()
@@ -329,7 +329,7 @@ impl<N, E> DirectedGraph<N, E> {
     }
 
     /// Iterate over incoming neighbor identities, retaining parallel entries.
-    #[must_use]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn predecessors(&self, node: NodeId) -> impl ExactSizeIterator<Item = NodeId> + '_ {
         self.incoming[node.index()]
             .iter()

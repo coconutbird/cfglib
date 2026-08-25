@@ -410,11 +410,14 @@ pub fn try_solve_problem_from_with_config<I, P: TryProblem<I>>(
 
 /// Every reachable block, in the traversal order matching the direction.
 fn reachable_worklist<I, P: TryProblem<I>>(cfg: &Cfg<I>, problem: &P) -> BTreeSet<u32> {
-    let order = match problem.direction() {
-        Direction::Forward => cfg.reverse_postorder(),
-        Direction::Backward => cfg.depth_first_postorder(),
-    };
-    order.iter().map(|block| block.0).collect()
+    match problem.direction() {
+        Direction::Forward => cfg
+            .reverse_postorder()
+            .into_iter()
+            .map(|block| block.0)
+            .collect(),
+        Direction::Backward => cfg.blocks().iter().map(|block| block.id().0).collect(),
+    }
 }
 
 fn seed_worklist<I>(cfg: &Cfg<I>, seeds: &[BlockId]) -> BTreeSet<u32> {

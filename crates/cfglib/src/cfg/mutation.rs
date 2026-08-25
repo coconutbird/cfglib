@@ -171,8 +171,7 @@ impl<I, E> Cfg<I, E> {
         at: usize,
         fallthrough_payload: E,
     ) -> BlockId {
-        self.split_block_with_payload_mapped(id, at, fallthrough_payload)
-            .0
+        self.split_block_with_payload_inner(id, at, fallthrough_payload, None)
     }
 
     /// Split a block and return its new tail plus every affected identity.
@@ -187,28 +186,37 @@ impl<I, E> Cfg<I, E> {
         at: usize,
         fallthrough_payload: E,
     ) -> (BlockId, RewriteMap) {
+        let mut mapping = RewriteMap::new();
+        let new_id =
+            self.split_block_with_payload_inner(id, at, fallthrough_payload, Some(&mut mapping));
+        (new_id, mapping)
+    }
+
+    fn split_block_with_payload_inner(
+        &mut self,
+        id: BlockId,
+        at: usize,
+        fallthrough_payload: E,
+        mapping: Option<&mut RewriteMap>,
+    ) -> BlockId {
         let tail_insts: Vec<I> = self.blocks[id.index()].instructions.split_off(at);
         let new_id = self.new_block();
         self.blocks[new_id.index()].instructions = tail_insts;
 
-        // Move outgoing edges from `id` to `new_id`.
-        let outgoing: SmallVec<[EdgeId; 2]> = self.succs[id.index()].drain(..).collect();
-        for &eid in &outgoing {
-            self.edges[eid.index()].as_mut().unwrap().source = new_id;
-            self.succs[new_id.index()].push(eid);
-        }
+        self.move_outgoing_edges(id, new_id);
 
         let fallthrough =
             self.add_edge_with_payload(id, new_id, EdgeKind::Fallthrough, fallthrough_payload);
 
-        let mut mapping = RewriteMap::new();
-        mapping.record_block(id, [id, new_id]);
-        mapping.record_created_block(new_id);
-        for edge in outgoing {
-            mapping.record_edge(edge, [edge]);
+        if let Some(mapping) = mapping {
+            mapping.record_block(id, [id, new_id]);
+            mapping.record_created_block(new_id);
+            for &edge in &self.succs[new_id.index()] {
+                mapping.record_edge(edge, [edge]);
+            }
+            mapping.record_created_edge(fallthrough);
         }
-        mapping.record_created_edge(fallthrough);
-        (new_id, mapping)
+        new_id
     }
 
     /// Split one block at ordered instruction boundaries with explicit edge
@@ -291,7 +299,7 @@ impl<I, E> Cfg<I, E> {
     ///
     /// Panics if either block is out of range or an incoming edge was removed.
     pub fn redirect_edges_to(&mut self, old: BlockId, new_target: BlockId) {
-        let _ = self.redirect_edges_to_mapped(old, new_target);
+        self.redirect_edges_to_inner(old, new_target, None);
     }
 
     /// Redirect one edge's source while retaining its identity and payload.
@@ -360,13 +368,81 @@ impl<I, E> Cfg<I, E> {
 
     /// Redirect every edge targeting `old` and return their stable mapping.
     pub fn redirect_edges_to_mapped(&mut self, old: BlockId, new_target: BlockId) -> RewriteMap {
-        let incoming: SmallVec<[EdgeId; 4]> = self.preds[old.index()].clone();
         let mut mapping = RewriteMap::new();
-        for eid in incoming {
-            self.redirect_edge_target(eid, new_target);
-            mapping.record_edge(eid, [eid]);
-        }
+        self.redirect_edges_to_inner(old, new_target, Some(&mut mapping));
         mapping
+    }
+
+    fn redirect_edges_to_inner(
+        &mut self,
+        old: BlockId,
+        new_target: BlockId,
+        mut mapping: Option<&mut RewriteMap>,
+    ) {
+        let old_index = old.index();
+        let new_target_index = new_target.index();
+        let _ = &self.preds[old_index];
+        let _ = &self.preds[new_target_index];
+        if old == new_target {
+            return;
+        }
+
+        for &edge in &self.preds[old_index] {
+            self.edges[edge.index()]
+                .as_ref()
+                .expect("CFG predecessor adjacency must reference a live edge");
+        }
+
+        let incoming = core::mem::take(&mut self.preds[old_index]);
+        for &edge in &incoming {
+            self.edges[edge.index()]
+                .as_mut()
+                .expect("validated CFG edge must remain live")
+                .target = new_target;
+            if let Some(mapping) = mapping.as_deref_mut() {
+                mapping.record_edge(edge, [edge]);
+            }
+        }
+        if self.preds[new_target_index].is_empty() {
+            self.preds[new_target_index] = incoming;
+        } else {
+            self.preds[new_target_index].extend(incoming);
+        }
+    }
+
+    /// Move every outgoing edge of `old` to `new_source` in adjacency order.
+    ///
+    /// Only the source endpoint changes: edge identities, targets, kinds,
+    /// weights, payloads, and predecessor adjacency remain intact. When the
+    /// destination has no outgoing edges, its complete adjacency buffer moves
+    /// without reallocating.
+    pub(crate) fn move_outgoing_edges(&mut self, old: BlockId, new_source: BlockId) {
+        let old_index = old.index();
+        let new_source_index = new_source.index();
+        let _ = &self.succs[old_index];
+        let _ = &self.succs[new_source_index];
+        if old == new_source {
+            return;
+        }
+
+        for &edge in &self.succs[old_index] {
+            self.edges[edge.index()]
+                .as_ref()
+                .expect("CFG successor adjacency must reference a live edge");
+        }
+
+        let outgoing = core::mem::take(&mut self.succs[old_index]);
+        for &edge in &outgoing {
+            self.edges[edge.index()]
+                .as_mut()
+                .expect("validated CFG edge must remain live")
+                .source = new_source;
+        }
+        if self.succs[new_source_index].is_empty() {
+            self.succs[new_source_index] = outgoing;
+        } else {
+            self.succs[new_source_index].extend(outgoing);
+        }
     }
 
     /// Mutable access to an edge.
