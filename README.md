@@ -90,7 +90,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | SmallVec adjacency | Stack-allocated successor (2) / predecessor (4) lists; heap only for high fan-out |
 | Tombstone edges | `remove_edge()` replaces the slot with `None`; existing `EdgeId`s remain stable |
 | Edge metadata | Stable `EdgeId`, endpoints, `EdgeKind`, optional weight, and a caller-owned payload; `ExceptionFlow<M>` standardises search/unwind phase and execute/search/continue disposition while retaining platform metadata |
-| Regions | Try/catch/finally regions with `Handler` and `HandlerKind` (Catch, CatchAll, Finally, Fault, Filter); `install_clr_region` and `install_seh_region` import normalized platform clauses |
+| Regions | Try/catch/finally regions with explicit `HandlerBody::Known`/`Unknown` completeness and `HandlerKind` (Catch, CatchAll, Finally, Fault, Filter); `install_clr_region` and `install_seh_region` import normalized platform clauses |
 | Cleanup continuations | `add_continuation` / `set_cleanup_resume` → `Cleanup` (`Continuation` + `CompletionReason`): which route out of a single shared `finally` block a resume edge belongs to |
 | Handler metadata | `HandlerMetadata<M>` side table (`HandlerFilters<F>` / `HandlerTypes<T>`) — consumer-typed filter predicates and CLR caught-type tokens keyed by `HandlerRef`, with no type parameter on `Cfg` |
 | Native handler state | `SehRegistrationChain<F, H>` models per-thread x86 frame registrations; `VehModel<H>` separately models ordered process-wide vectored exception/continue handlers |
@@ -205,7 +205,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | If/then/else | Diamond and triangle patterns |
 | Loops | While, do-while, infinite; with `break` and `continue` |
 | Switch/case | Multi-way branches with fallthrough |
-| Try/catch/finally | From region metadata |
+| Try/catch/finally | From region metadata; unknown or malformed handler extents degrade to explicit `Goto`/`Label` flow — reachable code is never dropped |
 | Label/goto | Fallback for irreducible control flow |
 | Pseudocode | `to_pseudocode` via `DisplayInstr` — rendering never requires flow classification |
 

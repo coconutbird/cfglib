@@ -216,149 +216,104 @@ fn lift_switch_produces_switch_node() {
     assert!(found, "should contain Switch node: {ast:?}");
 }
 
-/// Recursively check if any node in the AST matches a predicate.
-fn has_node_kind<I>(node: &AstNode<I>, pred: fn(&AstNode<I>) -> bool) -> bool {
-    if pred(node) {
-        return true;
-    }
+/// Visit every node of the AST, pre-order, descending into every
+/// child-bearing variant. The single walker behind every AST query here, so
+/// a new [`AstNode`] variant only has to be taught once — the exhaustive
+/// match makes forgetting it a compile error.
+fn walk<'n, I>(node: &'n AstNode<I>, visit: &mut impl FnMut(&'n AstNode<I>)) {
+    visit(node);
     match node {
-        AstNode::Sequence { body } | AstNode::Loop { body, .. } | AstNode::Label { body, .. } => {
-            body.iter().any(|c| has_node_kind(c, pred))
+        AstNode::Sequence { body }
+        | AstNode::Loop { body, .. }
+        | AstNode::Label { body, .. }
+        | AstNode::Guarded { body, .. } => {
+            for child in body {
+                walk(child, visit);
+            }
         }
         AstNode::IfThenElse {
             then_body,
             else_body,
             ..
         } => {
-            then_body.iter().any(|c| has_node_kind(c, pred))
-                || else_body.iter().any(|c| has_node_kind(c, pred))
+            for child in then_body {
+                walk(child, visit);
+            }
+            for child in else_body {
+                walk(child, visit);
+            }
         }
-        AstNode::Switch { cases, .. } => cases
-            .iter()
-            .any(|c| c.body.iter().any(|n| has_node_kind(n, pred))),
+        AstNode::Switch { cases, .. } => {
+            for case in cases {
+                for child in &case.body {
+                    walk(child, visit);
+                }
+            }
+        }
         AstNode::TryCatch {
             try_body,
             handlers,
             finally_body,
         } => {
-            try_body.iter().any(|c| has_node_kind(c, pred))
-                || handlers
-                    .iter()
-                    .any(|h| h.body.iter().any(|n| has_node_kind(n, pred)))
-                || finally_body.iter().any(|c| has_node_kind(c, pred))
+            for child in try_body {
+                walk(child, visit);
+            }
+            for handler in handlers {
+                for child in &handler.body {
+                    walk(child, visit);
+                }
+            }
+            for child in finally_body {
+                walk(child, visit);
+            }
         }
-        _ => false,
+        AstNode::Block { .. }
+        | AstNode::Return { .. }
+        | AstNode::Break
+        | AstNode::Continue
+        | AstNode::Goto { .. } => {}
     }
 }
 
-#[test]
-fn lift_try_catch_produces_try_node() {
-    use crate::region::{Handler, HandlerKind, Region, RegionId};
-    use alloc::collections::BTreeSet;
-
-    let mut cfg: Cfg<MockInst> = Cfg::new();
-    // entry(0) → try_body(1) → after(3)
-    //            try_body(1) --Exception--> handler(2) → after(3)
-    let try_body = cfg.new_block(); // 1
-    let handler_block = cfg.new_block(); // 2
-    let after = cfg.new_block(); // 3
-
-    cfg.block_mut(cfg.entry())
-        .instructions_mut()
-        .push(ff("entry"));
-    cfg.block_mut(try_body)
-        .instructions_mut()
-        .push(ff("try_inst"));
-    cfg.block_mut(handler_block)
-        .instructions_mut()
-        .push(ff("catch_inst"));
-    cfg.block_mut(after).instructions_mut().push(ff("after"));
-
-    cfg.add_edge(cfg.entry(), try_body, EdgeKind::Fallthrough);
-    cfg.add_edge(try_body, after, EdgeKind::Fallthrough);
-    cfg.add_edge(try_body, handler_block, EdgeKind::ExceptionHandler);
-    cfg.add_edge(handler_block, after, EdgeKind::Fallthrough);
-
-    let mut protected = BTreeSet::new();
-    protected.insert(try_body);
-    cfg.add_region(Region {
-        id: RegionId(0),
-        protected_blocks: protected,
-        handlers: alloc::vec![Handler {
-            entry: handler_block,
-            body: {
-                let mut s = BTreeSet::new();
-                s.insert(handler_block);
-                s
-            },
-            kind: HandlerKind::Catch,
-        }],
-        parent: None,
+/// Check whether any node in the AST matches a predicate.
+fn has_node_kind<I>(node: &AstNode<I>, pred: impl Fn(&AstNode<I>) -> bool) -> bool {
+    let mut found = false;
+    walk(node, &mut |candidate| {
+        found = found || pred(candidate);
     });
-
-    let ast = lift(&cfg);
-    let found = has_node_kind(&ast, |n| matches!(n, AstNode::TryCatch { .. }));
-    assert!(found, "should contain TryCatch node: {ast:?}");
-    let pseudo = ast.to_pseudocode();
-    assert!(
-        pseudo.contains("try"),
-        "pseudocode should contain try: {pseudo}"
-    );
+    found
 }
 
-#[test]
-fn lift_preserves_fault_and_filter_handler_kinds() {
-    use crate::region::{Handler, HandlerKind, Region, RegionId};
-    use alloc::collections::BTreeSet;
+fn find_try_handlers<I>(node: &AstNode<I>) -> Option<&[crate::ast::CatchHandler<I>]> {
+    find_try_catch(node).and_then(|found| match found {
+        AstNode::TryCatch { handlers, .. } => Some(handlers.as_slice()),
+        _ => None,
+    })
+}
 
-    let mut cfg: Cfg<MockInst> = Cfg::new();
-    let try_body = cfg.new_block();
-    let fault = cfg.new_block();
-    let filter = cfg.new_block();
-    let filtered_handler = cfg.new_block();
-    let after = cfg.new_block();
-    let entry = cfg.entry();
-
-    cfg.block_mut(try_body)
-        .instructions_mut()
-        .push(ff("try_inst"));
-    cfg.block_mut(fault)
-        .instructions_mut()
-        .push(ff("fault_inst"));
-    cfg.block_mut(filtered_handler)
-        .instructions_mut()
-        .push(ff("filtered_inst"));
-    cfg.add_edge(entry, try_body, EdgeKind::Fallthrough);
-    cfg.add_edge(try_body, after, EdgeKind::Fallthrough);
-    cfg.add_edge(try_body, fault, EdgeKind::ExceptionUnwind);
-    cfg.add_edge(try_body, filtered_handler, EdgeKind::ExceptionHandler);
-
-    cfg.add_region(Region {
-        id: RegionId::from_raw(0),
-        protected_blocks: [try_body].into_iter().collect::<BTreeSet<_>>(),
-        handlers: alloc::vec![
-            Handler {
-                entry: fault,
-                body: [fault].into_iter().collect(),
-                kind: HandlerKind::Fault,
-            },
-            Handler {
-                entry: filtered_handler,
-                body: [filtered_handler].into_iter().collect(),
-                kind: HandlerKind::Filter {
-                    filter_block: filter,
-                },
-            },
-        ],
-        parent: None,
+fn find_try_catch<I>(node: &AstNode<I>) -> Option<&AstNode<I>> {
+    let mut found = None;
+    walk(node, &mut |candidate| {
+        if found.is_none() && matches!(candidate, AstNode::TryCatch { .. }) {
+            found = Some(candidate);
+        }
     });
+    found
+}
 
-    let pseudo = lift(&cfg).to_pseudocode();
-    assert!(pseudo.contains("} fault {"), "{pseudo}");
-    assert!(
-        pseudo.contains(&alloc::format!("}} filter (.bb{}) {{", filter.index())),
-        "{pseudo}"
-    );
+fn contains_block<I>(node: &AstNode<I>, block: BlockId) -> bool {
+    has_node_kind(
+        node,
+        |candidate| matches!(candidate, AstNode::Block { id, .. } | AstNode::Return { id, .. } if *id == block),
+    )
+}
+
+fn has_goto_to<I>(node: &AstNode<I>, cfg: &Cfg<I>, block: BlockId) -> bool {
+    let name = super::block_label_name(cfg, block);
+    has_node_kind(
+        node,
+        |candidate| matches!(candidate, AstNode::Goto { target } if *target == name),
+    )
 }
 
 #[test]
@@ -411,3 +366,7 @@ fn lift_jump_target_gets_label() {
     let found = has_node_kind(&ast, |n| matches!(n, AstNode::Label { .. }));
     assert!(found, "should contain Label node: {ast:?}");
 }
+
+/// Exception-region lifting tests, split out to respect the source-size
+/// policy.
+mod regions;

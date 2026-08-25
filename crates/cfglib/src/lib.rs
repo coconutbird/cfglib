@@ -247,8 +247,8 @@ pub use graph::verify::{
 };
 pub use graph::view::{DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView};
 pub use region::{
-    Cleanup, CompletionReason, Continuation, Handler, HandlerFilters, HandlerKind, HandlerMetadata,
-    HandlerRef, HandlerTypes, Region, RegionId, RegionIndex,
+    Cleanup, CompletionReason, Continuation, Handler, HandlerBody, HandlerFilters, HandlerKind,
+    HandlerMetadata, HandlerRef, HandlerTypes, Region, RegionId, RegionIndex,
 };
 pub use rewrite::RewriteMap;
 pub use transform::cleanup::{

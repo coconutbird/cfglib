@@ -7,7 +7,9 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::region::{Handler, HandlerKind, HandlerRef, HandlerTypes, Region, RegionId};
+use crate::region::{
+    Handler, HandlerBody, HandlerKind, HandlerRef, HandlerTypes, Region, RegionId,
+};
 
 /// CLR handler-clause kind with a consumer-owned caught-type identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -37,8 +39,9 @@ pub enum ClrHandlerKind<T> {
 pub struct ClrHandler<T> {
     /// Entry block of the handler body.
     pub entry: BlockId,
-    /// Every block belonging to the handler body.
-    pub body: BTreeSet<BlockId>,
+    /// The handler body extent — [`HandlerBody::Unknown`] when the format
+    /// encodes only the handler entry.
+    pub body: HandlerBody,
     /// CLR clause kind.
     pub kind: ClrHandlerKind<T>,
 }
@@ -126,17 +129,17 @@ mod tests {
                 handlers: alloc::vec![
                     ClrHandler {
                         entry: catch,
-                        body: [catch].into_iter().collect(),
+                        body: HandlerBody::known([catch]),
                         kind: ClrHandlerKind::Catch { ty: 0x0200_0001 },
                     },
                     ClrHandler {
                         entry: fault,
-                        body: [fault].into_iter().collect(),
+                        body: HandlerBody::known([fault]),
                         kind: ClrHandlerKind::Fault,
                     },
                     ClrHandler {
                         entry: filtered_handler,
-                        body: [filtered_handler].into_iter().collect(),
+                        body: HandlerBody::known([filtered_handler]),
                         kind: ClrHandlerKind::Filter {
                             filter_block: filter,
                         },

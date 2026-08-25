@@ -41,8 +41,8 @@ impl<I, E> Cfg<I, E> {
     ///
     /// ```
     /// use cfglib::{
-    ///     Cfg, CompletionReason, Continuation, EhModel, Handler, HandlerKind, HandlerRef, Region,
-    ///     RegionId,
+    ///     Cfg, CompletionReason, Continuation, EhModel, Handler, HandlerBody, HandlerKind,
+    ///     HandlerRef, Region, RegionId,
     /// };
     ///
     /// let mut cfg = Cfg::<&'static str>::new();
@@ -55,7 +55,7 @@ impl<I, E> Cfg<I, E> {
     ///     protected_blocks: [cfg.entry()].into_iter().collect(),
     ///     handlers: vec![Handler {
     ///         entry: cleanup_block,
-    ///         body: [cleanup_block].into_iter().collect(),
+    ///         body: HandlerBody::known([cleanup_block]),
     ///         kind: HandlerKind::Finally,
     ///     }],
     ///     parent: None,

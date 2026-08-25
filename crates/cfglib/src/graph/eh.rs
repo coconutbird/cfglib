@@ -216,9 +216,38 @@ mod tests {
     }
 
     #[test]
+    fn unknown_handler_body_still_has_region_and_edge_identity() {
+        use crate::region::{Handler, HandlerBody, HandlerKind, HandlerRef, Region, RegionId};
+
+        let mut cfg = Cfg::<()>::new();
+        let handler = cfg.new_block();
+        let entry = cfg.entry();
+        let edge = cfg.add_edge(entry, handler, EdgeKind::ExceptionHandler);
+        let region = cfg.add_region(Region {
+            id: RegionId::from_raw(0),
+            protected_blocks: [entry].into_iter().collect(),
+            handlers: alloc::vec![Handler {
+                entry: handler,
+                body: HandlerBody::unknown(),
+                kind: HandlerKind::Catch,
+            }],
+            parent: None,
+        });
+
+        let model = EhModel::compute(&cfg);
+        assert_eq!(model.eh_edges[0].edge_id, edge);
+        assert_eq!(model.block_kinds[&handler], EhBlockKind::LandingPad);
+        assert_eq!(
+            model.handlers[&handler],
+            alloc::vec![HandlerRef::new(region, 0)]
+        );
+        assert!(model.protected_by[&handler].contains(&entry));
+    }
+
+    #[test]
     fn cleanup_continuations_reach_the_model_by_entry_block() {
         use crate::region::{
-            CompletionReason, Continuation, Handler, HandlerKind, Region, RegionId,
+            CompletionReason, Continuation, Handler, HandlerBody, HandlerKind, Region, RegionId,
         };
 
         let mut cfg = Cfg::new();
@@ -236,7 +265,7 @@ mod tests {
             protected_blocks: [cfg.entry()].into_iter().collect(),
             handlers: alloc::vec![Handler {
                 entry: cleanup,
-                body: [cleanup].into_iter().collect(),
+                body: HandlerBody::known([cleanup]),
                 kind: HandlerKind::Finally,
             }],
             parent: None,
@@ -380,7 +409,7 @@ mod tests {
 
     #[test]
     fn explicit_cleanup_region_overrides_incoming_unwind_inference() {
-        use crate::region::{Handler, HandlerKind, Region, RegionId};
+        use crate::region::{Handler, HandlerBody, HandlerKind, Region, RegionId};
 
         let mut cfg = Cfg::<()>::new();
         let cleanup = cfg.new_block();
@@ -391,7 +420,7 @@ mod tests {
             protected_blocks: [entry].into_iter().collect(),
             handlers: alloc::vec![Handler {
                 entry: cleanup,
-                body: [cleanup].into_iter().collect(),
+                body: HandlerBody::known([cleanup]),
                 kind: HandlerKind::Finally,
             }],
             parent: None,

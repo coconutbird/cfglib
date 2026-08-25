@@ -28,8 +28,10 @@
 //! `return`, `goto`) and every unwind through one shared cleanup block, and
 //! registers a filtered `catch` (C# `when`) as a plain [`HandlerKind::Catch`]
 //! because the predicate sits in the pad rather than in a funclet of its own.
-//! Both shapes are answered here, and both are **additive**: [`Region`] and
-//! [`Handler`] are unchanged, so existing frontends keep compiling.
+//! Both shapes are answered here. Handler-body completeness is modeled
+//! independently through [`HandlerBody`]: source and normalized native
+//! frontends can provide an exact block set, while table-driven formats that
+//! encode only a handler entry can say that the remaining extent is unknown.
 //!
 //! - [`Cleanup`] records what a cleanup handler does once its body ends: the
 //!   block it resumes from and the [`Continuation`]s it selects among, each
@@ -111,10 +113,67 @@ pub struct Region {
 pub struct Handler {
     /// Entry block of the handler.
     pub entry: BlockId,
-    /// All blocks in the handler body.
-    pub body: BTreeSet<BlockId>,
+    /// Whether the complete handler body is known, and its blocks when it is.
+    pub body: HandlerBody,
     /// The handler classification.
     pub kind: HandlerKind,
+}
+
+/// Completeness of an exception handler's block extent.
+///
+/// Exception tables commonly identify the protected range and handler entry
+/// without encoding where the handler body ends. Keeping that state distinct
+/// from an empty body prevents consumers from treating a guessed extent as
+/// lossless metadata.
+///
+/// With the `serde` feature, this serializes as an externally tagged enum
+/// (`{"Known":[…]}` / `"Unknown"`); snapshots that stored a handler body as
+/// a plain block sequence predate this type and no longer deserialize.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum HandlerBody {
+    /// Only the handler entry is known; the complete body extent is not.
+    Unknown,
+    /// The complete set of blocks belonging to the handler.
+    Known(BTreeSet<BlockId>),
+}
+
+impl HandlerBody {
+    /// Construct a handler body whose complete extent is unavailable.
+    #[inline]
+    #[must_use]
+    pub const fn unknown() -> Self {
+        Self::Unknown
+    }
+
+    /// Construct a complete handler body from its blocks.
+    #[must_use]
+    pub fn known(blocks: impl IntoIterator<Item = BlockId>) -> Self {
+        Self::Known(blocks.into_iter().collect())
+    }
+
+    /// Return the complete block set, or `None` when its extent is unknown.
+    #[inline]
+    #[must_use]
+    pub const fn blocks(&self) -> Option<&BTreeSet<BlockId>> {
+        match self {
+            Self::Unknown => None,
+            Self::Known(blocks) => Some(blocks),
+        }
+    }
+
+    /// Whether the complete block extent is known.
+    #[inline]
+    #[must_use]
+    pub const fn is_known(&self) -> bool {
+        matches!(self, Self::Known(_))
+    }
+}
+
+impl From<BTreeSet<BlockId>> for HandlerBody {
+    fn from(blocks: BTreeSet<BlockId>) -> Self {
+        Self::Known(blocks)
+    }
 }
 
 /// Classification of an exception handler.
@@ -430,6 +489,24 @@ mod tests {
         ids.iter().map(|&i| BlockId::from_raw(i)).collect()
     }
 
+    #[cfg(feature = "serde")]
+    #[test]
+    fn handler_body_serde_form_is_pinned() {
+        let known = HandlerBody::known([BlockId::from_raw(1), BlockId::from_raw(2)]);
+        let json = serde_json::to_string(&known).expect("serialization cannot fail");
+        assert_eq!(json, r#"{"Known":[1,2]}"#);
+        let round_tripped: HandlerBody =
+            serde_json::from_str(&json).expect("the pinned form deserializes");
+        assert_eq!(round_tripped, known);
+
+        let unknown = HandlerBody::unknown();
+        let json = serde_json::to_string(&unknown).expect("serialization cannot fail");
+        assert_eq!(json, r#""Unknown""#);
+        let round_tripped: HandlerBody =
+            serde_json::from_str(&json).expect("the pinned form deserializes");
+        assert_eq!(round_tripped, unknown);
+    }
+
     #[test]
     fn add_region_assigns_sequential_ids() {
         let mut cfg: Cfg<MockInst> = Cfg::new();
@@ -511,12 +588,12 @@ mod tests {
             handlers: alloc::vec![
                 Handler {
                     entry: pad,
-                    body: [pad].into_iter().collect(),
+                    body: HandlerBody::known([pad]),
                     kind: HandlerKind::Catch,
                 },
                 Handler {
                     entry: cleanup,
-                    body: [cleanup].into_iter().collect(),
+                    body: HandlerBody::known([cleanup]),
                     kind: HandlerKind::Finally,
                 },
             ],
@@ -704,9 +781,9 @@ mod tests {
     }
 
     #[test]
-    fn the_v2_additions_leave_v1_construction_alone() {
-        // Exactly the v1 shape: a region built by struct literal, handlers
-        // built by struct literal, nothing else supplied.
+    fn regions_need_no_optional_cleanup_or_handler_metadata() {
+        // The core region remains usable without cleanup continuations or
+        // consumer-owned side metadata.
         let mut cfg: Cfg<MockInst> = Cfg::new();
         let pad = cfg.new_block();
         let id = cfg.add_region(Region {
@@ -714,7 +791,7 @@ mod tests {
             protected_blocks: block_set(&[0]),
             handlers: alloc::vec![Handler {
                 entry: pad,
-                body: [pad].into_iter().collect(),
+                body: HandlerBody::known([pad]),
                 kind: HandlerKind::Finally,
             }],
             parent: None,
@@ -734,18 +811,37 @@ mod tests {
     fn handler_kind_variants() {
         let h = Handler {
             entry: BlockId::from_raw(1),
-            body: block_set(&[1, 2]),
+            body: HandlerBody::known(block_set(&[1, 2])),
             kind: HandlerKind::Finally,
         };
         assert_eq!(h.kind, HandlerKind::Finally);
 
         let h2 = Handler {
             entry: BlockId::from_raw(3),
-            body: block_set(&[3]),
+            body: HandlerBody::known(block_set(&[3])),
             kind: HandlerKind::Filter {
                 filter_block: BlockId::from_raw(4),
             },
         };
         assert!(matches!(h2.kind, HandlerKind::Filter { .. }));
+    }
+
+    #[test]
+    fn handler_body_distinguishes_unknown_from_complete_extents() {
+        let unknown = HandlerBody::unknown();
+        assert!(!unknown.is_known());
+        assert!(unknown.blocks().is_none());
+
+        let known = HandlerBody::known([
+            BlockId::from_raw(2),
+            BlockId::from_raw(1),
+            BlockId::from_raw(2),
+        ]);
+        assert!(known.is_known());
+        assert_eq!(
+            known.blocks().map(BTreeSet::len),
+            Some(2),
+            "known extents are a deduplicated block set"
+        );
     }
 }

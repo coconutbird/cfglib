@@ -7,7 +7,7 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
-use crate::region::{Handler, HandlerKind, Region, RegionId};
+use crate::region::{Handler, HandlerBody, HandlerKind, Region, RegionId};
 
 /// Windows SEH scope-handler kind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,8 +28,9 @@ pub enum SehHandlerKind {
 pub struct SehHandler {
     /// Entry block of the handler body.
     pub entry: BlockId,
-    /// Every block belonging to the handler body.
-    pub body: BTreeSet<BlockId>,
+    /// The handler body extent — [`HandlerBody::Unknown`] when the format
+    /// encodes only the handler entry.
+    pub body: HandlerBody,
     /// Native SEH handler kind.
     pub kind: SehHandlerKind,
 }
@@ -162,7 +163,7 @@ mod tests {
                 protected_blocks: [entry].into_iter().collect(),
                 handlers: alloc::vec![SehHandler {
                     entry: handler,
-                    body: [handler].into_iter().collect(),
+                    body: HandlerBody::known([handler]),
                     kind: SehHandlerKind::Except {
                         filter_block: filter,
                     },

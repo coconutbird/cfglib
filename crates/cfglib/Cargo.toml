@@ -21,3 +21,6 @@ serde = ["dep:serde", "smallvec/serde"]
 [dependencies]
 serde = { workspace = true, optional = true }
 smallvec.workspace = true
+
+[dev-dependencies]
+serde_json = "1.0"
