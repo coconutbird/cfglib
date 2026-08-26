@@ -85,6 +85,7 @@ fn write_loop<I: DisplayInstr>(
         LoopKind::While {
             condition,
             exit_on_true,
+            ..
         } => {
             write_indent(out, depth);
             out.push_str("while {\n");

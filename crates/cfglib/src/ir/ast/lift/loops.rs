@@ -12,8 +12,9 @@ use alloc::vec::Vec;
 
 use super::super::node::{AstNode, LoopKind};
 use super::{
-    LiftState, LoopContext, advance_merge, block_is_allowed, block_label_name, has_edge_kind,
-    is_back_edge, is_exception_edge, lift_conditional, lift_region, lift_switch, push_block,
+    LiftState, LoopContext, advance_merge, block_is_allowed, block_label_name, flow_successors,
+    has_edge_kind, is_back_edge, is_exception_edge, lift_conditional, lift_region, lift_switch,
+    push_block,
 };
 use crate::block::BlockId;
 use crate::cfg::Cfg;
@@ -44,8 +45,11 @@ fn conditional_targets<I, E>(cfg: &Cfg<I, E>, block: BlockId) -> Option<Conditio
 
 /// The recognized shape of one natural loop before its body is lifted.
 enum LoopShape {
-    /// Pre-tested: the header's conditional exits the loop on one arm.
+    /// Pre-tested: a straight-line chain from the header reaches a
+    /// conditional that exits the loop on one arm.
     While {
+        /// The condition chain, header first, conditional block last.
+        chain: Vec<BlockId>,
         body_start: BlockId,
         exit: BlockId,
         exit_on_true: bool,
@@ -65,30 +69,70 @@ enum LoopShape {
     Endless,
 }
 
-fn classify_loop<I, E>(cfg: &Cfg<I, E>, natural: &NaturalLoop, header: BlockId) -> LoopShape {
-    if let Some(targets) = conditional_targets(cfg, header) {
-        let true_inside = natural.body.contains(&targets.true_target);
-        let false_inside = natural.body.contains(&targets.false_target);
-        if true_inside != false_inside {
+/// Walk the straight-line condition chain from the header: every iteration
+/// runs each link exactly once (one flow successor, and past the header one
+/// flow predecessor), so a loop-exiting conditional at the end makes the
+/// whole chain the pre-test.
+fn while_chain<I, E>(cfg: &Cfg<I, E>, natural: &NaturalLoop, header: BlockId) -> Option<LoopShape> {
+    let mut chain = alloc::vec![header];
+    let mut current = header;
+    loop {
+        if let Some(targets) = conditional_targets(cfg, current) {
+            let true_inside = natural.body.contains(&targets.true_target);
+            let false_inside = natural.body.contains(&targets.false_target);
+            if true_inside == false_inside {
+                return None;
+            }
             let (exit, body_start) = if true_inside {
                 (targets.false_target, targets.true_target)
             } else {
                 (targets.true_target, targets.false_target)
             };
             if body_start == header {
-                // The in-loop arm is the back edge itself: the test runs
-                // after the block's instructions, a single-block do/while.
-                return LoopShape::SelfLoop {
-                    exit,
-                    continue_on_true: true_inside,
-                };
+                if chain.len() == 1 {
+                    // The in-loop arm is the back edge itself: the test
+                    // runs after the block's instructions, a single-block
+                    // do/while.
+                    return Some(LoopShape::SelfLoop {
+                        exit,
+                        continue_on_true: true_inside,
+                    });
+                }
+                // The whole chain repeats and then tests: that is the
+                // post-tested shape, classified by the latch rule.
+                return None;
             }
-            return LoopShape::While {
+            return Some(LoopShape::While {
+                chain,
                 body_start,
                 exit,
                 exit_on_true: !true_inside,
-            };
+            });
         }
+        let successors = flow_successors(cfg, current);
+        let [next] = successors.as_slice() else {
+            return None;
+        };
+        let next = *next;
+        if next == header || !natural.body.contains(&next) || chain.contains(&next) {
+            return None;
+        }
+        let sequential_predecessors = cfg
+            .predecessor_edges(next)
+            .iter()
+            .filter(|&&edge| !is_exception_edge(cfg.edge(edge).kind()))
+            .count();
+        if sequential_predecessors != 1 {
+            return None;
+        }
+        chain.push(next);
+        current = next;
+    }
+}
+
+fn classify_loop<I, E>(cfg: &Cfg<I, E>, natural: &NaturalLoop, header: BlockId) -> LoopShape {
+    if let Some(shape) = while_chain(cfg, natural, header) {
+        return shape;
     }
     if natural.latches.len() == 1 {
         let latch = *natural
@@ -187,6 +231,14 @@ pub(super) fn lift_loop<I: Clone, E>(
         LoopShape::Endless => (endless_follow(cfg, natural, allowed_blocks), header),
     };
 
+    // A multi-block condition chain belongs to the loop's test, not its
+    // body or the completeness sweep.
+    if let LoopShape::While { chain, .. } = &shape {
+        for &block in &chain[1..] {
+            state.visited.insert(block.0);
+        }
+    }
+
     state.loop_stack.push(LoopContext {
         header: header.0,
         follow: follow.map(|block| block.0),
@@ -194,52 +246,7 @@ pub(super) fn lift_loop<I: Clone, E>(
         labeled: false,
     });
 
-    let (kind, mut body) = match shape {
-        LoopShape::While {
-            body_start,
-            exit_on_true,
-            ..
-        } => (
-            LoopKind::While {
-                condition: cfg.block(header).instructions().to_vec(),
-                exit_on_true,
-            },
-            lift_region(cfg, state, body_start, Some(&bound), None),
-        ),
-        LoopShape::SelfLoop {
-            continue_on_true, ..
-        } => (
-            LoopKind::DoWhile {
-                latch: header,
-                condition: cfg.block(header).instructions().to_vec(),
-                continue_on_true,
-            },
-            Vec::new(),
-        ),
-        LoopShape::DoWhile {
-            latch,
-            continue_on_true,
-            ..
-        } => {
-            // The latch is the condition, not part of the body: pre-visit
-            // it so the body walk ends there silently, and transfers to it
-            // resolve as `continue`.
-            state.visited.insert(latch.0);
-            let body = lift_header_body(cfg, state, header, &bound, Some(latch));
-            (
-                LoopKind::DoWhile {
-                    latch,
-                    condition: cfg.block(latch).instructions().to_vec(),
-                    continue_on_true,
-                },
-                body,
-            )
-        }
-        LoopShape::Endless => (
-            LoopKind::Endless,
-            lift_header_body(cfg, state, header, &bound, None),
-        ),
-    };
+    let (kind, mut body) = lift_shape(cfg, state, header, &bound, shape);
 
     // A trailing plain `continue` at the structural end of the body is the
     // loop's own back edge — implicit in the representation.
@@ -262,6 +269,78 @@ pub(super) fn lift_loop<I: Clone, E>(
         node
     };
     (node, follow)
+}
+
+/// Lift the loop's condition witness and body per its recognized shape.
+fn lift_shape<I: Clone, E>(
+    cfg: &Cfg<I, E>,
+    state: &mut LiftState<'_>,
+    header: BlockId,
+    bound: &BTreeSet<BlockId>,
+    shape: LoopShape,
+) -> (LoopKind<I>, Vec<AstNode<I>>) {
+    match shape {
+        LoopShape::While {
+            chain,
+            body_start,
+            exit_on_true,
+            ..
+        } => {
+            let condition = chain
+                .iter()
+                .flat_map(|&block| cfg.block(block).instructions().iter().cloned())
+                .collect();
+            let condition_block = *chain.last().expect("a chain begins at its header");
+            let body = if body_start == header {
+                // The conditional's in-loop arm re-enters the chain: the
+                // loop is its own condition.
+                Vec::new()
+            } else {
+                lift_region(cfg, state, body_start, Some(bound), None)
+            };
+            (
+                LoopKind::While {
+                    condition_block,
+                    condition,
+                    exit_on_true,
+                },
+                body,
+            )
+        }
+        LoopShape::SelfLoop {
+            continue_on_true, ..
+        } => (
+            LoopKind::DoWhile {
+                latch: header,
+                condition: cfg.block(header).instructions().to_vec(),
+                continue_on_true,
+            },
+            Vec::new(),
+        ),
+        LoopShape::DoWhile {
+            latch,
+            continue_on_true,
+            ..
+        } => {
+            // The latch is the condition, not part of the body: pre-visit
+            // it so the body walk ends there silently, and transfers to it
+            // resolve as `continue`.
+            state.visited.insert(latch.0);
+            let body = lift_header_body(cfg, state, header, bound, Some(latch));
+            (
+                LoopKind::DoWhile {
+                    latch,
+                    condition: cfg.block(latch).instructions().to_vec(),
+                    continue_on_true,
+                },
+                body,
+            )
+        }
+        LoopShape::Endless => (
+            LoopKind::Endless,
+            lift_header_body(cfg, state, header, bound, None),
+        ),
+    }
 }
 
 /// Lift a loop body whose header's own instructions belong inside it (the

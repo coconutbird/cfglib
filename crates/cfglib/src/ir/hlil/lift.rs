@@ -26,8 +26,9 @@ mod block;
 
 use self::block::{Expect, ListEnd};
 use super::{
-    Dialect, EntityId, Error, ExpressionId, ExpressionKind, Function, FunctionBuilder, Handler,
-    HandlerKind, Result, Signature, StatementId, StatementKind, VariableId, VerifyDialect,
+    Dialect, EntityId, Error, Expression, ExpressionId, ExpressionKind, Function, FunctionBuilder,
+    Handler, HandlerKind, RecoverDialect, Result, Signature, StatementId, StatementKind,
+    VariableId, VerifyDialect, recover_structure,
 };
 
 /// The HLIL translation of one MLIL operation.
@@ -43,8 +44,17 @@ pub enum Lifted<Operation> {
         /// The lvalue operation forming the written place.
         location: Operation,
     },
+    /// A pairwise parallel move: each use's value moves to the definition
+    /// at the same position, with every read observed before any write
+    /// (stack `dup`/`swap` families, phi-copy commits). Requires
+    /// [`LiftDialect::temporary_role`] when the moves overlap.
+    ParallelCopy,
     /// The block's conditional branch; the first use is the condition.
     Branch,
+    /// The block's conditional branch deciding on `operation` applied to
+    /// **all** of its uses — a fused compare-and-branch whose condition
+    /// only exists as an expression.
+    BranchOperation(Operation),
     /// The block's multi-way dispatch; the first use is the scrutinee.
     Switch,
     /// Function return; the uses are the returned values.
@@ -78,8 +88,17 @@ pub trait LiftDialect:
     /// value; the explicit default edge is never queried.
     fn case_values(edge: &<Self as mlil::Dialect>::Edge) -> Vec<<Self as Dialect>::Constant>;
 
-    /// The value type of an expression evaluated only for its effects.
+    /// The value type of an expression evaluated only for its effects, and
+    /// of condition expressions synthesized by
+    /// [`Lifted::BranchOperation`].
     fn void_type() -> Self::ValueType;
+
+    /// The role of temporaries staging overlapping
+    /// [`Lifted::ParallelCopy`] moves. `None` rejects overlapping moves.
+    #[must_use]
+    fn temporary_role() -> Option<Self::VariableRole> {
+        None
+    }
 
     /// An operation computing the logical negation of its single operand,
     /// used to state exit-on-true loop conditions structurally. `None`
@@ -87,6 +106,59 @@ pub trait LiftDialect:
     #[must_use]
     fn logical_not() -> Option<<Self as Dialect>::Operation> {
         None
+    }
+
+    /// The use position that reads the destination's previous value,
+    /// for operations that define only part of their storage — masked
+    /// vector lanes, sub-registers — under a read-modify-write
+    /// convention. Declaring it makes the merge visible to the lift:
+    /// the definition feeding that position never inlines into it (the
+    /// operand stays a plain variable reference), and the operation's
+    /// own definition never inlines forward (its value is a merge with
+    /// prior state, not a pure expression). `None` — the default —
+    /// declares a whole-storage definition.
+    #[must_use]
+    fn previous_value_operand(_operation: &<Self as mlil::Dialect>::Operation) -> Option<usize> {
+        None
+    }
+
+    /// The exact negation of one operation applied to the same operands —
+    /// a comparison with its relation inverted. Consulted before
+    /// [`logical_not`](Self::logical_not) when a loop condition needs the
+    /// opposite polarity, producing `while (a < b)` instead of
+    /// `while (!(a >= b))`.
+    #[must_use]
+    fn negate_operation(
+        operation: &<Self as Dialect>::Operation,
+    ) -> Option<<Self as Dialect>::Operation> {
+        let _ = operation;
+        None
+    }
+
+    /// Whether moving one computation's evaluation across another preserves
+    /// observable behavior.
+    ///
+    /// Consulted when expression inlining would carry an effectful or
+    /// throwing definition past an intervening effectful or throwing
+    /// instruction: `moved` describes the definition being evaluated later
+    /// than written, `crossed` the instruction it moves across. The default
+    /// refuses every pair, keeping all effectful evaluations in program
+    /// order; dialects typically allow read-read pairs (two memory loads,
+    /// two field reads) so both fold into one expression.
+    #[must_use]
+    fn evaluation_commutes(
+        moved_effects: &[Self::Effect],
+        moved_may_throw: bool,
+        crossed_effects: &[Self::Effect],
+        crossed_may_throw: bool,
+    ) -> bool {
+        let _ = (
+            moved_effects,
+            moved_may_throw,
+            crossed_effects,
+            crossed_may_throw,
+        );
+        false
     }
 }
 
@@ -104,6 +176,43 @@ pub struct LiftedFunction<D: LiftDialect> {
     pub instructions: BTreeMap<mlil::InstructionId, EntityId>,
 }
 
+impl<D: LiftDialect + VerifyDialect + RecoverDialect> LiftedFunction<D> {
+    /// Rebuilds the lifted function with source-level structure recovered
+    /// — counted loops, conditional value selection, paired enter/exit
+    /// regions — remapping the instruction table onto the constructs that
+    /// carry each instruction now.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the rebuilt function fails verification.
+    pub fn with_recovered_structure(self) -> Result<Self> {
+        let recovery = recover_structure(&self.function)?;
+        let instructions = self
+            .instructions
+            .into_iter()
+            .filter_map(|(instruction, entity)| {
+                let entity = match entity {
+                    EntityId::Statement(statement) => recovery
+                        .statements
+                        .get(&statement)
+                        .map(|&new| EntityId::Statement(new)),
+                    EntityId::Expression(expression) => recovery
+                        .expressions
+                        .get(&expression)
+                        .map(|&new| EntityId::Expression(new)),
+                    EntityId::Variable(variable) => Some(EntityId::Variable(variable)),
+                }?;
+                Some((instruction, entity))
+            })
+            .collect();
+        Ok(Self {
+            function: recovery.function,
+            report: self.report,
+            instructions,
+        })
+    }
+}
+
 /// Lifts one MLIL function into structured, expression-oriented HLIL.
 ///
 /// # Errors
@@ -117,7 +226,10 @@ pub fn lift_function<D>(source: &mlil::Function<D>) -> Result<LiftedFunction<D>>
 where
     D: LiftDialect + VerifyDialect,
 {
-    let (ast, report) = source.structured_control_flow_with_report();
+    let (ast, report) = match trampolines_cleared(source) {
+        Some(cleared) => crate::lift_with_report(&cleared),
+        None => source.structured_control_flow_with_report(),
+    };
     let mut lifter = Lifter::new(source)?;
     let body = lifter.translate_node(&ast)?;
     lifter.builder.set_body(body)?;
@@ -127,6 +239,49 @@ where
         report,
         instructions: lifter.instructions,
     })
+}
+
+/// The lift's working view of the source CFG, with jump trampolines
+/// emptied — or `None` when no block qualifies, avoiding the clone.
+///
+/// A block whose every instruction lifts to [`Lifted::ControlFlow`],
+/// defines nothing, and cannot throw carries no semantics beyond its
+/// outgoing edges: emission drops such instructions without consuming
+/// their uses, so clearing them changes no lifted output. It does change
+/// structuring — the [`ir::ast`](crate::ir::ast) walk forwards `break`/
+/// `continue` resolutions through instruction-free single-jump blocks
+/// (javac routes `break` through such trampolines), which would
+/// otherwise degrade to gotos. The definition and throw guards make the
+/// direct [`LiftDialect::lift_operation`] query safe here: constants and
+/// copies — normally intercepted before that hook — always define.
+fn trampolines_cleared<D: LiftDialect>(
+    source: &mlil::Function<D>,
+) -> Option<crate::Cfg<mlil::Instruction<D>, <D as mlil::Dialect>::Edge>> {
+    let cfg = source.cfg();
+    let doomed: Vec<BlockId> = cfg
+        .blocks()
+        .iter()
+        .filter(|block| {
+            !block.instructions().is_empty()
+                && block.instructions().iter().all(|instruction| {
+                    instruction.defs().is_empty()
+                        && !instruction.may_throw()
+                        && matches!(
+                            D::lift_operation(instruction.operation()),
+                            Lifted::ControlFlow
+                        )
+                })
+        })
+        .map(crate::BasicBlock::id)
+        .collect();
+    if doomed.is_empty() {
+        return None;
+    }
+    let mut cleared = cfg.clone();
+    for block in doomed {
+        cleared.block_mut(block).instructions_mut().clear();
+    }
+    Some(cleared)
 }
 
 pub(super) struct Lifter<'a, D: LiftDialect> {
@@ -218,8 +373,73 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         nodes: &[AstNode<mlil::Instruction<D>>],
     ) -> Result<Vec<StatementId>> {
         let mut statements = Vec::new();
-        for node in nodes {
-            statements.extend(self.translate_node(node)?);
+        let mut index = 0;
+        while index < nodes.len() {
+            let mut end = index;
+            while matches!(nodes.get(end), Some(AstNode::Block { .. })) {
+                end += 1;
+            }
+            if end == index {
+                statements.extend(self.translate_node(&nodes[index])?);
+                index += 1;
+                continue;
+            }
+            // A run of straight-line blocks translates as one list — and
+            // absorbs a directly following return or decision list — so
+            // expression inlining sees the whole linear region instead of
+            // one fragment per frontend block.
+            let mut list: Vec<mlil::Instruction<D>> = Vec::new();
+            let mut final_block = None;
+            for node in &nodes[index..end] {
+                if let AstNode::Block { id, instructions } = node {
+                    list.extend(instructions.iter().cloned());
+                    final_block = Some(*id);
+                }
+            }
+            let final_block = final_block.expect("the run contains at least one block node");
+            match nodes.get(end) {
+                Some(AstNode::Return { id, instructions }) => {
+                    list.extend(instructions.iter().cloned());
+                    let (result, _) = self.translate_list(*id, &list, Expect::Statements)?;
+                    statements.extend(result);
+                    index = end + 1;
+                }
+                Some(AstNode::IfThenElse {
+                    condition,
+                    condition_instructions,
+                    then_body,
+                    else_body,
+                }) => {
+                    list.extend(condition_instructions.iter().cloned());
+                    statements.extend(self.translate_if(*condition, &list, then_body, else_body)?);
+                    index = end + 1;
+                }
+                Some(AstNode::Switch {
+                    condition,
+                    condition_instructions,
+                    cases,
+                    default_body,
+                    ..
+                }) => {
+                    list.extend(condition_instructions.iter().cloned());
+                    statements.extend(self.translate_switch(
+                        *condition,
+                        &list,
+                        cases,
+                        default_body,
+                    )?);
+                    index = end + 1;
+                }
+                _ => {
+                    // Liveness beyond the merged list is the last block's
+                    // live-out: defs feeding a later block of the same run
+                    // are still single-use inside the list.
+                    let (result, _) =
+                        self.translate_list(final_block, &list, Expect::Statements)?;
+                    statements.extend(result);
+                    index = end;
+                }
+            }
         }
         Ok(statements)
     }
@@ -446,7 +666,7 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
             loop_label: Some(label.clone()),
             needs_label: false,
         });
-        let lifted = self.translate_loop_kind(header, kind, body);
+        let lifted = self.translate_loop_kind(kind, body);
         let context = self
             .contexts
             .pop()
@@ -475,7 +695,6 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
 
     fn translate_loop_kind(
         &mut self,
-        header: BlockId,
         kind: &LoopKind<mlil::Instruction<D>>,
         body: &[AstNode<mlil::Instruction<D>>],
     ) -> Result<StatementId> {
@@ -487,11 +706,12 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
                     .add_statement(StatementKind::Loop { body: statements }, None)?)
             }
             LoopKind::While {
+                condition_block,
                 condition,
                 exit_on_true,
             } => {
                 let (condition_statements, end) =
-                    self.translate_list(header, condition, Expect::Branch)?;
+                    self.translate_list(*condition_block, condition, Expect::Branch)?;
                 let ListEnd { value, instruction } =
                     end.expect("Expect::Branch guarantees a branch end");
                 let body_statements = self.translate_nodes(body)?;
@@ -561,6 +781,15 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         exit_on_true: bool,
     ) -> Result<Option<ExpressionId>> {
         if !exit_on_true {
+            return Ok(Some(condition));
+        }
+        // Exact inversion first: the same operands under the negated
+        // operation, with no wrapper node.
+        if let Some(ExpressionKind::Operation { operation, .. }) =
+            self.builder.expression(condition).map(Expression::kind)
+            && let Some(negated) = D::negate_operation(operation)
+        {
+            self.builder.replace_operation(condition, negated)?;
             return Ok(Some(condition));
         }
         let Some(negation) = D::logical_not() else {

@@ -12,12 +12,14 @@
 //! - [`linearize`] — re-serialize a CFG back to a flat instruction stream.
 //! - [`loops`] — loop rotation and loop-invariant detection.
 //! - [`pre`] — partial redundancy elimination.
+//! - [`duplicate`] — structuring-driven tail duplication.
 
 pub mod cleanup;
 pub mod coloring;
 pub mod contract;
 pub mod critical;
 pub mod dce;
+pub mod duplicate;
 pub mod linearize;
 pub mod loops;
 pub mod pre;

@@ -150,6 +150,20 @@ fn verify_variables<D: Dialect>(function: &Function<D>, issues: &mut Vec<Verific
 }
 
 fn verify_instructions<D: Dialect>(function: &Function<D>, issues: &mut Vec<VerificationIssue>) {
+    for instruction in function.instructions() {
+        // Dead-code analysis keeps instructions alive only through their
+        // declared effects, so an observably-throwing instruction with
+        // none would be silently deletable.
+        if instruction.may_throw() && instruction.effects().is_empty() {
+            issue(
+                issues,
+                format!(
+                    "throwing instruction {} declares no effect",
+                    instruction.id()
+                ),
+            );
+        }
+    }
     let mut seen = BTreeSet::new();
     let mut count = 0usize;
     for block in function.cfg.blocks() {

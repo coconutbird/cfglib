@@ -137,10 +137,15 @@ pub enum LoopKind<I> {
     /// inner `Break`, `Return`, or `Goto`.
     Endless,
 
-    /// Pre-tested loop (`while`): the header evaluates `condition` before
-    /// every iteration and exits along one conditional arm.
+    /// Pre-tested loop (`while`): every iteration enters at the header,
+    /// runs the straight-line condition chain, and exits along one
+    /// conditional arm.
     While {
-        /// The header's instructions, ending in the conditional branch.
+        /// The block holding the conditional branch — the header itself,
+        /// or the end of a straight-line chain from it.
+        condition_block: BlockId,
+        /// The condition chain's instructions in execution order, ending
+        /// in the conditional branch.
         condition: Vec<I>,
         /// Whether the `ConditionalTrue` edge leaves the loop (a source
         /// `while (!c)` shape); `false` means the true edge iterates.

@@ -114,7 +114,41 @@ ordered parameter/return `Signature<D>` and validated exception regions
 after verification. The resulting function directly provides dominance, SSA,
 def-use, liveness, constant and expression recovery, copy-propagated and
 dead-code-eliminated views, identity-ordered instruction iteration, and
-structured control flow with a fidelity report.
+structured control flow with a fidelity report. SSA stays a derived view over
+the canonical function; SSA-shaped transforms are expressed as
+view-then-rebuild passes — `split_variables()` computes the function's own
+SSA, partitions values into phi webs, and rebuilds the function with one
+variable per lifetime (blocks, edges, instructions, and regions keep their
+identities; both variable mappings are returned), so storage-derived slot
+reuse separates into clean per-lifetime locals before HLIL lifting. The
+partition uses liveness-pruned phi webs, so a dead phi at an unpruned join
+never unites unrelated lifetimes. `with_promoted_handler_extents()` returns
+a derived function whose `HandlerBody::Unknown` extents are promoted to
+their dominated blocks, so extent-dependent consumers (structured `try`
+recovery, HLIL lifting) run while the canonical function keeps stating the
+extents are unknown. `with_duplicated_structuring_tails()` copies small
+shared tails (short-circuit conditions, shared side-exits) until control
+flow tree-structures — a pure unfolding for presentation views, driven by
+the structuring report and refused for loop headers, region members, and
+exceptional flow. `extend_equivalent_coverage()` grows each exception
+region's protected set with provably equivalent coverage — a block that
+cannot throw whose sequential predecessors are all protected joins, to a
+fixpoint — restoring the construct-shaped coverage compilers trim at the
+last throwing instruction. `with_derived_cfg(transform)` is the general
+form of the same door: it clones the function and hands the consumer the
+clone's CFG for dialect-aware presentation surgery (detaching a runtime's
+self-covering cleanup ranges) — the canonical function is never touched.
+
+Memory stays outside variables by contract: anything aliasable lives behind
+dialect load/store operations ordered by their declared effects, while
+variables are unaliasable dataflow-visible storage. `promote_memory()`
+(`PromoteDialect`) moves values across that boundary soundly: the consumer
+classifies which instructions access which statically-fixed locations and
+which disqualify them (address taken, opaque reach), and the library
+rewrites every access of an unaliased location into copies through one
+fresh variable — same identity-preserving rebuild, composing with
+`split_variables` and HLIL lifting (promote, split, lift: frame slots
+become typed locals).
 No language, runtime, calling convention, opcode, or source-location type is
 built into the representation; those remain in the dialect crate.
 
@@ -137,12 +171,24 @@ HLIL:
 | Door | Description |
 |---|---|
 | `FunctionBuilder<D>` | Checked bottom-up construction for source-language lowering (`add_expression` / `add_statement` / `set_body`) |
-| `lift_function(&mlil::Function<D>)` | Binary/bytecode lifting: structures control flow via `ir::ast`, recognizes `while`/`do-while` conditions, recovers switch case values from dispatch-edge payloads, structures declared exception regions, and inlines single-use definitions into expression trees while provably preserving effect and exception order |
+| `lift_function(&mlil::Function<D>)` | Binary/bytecode lifting: structures control flow via `ir::ast`, recognizes `while`/`do-while` conditions, recovers switch case values from dispatch-edge payloads, structures declared exception regions, empties jump trampolines in its working view (blocks whose every instruction is a dialect-declared pure transfer — `Lifted::ControlFlow`, no definitions, no throw — so `break`/`continue` resolutions forward through them), and inlines single-use definitions into expression trees while provably preserving effect and exception order — with `LiftDialect::evaluation_commutes` letting the dialect widen that order (read-read pairs fold into one expression; the default refuses every pair). Straight-line block runs coalesce into one translation list, so frontends that emit one block per native instruction still inline across the whole linear region, and a single-pair parallel move (a type-refinement pair, a lone phi-copy commit) inlines as a plain copy |
 | `lower_function(&hlil::Function<D>)` | The downward mirror: statements flatten to blocks and edges with lazy join materialization, expression trees linearize into typed temporaries, loops/switches/labels wire their transfers, and declared `try` regions register with known handler extents and unwind edges — producing a verified `mlil::Function` for flat analyses or consumer code generation |
 
 Both level bridges return per-instruction maps between MLIL identities and
 the HLIL entities carrying them, and compose source provenance across the
 translation, so source maps survive in either direction.
+
+Above the lift, `recover_structure` (`RecoverDialect`) rebuilds a function
+with source-level shapes restored: `init; while (c) { …; update }` becomes
+a `for` statement, assigning and returning diamonds become the dialect's
+`select` expression (evaluating one arm, like `?:`), and paired enter/exit
+protocols with their exceptional cleanup handlers become `Region`
+statements (`synchronized`, `lock`) — each recovery opt-in per dialect
+hook, each a pure re-expression, and each remappable through the returned
+identity maps (`LiftedFunction::with_recovered_structure` composes it with
+the lift's instruction table). Exit-on-true loop conditions negate exactly
+through `LiftDialect::negate_operation` — a comparison with its relation
+inverted — before falling back to a wrapping `logical_not`.
 
 ### Graph algorithms
 
@@ -294,7 +340,12 @@ SwitchSource              (switch table recovery — associated Target)
 | Crate | Description |
 |---|---|
 | **cfglib** | Generic graph, CFG, dialect-driven MLIL/HLIL, SSA, and dataflow framework |
-| **cfglib-dxbc** | SM4/SM5 CFG and component-granular SSA adapter over `dxbc` |
+
+Adapters live with the language they adapt, next to their decoders and
+test corpora: the SM4/SM5 MLIL/HLIL decompiler — whose `cfg` module also
+exposes a raw CFG + component-granular SSA adapter — is in
+[d3dasm](https://github.com/coconutbird/d3dasm); the Java/DEX decompiler
+is in cafe.
 
 ## Adapting a language, IR, or existing graph
 
@@ -335,12 +386,11 @@ let ssa = SsaForm::compute(&cfg, &dominators);
 
 `SsaForm<V>` is a non-mutating view over the source CFG. It stores renamed phi results, operands, instruction uses, and instruction definitions as `SsaValue<V>`, while each `SsaInstruction` keeps a `ProgramPoint` back to the native instruction. Version `0` denotes a live-in or otherwise undefined incoming value.
 
-`cfglib-dxbc` is the concrete shader-bytecode adapter. It derives native
-register-component identities from decoded masks and swizzles, retains relative
-index expressions, classifies multi-result and UAV read-modify-write operations,
-and reports observable shader effects through its own `Sm4Effect` vocabulary.
-Its `dxbc` dependency comes directly from the `d3dasm` Git repository's
-`main` branch, so builds track that branch's head.
+The concrete shader-bytecode adapter (the d3dasm decompiler's `cfg`
+module) derives native register-component identities from decoded masks
+and swizzles, retains relative index expressions, classifies multi-result
+and UAV read-modify-write operations, and reports observable shader effects
+through its own `Sm4Effect` vocabulary.
 
 The `tests/source-cfg.rs` integration test is the executable specification of
 the source-language side: interned symbol variables, string/bool constants

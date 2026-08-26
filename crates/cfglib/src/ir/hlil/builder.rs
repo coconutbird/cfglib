@@ -140,6 +140,36 @@ impl<D: Dialect> FunctionBuilder<D> {
         Ok(id)
     }
 
+    /// Replaces the operation of one operation expression in place,
+    /// keeping its operands and type — exact negation rewrites a
+    /// comparison without wrapping it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the expression does not exist or is not an
+    /// operation.
+    pub fn replace_operation(
+        &mut self,
+        expression: ExpressionId,
+        operation: D::Operation,
+    ) -> Result<()> {
+        let node = self
+            .expressions
+            .get_mut(expression.index())
+            .ok_or_else(|| Error::InvalidConstruction("unknown expression".into()))?;
+        let ExpressionKind::Operation {
+            operation: existing,
+            ..
+        } = &mut node.kind
+        else {
+            return Err(Error::InvalidConstruction(
+                "only operation expressions carry an operation".into(),
+            ));
+        };
+        *existing = operation;
+        Ok(())
+    }
+
     /// Looks up one already-created expression.
     #[must_use]
     pub fn expression(&self, id: ExpressionId) -> Option<&Expression<D>> {

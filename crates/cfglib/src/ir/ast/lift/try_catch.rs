@@ -5,7 +5,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 
 use super::super::node::{AstNode, CatchHandler};
-use super::{LiftState, effective_merge, lift_block, lift_region};
+use super::{LiftState, effective_merge, flow_successors, lift_block, lift_region};
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::region::{HandlerKind, HandlerRef, Region};
@@ -89,6 +89,33 @@ fn complete_handler_bodies(region: &Region) -> Option<Vec<&BTreeSet<BlockId>>> {
         .collect()
 }
 
+/// The region's normal continuation: the unique target of ordinary flow
+/// leaving the region's own blocks — protected and handler alike. `None`
+/// when the exits diverge (or none exist), leaving the walk to its
+/// conservative boundary handling.
+fn region_continuation<I, E>(cfg: &Cfg<I, E>, region: &Region) -> Option<BlockId> {
+    let mut inside: BTreeSet<BlockId> = region.protected_blocks.clone();
+    for handler in &region.handlers {
+        inside.insert(handler.entry);
+        if let Some(blocks) = handler.body.blocks() {
+            inside.extend(blocks.iter().copied());
+        }
+    }
+    let mut exits: BTreeSet<BlockId> = BTreeSet::new();
+    for &block in &inside {
+        for target in flow_successors(cfg, block) {
+            if !inside.contains(&target) {
+                exits.insert(target);
+            }
+        }
+    }
+    if exits.len() == 1 {
+        exits.into_iter().next()
+    } else {
+        None
+    }
+}
+
 /// Lift a try/catch region anchored at `block`, if a structurable one exists.
 ///
 /// Among the regions anchored at `block` (outermost first), the first with
@@ -101,36 +128,43 @@ pub(super) fn lift_try_catch<I: Clone, E>(
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
-) -> Option<AstNode<I>> {
+) -> Option<(AstNode<I>, Option<BlockId>)> {
     let candidates = state.anchors.get(&block.0)?;
     let (region, handler_bodies) = candidates
         .iter()
+        .filter(|region| !state.structured_regions.contains(&region.id.0))
         .find_map(|region| complete_handler_bodies(region).map(|bodies| (*region, bodies)))?;
     state.structured_regions.insert(region.id.0);
 
-    // The region's normal continuation: the anchor's in-bound post-dominator
-    // when it lies outside the region and its handlers. Inner walks stop
-    // there silently — the region's `leave` is implicit, not a goto.
-    let continuation = effective_merge(cfg, state, block, allowed_blocks).filter(|merge| {
-        !region.protected_blocks.contains(merge)
-            && region.handlers.iter().all(|handler| {
-                handler.entry != *merge
-                    && handler
-                        .body
-                        .blocks()
-                        .is_none_or(|blocks| !blocks.contains(merge))
-            })
+    // The region's normal continuation: the unique block ordinary flow
+    // reconverges at, or the anchor's in-bound post-dominator when the
+    // exits diverge. Inner walks stop there silently — the region's
+    // `leave` is implicit, not a goto — and the enclosing walk resumes
+    // there after the structured node.
+    let continuation = region_continuation(cfg, region).or_else(|| {
+        effective_merge(cfg, state, block, allowed_blocks).filter(|merge| {
+            !region.protected_blocks.contains(merge)
+                && region.handlers.iter().all(|handler| {
+                    handler.entry != *merge
+                        && handler
+                            .body
+                            .blocks()
+                            .is_none_or(|blocks| !blocks.contains(merge))
+                })
+        })
     });
 
-    // Lift the try body through the shared classification path, so an
-    // anchor that is itself a branch, dispatch, or loop header keeps its
-    // structure. `lift_block` never consults the anchor map, so this
-    // cannot re-trigger the region check and recurse.
+    // Lift the try body. A nested region can share this anchor (an inner
+    // try starting at the same instruction), so the region check runs
+    // again first — each pass structures exactly one more region, so the
+    // recursion is bounded by the region count. Otherwise the anchor goes
+    // through the shared classification path, so an anchor that is itself
+    // a branch, dispatch, or loop header keeps its structure.
     let try_bound = intersect_bounds(allowed_blocks, &region.protected_blocks);
     let mut try_body = Vec::new();
-    let next = lift_block(cfg, state, block, Some(&try_bound), &mut try_body);
-    if let Some(next) = next {
-        if !state.visited.contains(&next.0) {
+    if let Some((inner, inner_continuation)) = lift_try_catch(cfg, state, block, Some(&try_bound)) {
+        try_body.push(inner);
+        if let Some(next) = inner_continuation.filter(|next| !state.visited.contains(&next.0)) {
             try_body.extend(lift_region(
                 cfg,
                 state,
@@ -138,6 +172,26 @@ pub(super) fn lift_try_catch<I: Clone, E>(
                 Some(&try_bound),
                 continuation,
             ));
+        }
+    } else {
+        let next = lift_block(
+            cfg,
+            state,
+            block,
+            Some(&try_bound),
+            continuation,
+            &mut try_body,
+        );
+        if let Some(next) = next {
+            if !state.visited.contains(&next.0) {
+                try_body.extend(lift_region(
+                    cfg,
+                    state,
+                    next,
+                    Some(&try_bound),
+                    continuation,
+                ));
+            }
         }
     }
     // Protected successors the classified walk did not reach (for example
@@ -160,7 +214,11 @@ pub(super) fn lift_try_catch<I: Clone, E>(
 
     for ((index, handler), handler_blocks) in region.handlers.iter().enumerate().zip(handler_bodies)
     {
-        let handler_bound = intersect_bounds(allowed_blocks, handler_blocks);
+        // The synthetic landing entry belongs to its handler even when the
+        // enclosing bound does not name it; refusing it would degenerate
+        // to an immediate boundary escape.
+        let mut handler_bound = intersect_bounds(allowed_blocks, handler_blocks);
+        handler_bound.insert(handler.entry);
         let body = lift_region(
             cfg,
             state,
@@ -182,9 +240,12 @@ pub(super) fn lift_try_catch<I: Clone, E>(
         }
     }
 
-    Some(AstNode::TryCatch {
-        try_body,
-        handlers,
-        finally_body,
-    })
+    Some((
+        AstNode::TryCatch {
+            try_body,
+            handlers,
+            finally_body,
+        },
+        continuation,
+    ))
 }

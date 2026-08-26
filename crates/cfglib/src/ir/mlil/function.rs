@@ -126,6 +126,53 @@ impl<D: Dialect> Function<D> {
         crate::lift_with_report(&self.cfg)
     }
 
+    /// Returns a derived function whose unknown exception-handler extents
+    /// are promoted to their dominated blocks, with the promotion count.
+    ///
+    /// The canonical function keeps stating the extents are unknown; the
+    /// returned view exists so extent-dependent consumers (structured
+    /// try/catch recovery, [HLIL lifting](crate::ir::hlil::lift_function))
+    /// can run without the frontend inferring extents in canonical
+    /// metadata. All identities are unchanged.
+    #[must_use]
+    pub fn with_promoted_handler_extents(&self) -> (Self, usize) {
+        let mut derived = self.clone();
+        let promoted = crate::promote_handler_extents(&mut derived.cfg);
+        (derived, promoted)
+    }
+
+    /// Returns a derived function whose small shared tails are duplicated
+    /// until control flow tree-structures, with the number of blocks
+    /// materialized. Short-circuit conditions and shared side-exits stop
+    /// producing goto residue, at the price of instruction *values*
+    /// appearing at several graph positions — identity-keyed side tables
+    /// keep describing the original function, so use this view for
+    /// structuring and presentation, never as canonical storage.
+    #[must_use]
+    pub fn with_duplicated_structuring_tails(&self) -> (Self, usize)
+    where
+        D::Edge: Clone,
+    {
+        let mut derived = self.clone();
+        let duplicated = crate::duplicate_structuring_tails(&mut derived.cfg);
+        (derived, duplicated)
+    }
+
+    /// Returns a derived function whose graph the caller transformed in
+    /// place — the generic door for consumer-specific presentation views
+    /// (detaching coverage a recovered construct regenerates, specializing
+    /// edges). Identity tables keep describing the original function, and
+    /// canonical storage is never mutated.
+    #[must_use]
+    pub fn with_derived_cfg(
+        &self,
+        transform: impl FnOnce(&mut Cfg<Instruction<D>, D::Edge>),
+    ) -> Self {
+        let mut derived = self.clone();
+        transform(&mut derived.cfg);
+        derived
+    }
+
     /// Reports effect-aware dead definitions and unreachable blocks.
     #[must_use]
     pub fn dead_code(&self) -> crate::DeadCode {
@@ -163,6 +210,41 @@ impl<D: VerifyDialect> Function<D> {
         }
         let dominators = self.dominators();
         Ok(SsaForm::compute(&self.cfg, &dominators))
+    }
+
+    /// Rebuilds the function with every unaliased memory location promoted
+    /// to a mutable variable, per the dialect's
+    /// [`PromoteDialect`](super::PromoteDialect) judgment.
+    ///
+    /// Every non-variable identity is preserved; rewritten accesses become
+    /// dialect copies at the same instruction identities. Composes with
+    /// [`Self::split_variables`] and
+    /// [`lift_function`](crate::ir::hlil::lift_function): promote, split,
+    /// then lift for one typed local per promoted lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a verification report if the stored function is invalid.
+    pub fn promote_memory(&self) -> Result<super::MemoryPromotion<D>>
+    where
+        D: super::PromoteDialect,
+    {
+        super::promote::promote_memory(self)
+    }
+
+    /// Rebuilds the function with one variable per SSA phi-web, separating
+    /// unrelated lifetimes that shared a storage-derived variable.
+    ///
+    /// Block, edge, instruction, and region identities are preserved; only
+    /// variable identities change, and the result maps both directions.
+    /// Composes with [`lift_function`](crate::ir::hlil::lift_function) so
+    /// structured output gets one local per lifetime.
+    ///
+    /// # Errors
+    ///
+    /// Returns a verification report if the stored function is invalid.
+    pub fn split_variables(&self) -> Result<super::VariableSplit<D>> {
+        super::split::split_variables(self)
     }
 }
 

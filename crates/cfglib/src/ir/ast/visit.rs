@@ -148,25 +148,7 @@ impl<I> AstNode<I> {
             },
             AstNode::Loop { header, kind, body } => AstNode::Loop {
                 header,
-                kind: match kind {
-                    LoopKind::Endless => LoopKind::Endless,
-                    LoopKind::While {
-                        condition,
-                        exit_on_true,
-                    } => LoopKind::While {
-                        condition: map_all(condition, map),
-                        exit_on_true,
-                    },
-                    LoopKind::DoWhile {
-                        latch,
-                        condition,
-                        continue_on_true,
-                    } => LoopKind::DoWhile {
-                        latch,
-                        condition: map_all(condition, map),
-                        continue_on_true,
-                    },
-                },
+                kind: map_loop_kind(kind, map),
                 body: map_nodes(body, map),
             },
             AstNode::IfThenElse {
@@ -233,6 +215,30 @@ fn visit_nodes<'n, I>(nodes: &'n [AstNode<I>], visit: &mut impl FnMut(&'n AstNod
 fn nodes_for_each<'n, I>(nodes: &'n [AstNode<I>], visit: &mut impl FnMut(&'n I)) {
     for node in nodes {
         node.for_each_instruction(visit);
+    }
+}
+
+fn map_loop_kind<I, J>(kind: LoopKind<I>, map: &mut impl FnMut(I) -> J) -> LoopKind<J> {
+    match kind {
+        LoopKind::Endless => LoopKind::Endless,
+        LoopKind::While {
+            condition_block,
+            condition,
+            exit_on_true,
+        } => LoopKind::While {
+            condition_block,
+            condition: map_all(condition, map),
+            exit_on_true,
+        },
+        LoopKind::DoWhile {
+            latch,
+            condition,
+            continue_on_true,
+        } => LoopKind::DoWhile {
+            latch,
+            condition: map_all(condition, map),
+            continue_on_true,
+        },
     }
 }
 

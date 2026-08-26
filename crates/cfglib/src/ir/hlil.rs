@@ -25,6 +25,7 @@ mod function;
 mod identity;
 mod lift;
 mod lower;
+mod recover;
 mod statement;
 mod variable;
 mod verify;
@@ -37,6 +38,7 @@ pub use function::Function;
 pub use identity::{EntityId, ExpressionId, StatementId, VariableId};
 pub use lift::{LiftDialect, Lifted, LiftedFunction, lift_function};
 pub use lower::{LowerDialect, LoweredFunction, lower_function};
+pub use recover::{RecoverDialect, Recovery, recover_structure};
 pub use statement::{Handler, HandlerKind, Statement, StatementKind, SwitchArm};
 pub use variable::Variable;
 

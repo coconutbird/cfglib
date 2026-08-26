@@ -111,6 +111,111 @@ fn machine_while_loop_is_classified_pre_tested() {
 }
 
 #[test]
+fn exit_on_true_while_loop_is_classified_pre_tested() {
+    // entry → init → header{cond}; --true--> exit; --false--> body;
+    // body --Jump--> header. The taken branch leaves the loop.
+    let mut cfg: Cfg<MockInst> = Cfg::new();
+    let init = cfg.new_block();
+    let header = cfg.new_block();
+    let body = cfg.new_block();
+    let exit = cfg.new_block();
+    cfg.block_mut(cfg.entry()).push(ff("entry"));
+    cfg.block_mut(init).push(ff("init"));
+    cfg.block_mut(header).push(ff("condition"));
+    cfg.block_mut(body).push(ff("body_inst"));
+    cfg.block_mut(exit)
+        .push(MockInst(FlowEffect::Return, "after_loop"));
+    cfg.add_edge(cfg.entry(), init, EdgeKind::Fallthrough);
+    cfg.add_edge(init, header, EdgeKind::Fallthrough);
+    cfg.add_edge(header, exit, EdgeKind::ConditionalTrue);
+    cfg.add_edge(header, body, EdgeKind::ConditionalFalse);
+    cfg.add_edge(body, header, EdgeKind::Jump);
+
+    let (ast, report) = lift_with_report(&cfg);
+    let loops = find_loops(&ast);
+    assert_eq!(loops.len(), 1, "{ast:?}");
+    match &loops[0] {
+        AstNode::Loop {
+            kind: LoopKind::While { exit_on_true, .. },
+            body: loop_body,
+            ..
+        } => {
+            assert!(exit_on_true, "the true edge leaves the loop: {ast:?}");
+            let inner = AstNode::Sequence {
+                body: loop_body.clone(),
+            };
+            assert!(contains_block(&inner, body));
+            assert!(!contains_block(&inner, exit), "{ast:?}");
+        }
+        other => panic!("expected a pre-tested loop, got {other:?}"),
+    }
+    assert!(report.is_fully_structured(), "{report:?}");
+}
+
+#[test]
+fn multi_block_condition_chain_is_classified_pre_tested() {
+    // Per-instruction blocks, the shape bytecode frontends produce:
+    // header[t = i] → [u = n] → cond{t < u}; --false--> exit; --true-->
+    // body → latch --Jump--> header.
+    let mut cfg: Cfg<MockInst> = Cfg::new();
+    let header = cfg.new_block();
+    let compare_right = cfg.new_block();
+    let condition = cfg.new_block();
+    let body = cfg.new_block();
+    let latch = cfg.new_block();
+    let exit = cfg.new_block();
+    cfg.block_mut(cfg.entry()).push(ff("entry"));
+    cfg.block_mut(header).push(ff("load_left"));
+    cfg.block_mut(compare_right).push(ff("load_right"));
+    cfg.block_mut(condition).push(ff("compare"));
+    cfg.block_mut(body).push(ff("body_inst"));
+    cfg.block_mut(latch).push(ff("increment"));
+    cfg.block_mut(exit)
+        .push(MockInst(FlowEffect::Return, "after_loop"));
+    cfg.add_edge(cfg.entry(), header, EdgeKind::Fallthrough);
+    cfg.add_edge(header, compare_right, EdgeKind::Fallthrough);
+    cfg.add_edge(compare_right, condition, EdgeKind::Fallthrough);
+    cfg.add_edge(condition, exit, EdgeKind::ConditionalTrue);
+    cfg.add_edge(condition, body, EdgeKind::ConditionalFalse);
+    cfg.add_edge(body, latch, EdgeKind::Fallthrough);
+    cfg.add_edge(latch, header, EdgeKind::Jump);
+
+    let (ast, report) = lift_with_report(&cfg);
+    let loops = find_loops(&ast);
+    assert_eq!(loops.len(), 1, "{ast:?}");
+    match &loops[0] {
+        AstNode::Loop {
+            header: found_header,
+            kind:
+                LoopKind::While {
+                    condition_block,
+                    condition: witness,
+                    exit_on_true,
+                },
+            body: loop_body,
+        } => {
+            assert_eq!(*found_header, header);
+            assert_eq!(*condition_block, condition);
+            assert!(exit_on_true, "{ast:?}");
+            let names: Vec<&str> = witness.iter().map(|instruction| instruction.1).collect();
+            assert_eq!(names, ["load_left", "load_right", "compare"], "{ast:?}");
+            let inner = AstNode::Sequence {
+                body: loop_body.clone(),
+            };
+            assert!(contains_block(&inner, body));
+            assert!(contains_block(&inner, latch));
+            assert!(!contains_block(&inner, exit), "{ast:?}");
+        }
+        other => panic!("expected a chained pre-tested loop, got {other:?}"),
+    }
+    assert!(
+        contains_block(&ast, exit),
+        "the continuation follows the loop: {ast:?}"
+    );
+    assert!(report.is_fully_structured(), "{report:?}");
+}
+
+#[test]
 fn machine_do_while_loop_is_classified_post_tested() {
     // entry → body; body → latch{cond}; latch --true--> body; --false--> exit.
     let mut cfg: Cfg<MockInst> = Cfg::new();
@@ -591,9 +696,10 @@ fn lift_switch_produces_switch_node() {
 }
 
 #[test]
-fn lift_jump_edge_produces_goto_and_reports_it() {
+fn lift_jump_edge_into_an_owned_target_continues_inline() {
     let mut cfg: Cfg<MockInst> = Cfg::new();
-    // entry(0) --Jump--> target(1); backward gotos have no loop context.
+    // entry(0) --Jump--> target(1): the jump is the target's only entry
+    // and no region claims it, so the walk continues there directly.
     let target = cfg.new_block();
     cfg.block_mut(cfg.entry())
         .instructions_mut()
@@ -601,6 +707,40 @@ fn lift_jump_edge_produces_goto_and_reports_it() {
     cfg.block_mut(target).instructions_mut().push(ff("dst"));
 
     cfg.add_edge(cfg.entry(), target, EdgeKind::Jump);
+
+    let (ast, report) = lift_with_report(&cfg);
+    assert!(
+        !has_node_kind(&ast, |n| matches!(n, AstNode::Goto { .. })),
+        "should continue inline: {ast:?}"
+    );
+    assert!(report.is_fully_structured(), "{report:?}");
+}
+
+#[test]
+fn lift_jump_edge_produces_goto_and_reports_it() {
+    let mut cfg: Cfg<MockInst> = Cfg::new();
+    // entry(0) --Jump--> target(1), but an exception region claims the
+    // target: region-claimed code never inlines across a jump, so the
+    // transfer stays explicit.
+    let target = cfg.new_block();
+    let pad = cfg.new_block();
+    cfg.block_mut(cfg.entry())
+        .instructions_mut()
+        .push(ff("src"));
+    cfg.block_mut(target).instructions_mut().push(ff("dst"));
+    cfg.block_mut(pad).instructions_mut().push(ff("pad"));
+
+    cfg.add_edge(cfg.entry(), target, EdgeKind::Jump);
+    cfg.add_region(crate::Region {
+        id: crate::RegionId::from_raw(0),
+        protected_blocks: [target].into_iter().collect(),
+        handlers: alloc::vec![crate::Handler {
+            entry: pad,
+            body: crate::HandlerBody::known([pad]),
+            kind: crate::HandlerKind::CatchAll,
+        }],
+        parent: None,
+    });
 
     let (ast, report) = lift_with_report(&cfg);
     assert!(
@@ -616,7 +756,9 @@ fn lift_jump_edge_produces_goto_and_reports_it() {
 }
 
 #[test]
-fn lift_jump_target_gets_label() {
+fn lift_jump_to_the_merge_converges_silently() {
+    // The jump lands exactly on the conditional's merge: it is the arm
+    // ending, not goto residue.
     let mut cfg: Cfg<MockInst> = Cfg::new();
     let normal = cfg.new_block(); // 1
     let target = cfg.new_block(); // 2
@@ -635,6 +777,40 @@ fn lift_jump_target_gets_label() {
     cfg.add_edge(normal, target, EdgeKind::Fallthrough);
     cfg.add_edge(jumper, target, EdgeKind::Jump);
     cfg.add_edge(target, end, EdgeKind::Fallthrough);
+
+    let (ast, report) = lift_with_report(&cfg);
+    assert!(
+        report.is_fully_structured(),
+        "the join jump is structural: {report:?}"
+    );
+    assert!(
+        !has_node_kind(&ast, |n| matches!(n, AstNode::Label { .. })),
+        "no label is needed: {ast:?}"
+    );
+}
+
+#[test]
+fn lift_jump_target_gets_label() {
+    // The jump crosses into a sibling arm's interior with no shared merge
+    // (both tails return), so it stays an explicit labeled goto.
+    let mut cfg: Cfg<MockInst> = Cfg::new();
+    let jumper = cfg.new_block(); // 1
+    let normal = cfg.new_block(); // 2
+    let target = cfg.new_block(); // 3
+    let other = cfg.new_block(); // 4
+    cfg.block_mut(cfg.entry())
+        .instructions_mut()
+        .push(ff("entry"));
+    cfg.block_mut(jumper).instructions_mut().push(ff("jumper"));
+    cfg.block_mut(normal).instructions_mut().push(ff("normal"));
+    cfg.block_mut(target).instructions_mut().push(ff("dst"));
+    cfg.block_mut(other).instructions_mut().push(ff("other"));
+
+    cfg.add_edge(cfg.entry(), jumper, EdgeKind::ConditionalTrue);
+    cfg.add_edge(cfg.entry(), normal, EdgeKind::ConditionalFalse);
+    cfg.add_edge(jumper, target, EdgeKind::Jump);
+    cfg.add_edge(normal, target, EdgeKind::ConditionalTrue);
+    cfg.add_edge(normal, other, EdgeKind::ConditionalFalse);
 
     let (ast, report) = lift_with_report(&cfg);
     assert!(

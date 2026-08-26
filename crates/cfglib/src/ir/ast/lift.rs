@@ -89,17 +89,8 @@ fn is_back_edge<I, E>(
 }
 
 /// Whether an edge transfers control exceptionally rather than sequentially.
-///
-/// [`EdgeKind::ExceptionLeave`] is a normal transfer out of a protected
-/// region, so it stays sequential.
 fn is_exception_edge(kind: EdgeKind) -> bool {
-    matches!(
-        kind,
-        EdgeKind::ExceptionHandler
-            | EdgeKind::ExceptionUnwind
-            | EdgeKind::ExceptionResume
-            | EdgeKind::ExceptionContinue
-    )
+    kind.is_exceptional()
 }
 
 /// Successors reached by sequential control flow, excluding exception edges.
@@ -276,6 +267,10 @@ pub fn lift_with_report<I: Clone, E>(cfg: &Cfg<I, E>) -> (AstNode<I>, LiftReport
         .unresolved_labels
         .extend(pending_labels.into_iter().map(BlockId));
     for region in cfg.regions() {
+        // Inert tombstones (removed regions) carry nothing to structure.
+        if region.protected_blocks.is_empty() && region.handlers.is_empty() {
+            continue;
+        }
         if !state.structured_regions.contains(&region.id.0) {
             state.report.unstructured_regions.push(region.id);
         }
@@ -316,22 +311,35 @@ fn lift_region<I: Clone, E>(
             break;
         }
         if !block_is_allowed(allowed_blocks, block) {
-            // A transfer refused at the bound is recorded, never dropped:
-            // the jump is explicit here and the completeness sweep emits
-            // the target under the matching label.
-            push_goto(cfg, state, &mut result, block, GotoReason::BoundaryEscape);
+            // Exclusively owned out-of-bound code — a single predecessor,
+            // so this transfer is its only entry, and no exception region
+            // claims it — inlines here instead of degrading to a goto
+            // (javac hoists `break label` bodies out of line like this).
+            // Anything else is recorded, never dropped: the jump is
+            // explicit and the completeness sweep emits the target under
+            // the matching label.
+            if cfg.predecessor_edges(block).len() == 1 && !region_member(cfg, block) {
+                result.extend(lift_region(cfg, state, block, None, stop));
+            } else {
+                push_goto(cfg, state, &mut result, block, GotoReason::BoundaryEscape);
+            }
             break;
         }
 
         state.visited.insert(block.0);
 
-        if let Some(node) = try_catch::lift_try_catch(cfg, state, block, allowed_blocks) {
+        if let Some((node, continuation)) =
+            try_catch::lift_try_catch(cfg, state, block, allowed_blocks)
+        {
             result.push(node);
-            current = advance_merge(cfg, state, block, allowed_blocks);
+            // Resume at the region's own continuation, not the anchor's
+            // merge — they differ whenever the try exits through an
+            // explicit leave.
+            current = continuation.filter(|next| !state.visited.contains(&next.0));
             continue;
         }
 
-        current = lift_block(cfg, state, block, allowed_blocks, &mut result);
+        current = lift_block(cfg, state, block, allowed_blocks, stop, &mut result);
     }
 
     result
@@ -349,6 +357,7 @@ fn lift_block<I: Clone, E>(
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
+    stop: Option<BlockId>,
     result: &mut Vec<AstNode<I>>,
 ) -> Option<BlockId> {
     let successor_edges = cfg.successor_edges(block);
@@ -394,8 +403,23 @@ fn lift_block<I: Clone, E>(
             let edge = cfg.edge(eid);
             if edge.kind() == EdgeKind::Jump {
                 let target = edge.target();
+                if Some(target) == stop {
+                    // The jump lands exactly on the enclosing construct's
+                    // convergence point (an arm skipping its sibling to
+                    // reach the join): structurally the arm simply ends.
+                    continue;
+                }
                 if let Some(node) = resolve_loop_transfer(cfg, state, target) {
                     result.push(node);
+                } else if !state.visited.contains(&target.0)
+                    && cfg.predecessor_edges(target).len() == 1
+                    && !region_member(cfg, target)
+                {
+                    // Exclusively owned jump target — this explicit jump
+                    // is its only entry and no exception region claims
+                    // it (javac jumps over handler code to reach a
+                    // join): sequential flow simply continues there.
+                    return Some(target);
                 } else {
                     push_goto(cfg, state, result, target, GotoReason::ExplicitJump);
                 }
@@ -428,6 +452,40 @@ fn lift_block<I: Clone, E>(
     None
 }
 
+/// The ultimate target of a chain of pure jump trampolines: an unemitted,
+/// instruction-free block with a single unconditional successor forwards
+/// a resolution unchanged. The HLIL lift empties dialect-declared pure
+/// transfers in its working view before structuring (javac's `break`
+/// routes through such blocks); frontends structuring a raw [`Cfg`] whose
+/// jump encodings occupy an instruction clear them the same way.
+fn through_trampolines<I, E>(
+    cfg: &Cfg<I, E>,
+    state: &LiftState<'_>,
+    target: BlockId,
+) -> (BlockId, Vec<BlockId>) {
+    let mut hops = Vec::new();
+    let mut current = target;
+    for _ in 0..8 {
+        if state.visited.contains(&current.0) || !cfg.block(current).instructions().is_empty() {
+            break;
+        }
+        let mut normal = cfg
+            .successor_edges(current)
+            .iter()
+            .map(|&edge| cfg.edge(edge))
+            .filter(|edge| !is_exception_edge(edge.kind()));
+        let (Some(edge), None) = (normal.next(), normal.next()) else {
+            break;
+        };
+        if edge.kind() != EdgeKind::Jump {
+            break;
+        }
+        hops.push(current);
+        current = edge.target();
+    }
+    (current, hops)
+}
+
 /// Resolve a control transfer against the enclosing loops: `continue` when
 /// it reaches a loop's continue point, `break` when it reaches a loop's
 /// follow. Inner loops win; resolving against an outer loop labels it.
@@ -436,9 +494,15 @@ fn resolve_loop_transfer<I, E>(
     state: &mut LiftState<'_>,
     target: BlockId,
 ) -> Option<AstNode<I>> {
+    let (target, hops) = through_trampolines(cfg, state, target);
     let position = state.loop_stack.iter().rposition(|context| {
         context.continue_target == target.0 || context.follow == Some(target.0)
     })?;
+    // The consumed trampolines carry no content; the sweep must not
+    // resurrect them as labeled residue.
+    for hop in hops {
+        state.visited.insert(hop.0);
+    }
     let innermost = position + 1 == state.loop_stack.len();
     let label = if innermost {
         None
@@ -454,6 +518,22 @@ fn resolve_loop_transfer<I, E>(
         AstNode::Continue { label }
     } else {
         AstNode::Break { label }
+    })
+}
+
+/// Whether any exception region names the block — as protected code, a
+/// handler entry, or declared handler extent. Region-claimed code never
+/// moves across structural boundaries.
+fn region_member<I, E>(cfg: &Cfg<I, E>, block: BlockId) -> bool {
+    cfg.regions().iter().any(|region| {
+        region.protected_blocks.contains(&block)
+            || region.handlers.iter().any(|handler| {
+                handler.entry == block
+                    || handler
+                        .body
+                        .blocks()
+                        .is_some_and(|blocks| blocks.contains(&block))
+            })
     })
 }
 
@@ -620,7 +700,7 @@ fn lift_switch_arm<I: Clone, E>(
     // The arm entry was pre-visited above; classify it through the shared
     // path so branch or loop structure at the arm entry is kept, then
     // continue the ordinary walk toward the merge.
-    let next = lift_block(cfg, state, target, allowed_blocks, &mut body);
+    let next = lift_block(cfg, state, target, allowed_blocks, merge, &mut body);
     if let Some(next) = next {
         body.extend(lift_region(cfg, state, next, allowed_blocks, merge));
     }

@@ -150,6 +150,7 @@ impl<D: AnalysisDialect> CopySource for Instruction<D> {
     fn as_copy(&self) -> Option<(Self::Variable, Self::Variable)> {
         (D::is_copy(&self.operation)
             && self.effects.is_empty()
+            && !self.may_throw
             && self.defs.len() == 1
             && self.uses.len() == 1)
             .then(|| (self.defs[0], self.uses[0]))

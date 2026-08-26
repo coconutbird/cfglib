@@ -22,7 +22,8 @@ enum Type {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Effect {
-    Io,
+    Read,
+    Write,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -57,8 +58,17 @@ impl Vocabulary for Toy {
 enum Operation {
     Add,
     LessThan,
+    Below,
+    AtLeast,
     Not,
+    Load,
+    Deref,
     Call,
+    Select,
+    Acquire,
+    Release,
+    Caught,
+    Throw,
 }
 
 impl Dialect for Toy {
@@ -69,8 +79,17 @@ impl Dialect for Toy {
         match operation {
             Operation::Add => "add",
             Operation::LessThan => "lt",
+            Operation::Below => "below",
+            Operation::AtLeast => "at-least",
             Operation::Not => "not",
+            Operation::Load => "load",
+            Operation::Deref => "deref",
             Operation::Call => "call",
+            Operation::Select => "select",
+            Operation::Acquire => "acquire",
+            Operation::Release => "release",
+            Operation::Caught => "caught",
+            Operation::Throw => "throw",
         }
     }
 }
@@ -87,12 +106,18 @@ enum MediumOperation {
     Add,
     LessThan,
     Not,
+    Load,
     Call,
     Store,
+    Exchange,
     Branch,
+    CompareBranch,
     Switch,
     Jump,
     Return,
+    /// A read-modify-write merge: operand 1 reads the destination's
+    /// previous value.
+    Merge,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,9 +141,12 @@ impl mlil::Dialect for Toy {
     ) -> mlil::InstructionMetadata<Self::Effect> {
         let (effects, flow) = match operation {
             MediumOperation::Call | MediumOperation::Store => {
-                (vec![Effect::Io], FlowEffect::Fallthrough)
+                (vec![Effect::Write], FlowEffect::Fallthrough)
             }
-            MediumOperation::Branch => (Vec::new(), FlowEffect::ConditionalJump),
+            MediumOperation::Load => (vec![Effect::Read], FlowEffect::Fallthrough),
+            MediumOperation::Branch | MediumOperation::CompareBranch => {
+                (Vec::new(), FlowEffect::ConditionalJump)
+            }
             MediumOperation::Switch => (Vec::new(), FlowEffect::IndirectJump),
             MediumOperation::Jump => (Vec::new(), FlowEffect::Jump),
             MediumOperation::Return => (Vec::new(), FlowEffect::Return),
@@ -134,12 +162,16 @@ impl mlil::Dialect for Toy {
             MediumOperation::Add => "add",
             MediumOperation::LessThan => "lt",
             MediumOperation::Not => "not",
+            MediumOperation::Load => "load",
             MediumOperation::Call => "call",
             MediumOperation::Store => "store",
+            MediumOperation::Exchange => "exchange",
             MediumOperation::Branch => "branch",
+            MediumOperation::CompareBranch => "compare_branch",
             MediumOperation::Switch => "switch",
             MediumOperation::Jump => "jump",
             MediumOperation::Return => "return",
+            MediumOperation::Merge => "merge",
         }
     }
 
@@ -200,20 +232,36 @@ impl mlil::VerifyDialect for Toy {
 }
 
 impl LiftDialect for Toy {
+    fn negate_operation(operation: &Operation) -> Option<Operation> {
+        match operation {
+            Operation::Below => Some(Operation::AtLeast),
+            Operation::AtLeast => Some(Operation::Below),
+            _ => None,
+        }
+    }
+
+    fn previous_value_operand(operation: &MediumOperation) -> Option<usize> {
+        matches!(operation, MediumOperation::Merge).then_some(1)
+    }
+
     fn lift_operation(operation: &MediumOperation) -> Lifted<Operation> {
         match operation {
             MediumOperation::Add => Lifted::Operation(Operation::Add),
             MediumOperation::LessThan => Lifted::Operation(Operation::LessThan),
             MediumOperation::Not => Lifted::Operation(Operation::Not),
-            MediumOperation::Call => Lifted::Operation(Operation::Call),
+            MediumOperation::Load => Lifted::Operation(Operation::Load),
+            MediumOperation::Call | MediumOperation::Merge => Lifted::Operation(Operation::Call),
+            MediumOperation::Store => Lifted::Store {
+                location: Operation::Deref,
+            },
+            MediumOperation::Exchange => Lifted::ParallelCopy,
             MediumOperation::Branch => Lifted::Branch,
+            MediumOperation::CompareBranch => Lifted::BranchOperation(Operation::Below),
             MediumOperation::Switch => Lifted::Switch,
             MediumOperation::Return => Lifted::Return,
-            // Stores are not exercised by these tests.
-            MediumOperation::Store
-            | MediumOperation::Jump
-            | MediumOperation::Constant(_)
-            | MediumOperation::Copy => Lifted::ControlFlow,
+            MediumOperation::Jump | MediumOperation::Constant(_) | MediumOperation::Copy => {
+                Lifted::ControlFlow
+            }
         }
     }
 
@@ -231,14 +279,60 @@ impl LiftDialect for Toy {
     fn logical_not() -> Option<Operation> {
         Some(Operation::Not)
     }
+
+    fn temporary_role() -> Option<u8> {
+        Some(1)
+    }
+
+    fn evaluation_commutes(
+        moved_effects: &[Effect],
+        moved_may_throw: bool,
+        crossed_effects: &[Effect],
+        crossed_may_throw: bool,
+    ) -> bool {
+        // Reads pass reads; nothing passes a write or a potential throw.
+        !moved_may_throw
+            && !crossed_may_throw
+            && moved_effects.iter().all(|effect| *effect == Effect::Read)
+            && crossed_effects.iter().all(|effect| *effect == Effect::Read)
+    }
+}
+
+impl super::RecoverDialect for Toy {
+    fn select() -> Option<Operation> {
+        Some(Operation::Select)
+    }
+
+    fn region_enter(operation: &Operation) -> Option<Operation> {
+        matches!(operation, Operation::Acquire).then_some(Operation::Acquire)
+    }
+
+    fn releases(enter: &Operation, exit: &Operation) -> bool {
+        matches!(enter, Operation::Acquire) && matches!(exit, Operation::Release)
+    }
+
+    fn is_exception_materialization(operation: &Operation) -> bool {
+        matches!(operation, Operation::Caught)
+    }
+
+    fn is_throw(operation: &Operation) -> bool {
+        matches!(operation, Operation::Throw)
+    }
 }
 
 impl LowerDialect for Toy {
     fn lower_operation(operation: &Operation) -> MediumOperation {
         match operation {
-            Operation::Add => MediumOperation::Add,
-            Operation::LessThan => MediumOperation::LessThan,
+            Operation::Add | Operation::Select => MediumOperation::Add,
+            Operation::LessThan
+            | Operation::Below
+            | Operation::AtLeast
+            | Operation::Acquire
+            | Operation::Release
+            | Operation::Caught
+            | Operation::Throw => MediumOperation::LessThan,
             Operation::Not => MediumOperation::Not,
+            Operation::Load | Operation::Deref => MediumOperation::Load,
             Operation::Call => MediumOperation::Call,
         }
     }
@@ -711,73 +805,46 @@ fn lift_structures_declared_exception_regions() {
     assert!(pseudo.contains("return v0;"), "{pseudo}");
 }
 #[test]
-fn effectful_definitions_inline_only_when_order_is_preserved() {
-    let mut builder = mlil::FunctionBuilder::<Toy>::new("toy::calls".into());
+fn variable_splitting_composes_with_lifting() {
+    // One storage slot reused for two lifetimes, each read twice so neither
+    // definition inlines away — the decompiler shape variable splitting
+    // exists for.
+    let mut builder = mlil::FunctionBuilder::<Toy>::new("toy::slots".into());
     let block = builder.new_block("body");
-    let t_first = builder.declare_variable(1, None).unwrap();
-    let x = builder.declare_variable(0, None).unwrap();
-    let t_second = builder.declare_variable(1, None).unwrap();
-    let y = builder.declare_variable(0, None).unwrap();
-    let z = builder.declare_variable(0, None).unwrap();
+    let slot = builder.declare_variable(0, Some(7)).unwrap();
+    let reads: Vec<_> = (0..4)
+        .map(|_| builder.declare_variable(0, None).unwrap())
+        .collect();
     let typed = |variable| mlil::TypedVariable::<Toy>::new(variable, Type::Integer);
-
-    // t_first = call(); x = t_first        → inlines (immediately consumed)
-    builder
-        .append_instruction(
-            block,
-            MediumOperation::Call,
-            Vec::new(),
-            vec![typed(t_first)],
-            false,
-            None,
-        )
-        .unwrap();
-    builder
-        .append_instruction(
-            block,
-            MediumOperation::Copy,
-            vec![typed(t_first)],
-            vec![typed(x)],
-            false,
-            None,
-        )
-        .unwrap();
-    // t_second = call(); y = call(); z = t_second → t_second materializes
-    builder
-        .append_instruction(
-            block,
-            MediumOperation::Call,
-            Vec::new(),
-            vec![typed(t_second)],
-            false,
-            None,
-        )
-        .unwrap();
-    builder
-        .append_instruction(
-            block,
-            MediumOperation::Call,
-            Vec::new(),
-            vec![typed(y)],
-            false,
-            None,
-        )
-        .unwrap();
-    builder
-        .append_instruction(
-            block,
-            MediumOperation::Copy,
-            vec![typed(t_second)],
-            vec![typed(z)],
-            false,
-            None,
-        )
-        .unwrap();
+    for (value, pair) in [(1, &reads[0..2]), (2, &reads[2..4])] {
+        builder
+            .append_instruction(
+                block,
+                MediumOperation::Constant(value),
+                Vec::new(),
+                vec![typed(slot)],
+                false,
+                None,
+            )
+            .unwrap();
+        for &read in pair {
+            builder
+                .append_instruction(
+                    block,
+                    MediumOperation::Copy,
+                    vec![typed(slot)],
+                    vec![typed(read)],
+                    false,
+                    None,
+                )
+                .unwrap();
+        }
+    }
     builder
         .append_instruction(
             block,
             MediumOperation::Return,
-            vec![typed(z)],
+            vec![typed(reads[3])],
             Vec::new(),
             false,
             None,
@@ -786,19 +853,40 @@ fn effectful_definitions_inline_only_when_order_is_preserved() {
     builder
         .add_edge(builder.entry(), block, Edge::Entry, None)
         .unwrap();
+    let function = builder.finish().unwrap();
 
-    let lifted = lift_function(&builder.finish().unwrap()).unwrap();
+    let split = function.split_variables().unwrap();
+    assert_eq!(split.splits[&mlil::VariableId::from_raw(0)].len(), 2);
+    let lifted = lift_function(&split.function).unwrap();
     let pseudo = lifted.function.to_pseudocode();
-    // First call inlined into x's assignment.
-    assert!(pseudo.contains("v1 = call();"), "{pseudo}");
-    assert!(!pseudo.contains("v0 = call()"), "{pseudo}");
-    // Second call pair: the temporary materializes so the calls stay in
-    // order, and the pure copy chain still folds into the return.
-    let second = pseudo.find("v2 = call();").expect(&pseudo);
-    let third = pseudo.find("v3 = call();").expect(&pseudo);
-    assert!(second < third, "{pseudo}");
-    assert!(pseudo.contains("return v2;"), "{pseudo}");
+
+    let target_of = |value: &str| {
+        let position = pseudo.find(value).expect(&pseudo);
+        let line_start = pseudo[..position].rfind('\n').map_or(0, |at| at + 1);
+        pseudo[line_start..position].trim().to_string()
+    };
+    let first_lifetime = target_of(" = 1;");
+    let second_lifetime = target_of(" = 2;");
+    assert_ne!(
+        first_lifetime, second_lifetime,
+        "each lifetime gets its own local: {pseudo}"
+    );
 }
 
 /// HLIL → MLIL lowering tests, split out to respect the source-size policy.
 mod lowering;
+
+/// Effect-ordered inlining tests, split out to respect the source-size
+/// policy.
+mod effects;
+
+/// Parallel-copy and fused-branch translation tests, split out to respect
+/// the source-size policy.
+mod fused;
+
+/// Structural recovery tests, split out to respect the source-size policy.
+mod recover;
+
+/// Pure-transfer trampoline tests, split out to respect the source-size
+/// policy.
+mod trampoline;

@@ -10,8 +10,8 @@ use crate::ir::dialect::Vocabulary;
 use crate::{ConstValue, EdgeKind, FlowEffect};
 
 use super::{
-    AnalysisDialect, Dialect, FunctionBuilder, Instruction, InstructionMetadata, TypedVariable,
-    VariableId, VerificationIssue, VerifyDialect,
+    AnalysisDialect, Dialect, EntityId, FunctionBuilder, Instruction, InstructionId,
+    InstructionMetadata, TypedVariable, VariableId, VerificationIssue, VerifyDialect,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -22,18 +22,26 @@ enum Type {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Effect {
     Control,
+    Read,
+    Write,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Operation {
     Constant(i64),
     Copy,
+    Load(u8),
+    Store(u8),
+    AddressOf(u8),
+    Branch,
     Return,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Edge {
     Entry,
+    Next,
+    Unwind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -69,13 +77,22 @@ impl Dialect for ToyDialect {
 
     fn instruction_metadata(
         operation: &Self::Operation,
-        _may_throw: bool,
+        may_throw: bool,
     ) -> InstructionMetadata<Self::Effect> {
         match operation {
             Operation::Return => {
                 InstructionMetadata::new(vec![Effect::Control], FlowEffect::Return, false)
             }
-            Operation::Constant(_) | Operation::Copy => {
+            Operation::Branch => {
+                InstructionMetadata::new(vec![Effect::Control], FlowEffect::ConditionalJump, false)
+            }
+            Operation::Load(_) => {
+                InstructionMetadata::new(vec![Effect::Read], FlowEffect::Fallthrough, may_throw)
+            }
+            Operation::Store(_) => {
+                InstructionMetadata::new(vec![Effect::Write], FlowEffect::Fallthrough, false)
+            }
+            Operation::Constant(_) | Operation::Copy | Operation::AddressOf(_) => {
                 InstructionMetadata::new(Vec::new(), FlowEffect::Fallthrough, false)
             }
         }
@@ -85,12 +102,19 @@ impl Dialect for ToyDialect {
         match operation {
             Operation::Constant(_) => "const",
             Operation::Copy => "copy",
+            Operation::Load(_) => "load",
+            Operation::Store(_) => "store",
+            Operation::AddressOf(_) => "addressof",
+            Operation::Branch => "branch",
             Operation::Return => "return",
         }
     }
 
-    fn edge_kind(_edge: &Self::Edge) -> EdgeKind {
-        EdgeKind::Fallthrough
+    fn edge_kind(edge: &Self::Edge) -> EdgeKind {
+        match edge {
+            Edge::Entry | Edge::Next => EdgeKind::Fallthrough,
+            Edge::Unwind => EdgeKind::ExceptionUnwind,
+        }
     }
 
     fn is_entry_edge(edge: &Self::Edge) -> bool {
@@ -126,7 +150,11 @@ impl AnalysisDialect for ToyDialect {
         let value = match instruction.operation() {
             Operation::Constant(value) => *value,
             Operation::Copy => *known.get(instruction.uses().first()?)?,
-            Operation::Return => return None,
+            Operation::Load(_)
+            | Operation::Store(_)
+            | Operation::AddressOf(_)
+            | Operation::Branch
+            | Operation::Return => return None,
         };
         Some((destination, value))
     }
@@ -136,13 +164,36 @@ impl AnalysisDialect for ToyDialect {
     }
 }
 
+impl super::PromoteDialect for ToyDialect {
+    type Location = u8;
+
+    fn promotion_access(instruction: &Instruction<Self>) -> super::PromotionAccess<u8> {
+        match instruction.operation() {
+            Operation::Load(slot) => super::PromotionAccess::Load(*slot),
+            Operation::Store(slot) => super::PromotionAccess::Store(*slot),
+            Operation::AddressOf(slot) => super::PromotionAccess::Escape(vec![*slot]),
+            _ => super::PromotionAccess::Unrelated,
+        }
+    }
+
+    fn copy_operation() -> Operation {
+        Operation::Copy
+    }
+
+    fn promoted_variable(location: &u8) -> (u8, Option<u8>) {
+        (9, Some(*location))
+    }
+}
+
 impl VerifyDialect for ToyDialect {
     fn verify(function: &super::Function<Self>, issues: &mut Vec<VerificationIssue>) {
         for block in function.cfg().blocks().iter().skip(1) {
-            if !matches!(
-                block.instructions().last().map(Instruction::operation),
-                Some(Operation::Return)
-            ) {
+            if function.cfg().successor_edges(block.id()).is_empty()
+                && !matches!(
+                    block.instructions().last().map(Instruction::operation),
+                    Some(Operation::Return)
+                )
+            {
                 issues.push(VerificationIssue::new(format!(
                     "block {} does not end in return",
                     block.id()
@@ -293,6 +344,448 @@ fn invalid_signatures_and_regions_are_rejected() {
 }
 
 #[test]
+fn split_variables_separates_independent_lifetimes() {
+    let mut builder = FunctionBuilder::<ToyDialect>::new("toy::reuse".into());
+    let body = builder.new_block("body");
+    let slot = builder.declare_variable(0, Some(3)).unwrap();
+    let first = builder.declare_variable(0, None).unwrap();
+    let second = builder.declare_variable(0, None).unwrap();
+    let typed = |variable| TypedVariable::new(variable, Type::Integer);
+    builder
+        .append_instruction(
+            body,
+            Operation::Constant(1),
+            Vec::new(),
+            vec![typed(slot)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Copy,
+            vec![typed(slot)],
+            vec![typed(first)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Constant(2),
+            Vec::new(),
+            vec![typed(slot)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Copy,
+            vec![typed(slot)],
+            vec![typed(second)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Return,
+            vec![typed(second)],
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .add_edge(builder.entry(), body, Edge::Entry, None)
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let split = function.split_variables().unwrap();
+    assert!(split.function.verify().is_ok());
+    assert_eq!(split.splits[&slot].len(), 2, "{:?}", split.splits);
+    assert_eq!(split.splits[&first].len(), 1);
+    assert_eq!(split.splits[&second].len(), 1);
+
+    let instruction = |index| {
+        split
+            .function
+            .instruction(InstructionId::from_raw(index))
+            .unwrap()
+    };
+    let first_lifetime = instruction(0).defs()[0];
+    let second_lifetime = instruction(2).defs()[0];
+    assert_ne!(first_lifetime, second_lifetime);
+    assert_eq!(instruction(1).uses()[0], first_lifetime);
+    assert_eq!(instruction(3).uses()[0], second_lifetime);
+    assert_eq!(split.origins[first_lifetime.index()], slot);
+    assert_eq!(split.origins[second_lifetime.index()], slot);
+    // The split variables inherit role and native provenance.
+    assert_eq!(
+        split.function.variable(first_lifetime).unwrap().native,
+        Some(3)
+    );
+}
+
+#[test]
+fn split_variables_keeps_phi_merged_values_together() {
+    let mut builder = FunctionBuilder::<ToyDialect>::new("toy::diamond".into());
+    let top = builder.new_block("top");
+    let left = builder.new_block("left");
+    let right = builder.new_block("right");
+    let merge = builder.new_block("merge");
+    let slot = builder.declare_variable(0, None).unwrap();
+    let merged = builder.declare_variable(0, None).unwrap();
+    let typed = |variable| TypedVariable::new(variable, Type::Integer);
+    builder
+        .append_instruction(
+            top,
+            Operation::Constant(0),
+            Vec::new(),
+            vec![typed(slot)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            top,
+            Operation::Branch,
+            vec![typed(slot)],
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    for (block, value) in [(left, 10), (right, 20)] {
+        builder
+            .append_instruction(
+                block,
+                Operation::Constant(value),
+                Vec::new(),
+                vec![typed(slot)],
+                false,
+                None,
+            )
+            .unwrap();
+    }
+    builder
+        .append_instruction(
+            merge,
+            Operation::Copy,
+            vec![typed(slot)],
+            vec![typed(merged)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            merge,
+            Operation::Return,
+            vec![typed(merged)],
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .add_edge(builder.entry(), top, Edge::Entry, None)
+        .unwrap();
+    builder.add_edge(top, left, Edge::Next, None).unwrap();
+    builder.add_edge(top, right, Edge::Next, None).unwrap();
+    builder.add_edge(left, merge, Edge::Next, None).unwrap();
+    builder.add_edge(right, merge, Edge::Next, None).unwrap();
+    let function = builder.finish().unwrap();
+
+    let split = function.split_variables().unwrap();
+    assert_eq!(split.splits[&slot].len(), 2, "{:?}", split.splits);
+    let instruction = |index| {
+        split
+            .function
+            .instruction(InstructionId::from_raw(index))
+            .unwrap()
+    };
+    let top_value = instruction(0).defs()[0];
+    let left_value = instruction(2).defs()[0];
+    let right_value = instruction(3).defs()[0];
+    let merge_use = instruction(4).uses()[0];
+    assert_eq!(left_value, right_value, "phi operands share one web");
+    assert_eq!(merge_use, left_value, "the merged use reads the web");
+    assert_ne!(top_value, left_value, "the pre-branch lifetime is separate");
+}
+
+#[test]
+fn split_variables_ignores_dead_loop_header_phis() {
+    // A frontend that reuses one slot for unrelated lifetimes on both sides
+    // of a loop produces a dead phi at the header (the body redefines the
+    // slot before reading it). That phi must not merge the lifetimes.
+    let mut builder = FunctionBuilder::<ToyDialect>::new("toy::loop".into());
+    let top = builder.new_block("top");
+    let header = builder.new_block("header");
+    let body = builder.new_block("body");
+    let exit = builder.new_block("exit");
+    let slot = builder.declare_variable(0, Some(3)).unwrap();
+    let first = builder.declare_variable(0, None).unwrap();
+    let second = builder.declare_variable(0, None).unwrap();
+    let typed = |variable| TypedVariable::new(variable, Type::Integer);
+    let mut push = |block, operation, uses: Vec<_>, defs: Vec<_>| {
+        builder
+            .append_instruction(block, operation, uses, defs, false, None)
+            .unwrap();
+    };
+    push(top, Operation::Constant(1), Vec::new(), vec![typed(slot)]);
+    push(top, Operation::Copy, vec![typed(slot)], vec![typed(first)]);
+    push(header, Operation::Branch, vec![typed(first)], Vec::new());
+    push(body, Operation::Constant(2), Vec::new(), vec![typed(slot)]);
+    push(
+        body,
+        Operation::Copy,
+        vec![typed(slot)],
+        vec![typed(second)],
+    );
+    push(exit, Operation::Return, vec![typed(first)], Vec::new());
+    builder
+        .add_edge(builder.entry(), top, Edge::Entry, None)
+        .unwrap();
+    for (source, target) in [
+        (top, header),
+        (header, body),
+        (header, exit),
+        (body, header),
+    ] {
+        builder.add_edge(source, target, Edge::Next, None).unwrap();
+    }
+    let function = builder.finish().unwrap();
+
+    let split = function.split_variables().unwrap();
+    assert!(split.function.verify().is_ok());
+    assert_eq!(split.splits[&slot].len(), 2, "{:?}", split.splits);
+    let instruction = |index| {
+        split
+            .function
+            .instruction(InstructionId::from_raw(index))
+            .unwrap()
+    };
+    let pre_loop = instruction(0).defs()[0];
+    let in_loop = instruction(3).defs()[0];
+    assert_ne!(pre_loop, in_loop, "the dead header phi merged lifetimes");
+    assert_eq!(instruction(1).uses()[0], pre_loop);
+    assert_eq!(instruction(4).uses()[0], in_loop);
+    // Both lifetimes keep the original slot's provenance.
+    assert_eq!(split.function.variable(pre_loop).unwrap().native, Some(3));
+    assert_eq!(split.function.variable(in_loop).unwrap().native, Some(3));
+}
+
+#[test]
+fn split_variables_preserves_parameters_identities_and_provenance() {
+    let mut builder = FunctionBuilder::<ToyDialect>::new("toy::parameter".into());
+    let body = builder.new_block("body");
+    let parameter = builder.declare_variable(2, None).unwrap();
+    let saved = builder.declare_variable(0, None).unwrap();
+    let result = builder.declare_variable(0, None).unwrap();
+    let typed = |variable| TypedVariable::new(variable, Type::Integer);
+    builder
+        .append_instruction(
+            body,
+            Operation::Copy,
+            vec![typed(parameter)],
+            vec![typed(saved)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Constant(5),
+            Vec::new(),
+            vec![typed(parameter)],
+            false,
+            Some(Span { start: 8, end: 9 }),
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Copy,
+            vec![typed(parameter)],
+            vec![typed(result)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Return,
+            vec![typed(result)],
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .add_edge(builder.entry(), body, Edge::Entry, None)
+        .unwrap();
+    builder
+        .set_signature(super::Signature::<ToyDialect>::new(
+            vec![parameter],
+            vec![Type::Integer],
+        ))
+        .unwrap();
+    builder
+        .map_entity(Span { start: 1, end: 2 }, EntityId::Variable(parameter))
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let split = function.split_variables().unwrap();
+    assert_eq!(split.splits[&parameter].len(), 2, "{:?}", split.splits);
+    let instruction = |index| {
+        split
+            .function
+            .instruction(InstructionId::from_raw(index))
+            .unwrap()
+    };
+    let incoming = instruction(0).uses()[0];
+    let redefined = instruction(1).defs()[0];
+    assert_ne!(incoming, redefined);
+    assert_eq!(instruction(2).uses()[0], redefined);
+    assert_eq!(
+        split.function.signature().parameters,
+        vec![incoming],
+        "the signature names the live-in lifetime"
+    );
+
+    // Instruction identities survive, so instruction provenance does too.
+    assert_eq!(
+        split
+            .function
+            .provenance()
+            .mappings_to(EntityId::Instruction(InstructionId::from_raw(1)))
+            .count(),
+        1
+    );
+    // The original variable's span now names both split lifetimes.
+    assert_eq!(
+        split
+            .function
+            .provenance()
+            .mappings_from(1)
+            .filter(|entry| matches!(entry.entity, EntityId::Variable(_)))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn promote_memory_rewrites_unaliased_slots() {
+    let mut builder = FunctionBuilder::<ToyDialect>::new("toy::slots".into());
+    let body = builder.new_block("body");
+    let input = builder.declare_variable(0, None).unwrap();
+    let first = builder.declare_variable(0, None).unwrap();
+    let pointer = builder.declare_variable(0, None).unwrap();
+    let second = builder.declare_variable(0, None).unwrap();
+    let typed = |variable| TypedVariable::new(variable, Type::Integer);
+    // Slot 0 is only loaded and stored; slot 1's address escapes.
+    builder
+        .append_instruction(
+            body,
+            Operation::Store(0),
+            vec![typed(input)],
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Load(0),
+            Vec::new(),
+            vec![typed(first)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::AddressOf(1),
+            Vec::new(),
+            vec![typed(pointer)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Store(1),
+            vec![typed(first)],
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Load(1),
+            Vec::new(),
+            vec![typed(second)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            body,
+            Operation::Return,
+            vec![typed(second)],
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .add_edge(builder.entry(), body, Edge::Entry, None)
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let promotion = function.promote_memory().unwrap();
+    assert!(promotion.function.verify().is_ok());
+    assert_eq!(promotion.rewritten, 2);
+    assert_eq!(promotion.promoted.len(), 1, "{:?}", promotion.promoted);
+    let slot = promotion.promoted[&0];
+    assert_eq!(promotion.function.variable(slot).unwrap().role, 9);
+    assert_eq!(promotion.function.variable(slot).unwrap().native, Some(0));
+
+    let instruction = |index| {
+        promotion
+            .function
+            .instruction(InstructionId::from_raw(index))
+            .unwrap()
+    };
+    // The unaliased slot's accesses became copies through its variable.
+    assert_eq!(*instruction(0).operation(), Operation::Copy);
+    assert_eq!(instruction(0).uses(), [input]);
+    assert_eq!(instruction(0).defs(), [slot]);
+    assert_eq!(*instruction(1).operation(), Operation::Copy);
+    assert_eq!(instruction(1).uses(), [slot]);
+    assert_eq!(instruction(1).defs(), [first]);
+    // The escaped slot's accesses stayed memory operations.
+    assert_eq!(*instruction(3).operation(), Operation::Store(1));
+    assert_eq!(*instruction(4).operation(), Operation::Load(1));
+    assert_eq!(*instruction(5).operation(), Operation::Return);
+}
+
+#[test]
 fn generic_verifier_requires_one_root_entry() {
     let mut builder = FunctionBuilder::<ToyDialect>::new("toy::invalid".into());
     let body = builder.new_block("body");
@@ -346,4 +839,89 @@ fn rejected_source_spans_do_not_partially_mutate_the_builder() {
     let function = builder.finish().unwrap();
     assert_eq!(instruction.index(), 0);
     assert_eq!(function.cfg().edge_count(), 1);
+}
+
+/// A linear protected chain for coverage extension: `body` throws into
+/// `pad`, the pure `tail` and `tail2` blocks follow, and `after` throws
+/// again. With `rejoin`, the handler falls back into `tail`, giving it a
+/// sequential predecessor outside the protected set.
+fn coverage_function(rejoin: bool) -> super::Function<ToyDialect> {
+    let mut builder = FunctionBuilder::<ToyDialect>::new("toy::coverage".into());
+    let body = builder.new_block("body");
+    let tail = builder.new_block("tail");
+    let tail2 = builder.new_block("tail2");
+    let after = builder.new_block("after");
+    let pad = builder.new_block("pad");
+    let value = builder.declare_variable(0, None).unwrap();
+    let typed = || vec![TypedVariable::new(value, Type::Integer)];
+    let mut push = |block, operation, throws| {
+        builder
+            .append_instruction(block, operation, Vec::new(), typed(), throws, None)
+            .unwrap();
+    };
+    push(body, Operation::Load(0), true);
+    push(tail, Operation::Constant(1), false);
+    push(tail2, Operation::Constant(2), false);
+    push(after, Operation::Load(1), true);
+    push(pad, Operation::Constant(9), false);
+    builder
+        .append_instruction(after, Operation::Return, typed(), Vec::new(), false, None)
+        .unwrap();
+    if rejoin {
+        builder.add_edge(pad, tail, Edge::Next, None).unwrap();
+    } else {
+        builder
+            .append_instruction(pad, Operation::Return, typed(), Vec::new(), false, None)
+            .unwrap();
+    }
+    builder
+        .add_edge(builder.entry(), body, Edge::Entry, None)
+        .unwrap();
+    builder.add_edge(body, tail, Edge::Next, None).unwrap();
+    builder.add_edge(body, pad, Edge::Unwind, None).unwrap();
+    builder.add_edge(tail, tail2, Edge::Next, None).unwrap();
+    builder.add_edge(tail2, after, Edge::Next, None).unwrap();
+    builder
+        .add_region(crate::Region {
+            id: crate::RegionId::from_raw(0),
+            protected_blocks: [body].into_iter().collect(),
+            handlers: vec![crate::Handler {
+                entry: pad,
+                body: crate::HandlerBody::Unknown,
+                kind: crate::HandlerKind::CatchAll,
+            }],
+            parent: None,
+        })
+        .unwrap();
+    builder.finish().unwrap()
+}
+
+#[test]
+fn equivalent_coverage_extends_through_nonthrowing_tails() {
+    let function = coverage_function(false);
+    let derived = function.with_derived_cfg(super::extend_equivalent_coverage);
+    let protected: Vec<&str> = derived.cfg().regions()[0]
+        .protected_blocks
+        .iter()
+        .filter_map(|&block| derived.cfg().block(block).label())
+        .collect();
+    // `tail2` needs the second fixpoint round; `after` may throw, so the
+    // declared coverage boundary before it is observable and stays.
+    assert_eq!(protected, ["body", "tail", "tail2"]);
+    // The canonical function keeps the exact declared coverage.
+    assert_eq!(function.cfg().regions()[0].protected_blocks.len(), 1);
+}
+
+#[test]
+fn equivalent_coverage_respects_unprotected_predecessors() {
+    let function = coverage_function(true);
+    let derived = function.with_derived_cfg(super::extend_equivalent_coverage);
+    let protected: Vec<&str> = derived.cfg().regions()[0]
+        .protected_blocks
+        .iter()
+        .filter_map(|&block| derived.cfg().block(block).label())
+        .collect();
+    // The handler rejoins at `tail`: entering it from `pad` is not covered
+    // by the declared region, so absorbing it would be observable.
+    assert_eq!(protected, ["body"]);
 }

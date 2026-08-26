@@ -4,8 +4,11 @@
 //! preserves evaluation order: the definition has exactly one local use
 //! (and is dead beyond it), pure computations may cross anything that does
 //! not redefine their reads, and effectful or throwing computations may
-//! move only into the immediately following instruction. Everything else
-//! materializes as an assignment at its original position.
+//! cross only instructions the dialect declares them to commute with
+//! ([`LiftDialect::evaluation_commutes`] — refused by default). Effectful
+//! definitions inlined into one consumer additionally keep their original
+//! relative order across its operands. Everything else materializes as an
+//! assignment at its original position.
 
 extern crate alloc;
 
@@ -49,7 +52,9 @@ enum Shape<D: LiftDialect> {
     Copy,
     Operation(<D as Dialect>::Operation),
     Store(<D as Dialect>::Operation),
+    ParallelCopy,
     Branch,
+    BranchOperation(<D as Dialect>::Operation),
     Dispatch,
     Return,
     ControlFlow,
@@ -66,7 +71,15 @@ fn classify<D: LiftDialect>(instruction: &mlil::Instruction<D>) -> Shape<D> {
     match D::lift_operation(operation) {
         Lifted::Operation(operation) => Shape::Operation(operation),
         Lifted::Store { location } => Shape::Store(location),
+        // A parallel move of exactly one pair is a plain copy, so it takes
+        // part in expression inlining (type-refinement pairs, lone
+        // phi-copy commits).
+        Lifted::ParallelCopy if instruction.uses().len() == 1 && instruction.defs().len() == 1 => {
+            Shape::Copy
+        }
+        Lifted::ParallelCopy => Shape::ParallelCopy,
         Lifted::Branch => Shape::Branch,
+        Lifted::BranchOperation(operation) => Shape::BranchOperation(operation),
         Lifted::Switch => Shape::Dispatch,
         Lifted::Return => Shape::Return,
         Lifted::ControlFlow => Shape::ControlFlow,
@@ -75,12 +88,17 @@ fn classify<D: LiftDialect>(instruction: &mlil::Instruction<D>) -> Shape<D> {
 
 /// Whether emission builds an operand expression for use position `k`.
 ///
-/// Branch and dispatch terminators evaluate only their first use (the
-/// condition or scrutinee); their remaining uses never become expressions,
-/// so definitions feeding them must stay materialized.
+/// Plain branch and dispatch terminators evaluate only their first use
+/// (the condition or scrutinee); their remaining uses never become
+/// expressions, so definitions feeding them must stay materialized.
 fn use_is_consumed<D: LiftDialect>(shape: &Shape<D>, position: usize) -> bool {
     match shape {
-        Shape::Copy | Shape::Operation(_) | Shape::Store(_) | Shape::Return => true,
+        Shape::Copy
+        | Shape::Operation(_)
+        | Shape::Store(_)
+        | Shape::ParallelCopy
+        | Shape::BranchOperation(_)
+        | Shape::Return => true,
         Shape::Branch | Shape::Dispatch => position == 0,
         Shape::Constant(_) | Shape::ControlFlow => false,
     }
@@ -94,26 +112,47 @@ fn is_value_shape<D: LiftDialect>(shape: &Shape<D>) -> bool {
     )
 }
 
-struct CandidateFacts {
+struct CandidateFacts<D: LiftDialect> {
     /// Every variable the candidate's expression tree reads.
     reads: BTreeSet<mlil::VariableId>,
-    /// Whether the tree contains effects or may throw.
-    impure: bool,
+    /// Sorted, deduplicated effects of the whole tree.
+    effects: Vec<D::Effect>,
+    /// Whether any node of the tree may throw.
+    may_throw: bool,
 }
 
-/// Decide, per definition, the consumer it inlines into (if any).
-fn plan_inlining<D: LiftDialect>(
+impl<D: LiftDialect> CandidateFacts<D> {
+    /// Whether reordering this tree is observable at all.
+    fn is_effect_relevant(&self) -> bool {
+        !self.effects.is_empty() || self.may_throw
+    }
+
+    /// Whether this tree's evaluation may move across an instruction with
+    /// the given effect profile.
+    fn commutes_with(&self, effects: &[D::Effect], may_throw: bool) -> bool {
+        if !self.is_effect_relevant() || (effects.is_empty() && !may_throw) {
+            return true;
+        }
+        D::evaluation_commutes(&self.effects, self.may_throw, effects, may_throw)
+    }
+}
+
+/// Exact local single-use positions: one use between the definition and
+/// the variable's next redefinition, and dead beyond the list unless
+/// redefined inside it.
+fn single_use_positions<D: LiftDialect>(
     instructions: &[mlil::Instruction<D>],
     shapes: &[Shape<D>],
     live_out: &BTreeSet<mlil::VariableId>,
 ) -> Vec<Option<usize>> {
-    let length = instructions.len();
-    // Exact local single-use positions: one use between the definition and
-    // the variable's next redefinition, and dead beyond the list unless
-    // redefined inside it.
-    let mut viable: Vec<Option<usize>> = vec![None; length];
+    let mut viable: Vec<Option<usize>> = vec![None; instructions.len()];
     for (position, instruction) in instructions.iter().enumerate() {
-        if !is_value_shape(&shapes[position]) || instruction.defs().len() != 1 {
+        if !is_value_shape(&shapes[position])
+            || instruction.defs().len() != 1
+            || D::previous_value_operand(instruction.operation()).is_some()
+        {
+            // A read-modify-write definition merges with prior state:
+            // it is not a pure value and never inlines forward.
             continue;
         }
         let variable = instruction.defs()[0];
@@ -139,34 +178,64 @@ fn plan_inlining<D: LiftDialect>(
             viable[position] = use_position;
         }
     }
+    viable
+}
+
+/// Decide, per definition, the consumer it inlines into (if any).
+fn plan_inlining<D: LiftDialect>(
+    instructions: &[mlil::Instruction<D>],
+    shapes: &[Shape<D>],
+    live_out: &BTreeSet<mlil::VariableId>,
+) -> Vec<Option<usize>> {
+    let length = instructions.len();
+    let viable = single_use_positions(instructions, shapes, live_out);
 
     // Order-safety walk over the movable candidates.
     let mut inline_at: Vec<Option<usize>> = vec![None; length];
-    let mut facts: Vec<Option<CandidateFacts>> = (0..length).map(|_| None).collect();
+    let mut facts: Vec<Option<CandidateFacts<D>>> = (0..length).map(|_| None).collect();
     let mut active: BTreeMap<mlil::VariableId, usize> = BTreeMap::new();
     for (position, instruction) in instructions.iter().enumerate() {
-        // Impure candidates survive only into the immediately next
-        // instruction.
-        active.retain(|_, &mut candidate| {
-            facts[candidate].as_ref().is_some_and(|f| !f.impure) || candidate + 1 == position
-        });
+        // Consumption first: feeding this instruction is not a crossing.
+        // Effect-relevant candidates consumed by one instruction must keep
+        // their original relative order across its operands, since operands
+        // evaluate left to right.
         let mut consumed: Vec<usize> = Vec::new();
+        let mut last_effectful: Option<usize> = None;
         for (operand, &variable) in instruction.uses().iter().enumerate() {
-            if !use_is_consumed(&shapes[position], operand) {
+            if !use_is_consumed(&shapes[position], operand)
+                || D::previous_value_operand(instruction.operation()) == Some(operand)
+            {
+                // A previous-value read keeps its producer materialized:
+                // the merge point must stay visible as a variable.
                 continue;
             }
             if let Some(&candidate) = active.get(&variable) {
                 if viable[candidate] == Some(position) {
+                    let relevant = facts[candidate]
+                        .as_ref()
+                        .is_some_and(CandidateFacts::is_effect_relevant);
+                    if relevant && last_effectful.is_some_and(|latest| candidate < latest) {
+                        // Inlining here would evaluate this tree after a
+                        // later-defined effectful tree: keep it materialized.
+                        continue;
+                    }
                     inline_at[candidate] = Some(position);
                     consumed.push(candidate);
                     active.remove(&variable);
+                    if relevant {
+                        last_effectful = Some(candidate);
+                    }
                 }
             }
         }
-        let impure_here = !instruction.effects().is_empty() || instruction.may_throw();
-        if impure_here {
-            // Nothing impure moves across another impure instruction.
-            active.retain(|_, &mut candidate| facts[candidate].as_ref().is_some_and(|f| !f.impure));
+        // An effectful or throwing instruction bars every candidate the
+        // dialect does not declare to commute with it.
+        if !instruction.effects().is_empty() || instruction.may_throw() {
+            active.retain(|_, &mut candidate| {
+                facts[candidate].as_ref().is_some_and(|f| {
+                    f.commutes_with(instruction.effects(), instruction.may_throw())
+                })
+            });
         }
         for &defined in instruction.defs() {
             active.remove(&defined);
@@ -180,7 +249,8 @@ fn plan_inlining<D: LiftDialect>(
         }
         if viable[position].is_some() {
             let mut reads = BTreeSet::new();
-            let mut impure = impure_here;
+            let mut effects = instruction.effects().to_vec();
+            let mut may_throw = instruction.may_throw();
             for &variable in instruction.uses() {
                 let inlined = consumed
                     .iter()
@@ -189,13 +259,20 @@ fn plan_inlining<D: LiftDialect>(
                 if let Some(candidate) = inlined {
                     if let Some(f) = facts[candidate].as_ref() {
                         reads.extend(f.reads.iter().copied());
-                        impure |= f.impure;
+                        effects.extend(f.effects.iter().cloned());
+                        may_throw |= f.may_throw;
                     }
                 } else {
                     reads.insert(variable);
                 }
             }
-            facts[position] = Some(CandidateFacts { reads, impure });
+            effects.sort_unstable();
+            effects.dedup();
+            facts[position] = Some(CandidateFacts {
+                reads,
+                effects,
+                may_throw,
+            });
             active.insert(instruction.defs()[0], position);
         }
     }
@@ -280,28 +357,17 @@ impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
                 Shape::Store(location) => {
                     self.emit_store(position, instruction, location.clone(), &mut state)?;
                 }
-                Shape::Branch | Shape::Dispatch => {
-                    let expected = matches!(
-                        (&shapes[position], expect),
-                        (Shape::Branch, Expect::Branch) | (Shape::Dispatch, Expect::Switch)
-                    );
-                    if !expected {
-                        return Err(Error::UnsupportedLift(format!(
-                            "unexpected branch or dispatch instruction {}",
-                            instruction.id()
-                        )));
-                    }
-                    if instruction.uses().is_empty() {
-                        return Err(Error::UnsupportedLift(format!(
-                            "branch {} has no condition operand",
-                            instruction.id()
-                        )));
-                    }
-                    let value = self.operand(position, 0, instruction, &mut state)?;
-                    end = Some(ListEnd {
-                        value,
-                        instruction: instruction.id(),
-                    });
+                Shape::ParallelCopy => {
+                    self.emit_parallel_copy(position, instruction, &mut state)?;
+                }
+                Shape::Branch | Shape::BranchOperation(_) | Shape::Dispatch => {
+                    end = Some(self.emit_terminator_value(
+                        position,
+                        instruction,
+                        &shapes[position],
+                        expect,
+                        &mut state,
+                    )?);
                 }
                 Shape::Return => {
                     let values = self.operands(position, instruction, &mut state)?;
@@ -363,6 +429,147 @@ impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
                 "instruction {} defines more than one result",
                 instruction.id()
             ))),
+        }
+    }
+
+    /// Builds the condition or scrutinee value ending a branch or dispatch
+    /// list.
+    fn emit_terminator_value(
+        &mut self,
+        position: usize,
+        instruction: &mlil::Instruction<D>,
+        shape: &Shape<D>,
+        expect: Expect,
+        state: &mut ListState,
+    ) -> Result<ListEnd> {
+        let expected = matches!(
+            (shape, expect),
+            (Shape::Branch | Shape::BranchOperation(_), Expect::Branch)
+                | (Shape::Dispatch, Expect::Switch)
+        );
+        if !expected {
+            return Err(Error::UnsupportedLift(format!(
+                "unexpected branch or dispatch instruction {}",
+                instruction.id()
+            )));
+        }
+        if instruction.uses().is_empty() {
+            return Err(Error::UnsupportedLift(format!(
+                "branch {} has no condition operand",
+                instruction.id()
+            )));
+        }
+        let value = if let Shape::BranchOperation(operation) = shape {
+            // The fused condition applies the operation to every use.
+            let operands = self.operands(position, instruction, state)?;
+            self.builder.add_expression(
+                ExpressionKind::Operation {
+                    operation: operation.clone(),
+                    operands,
+                },
+                D::void_type(),
+            )?
+        } else {
+            self.operand(position, 0, instruction, state)?
+        };
+        Ok(ListEnd {
+            value,
+            instruction: instruction.id(),
+        })
+    }
+
+    /// Emits one pairwise parallel move: every use's value into the
+    /// definition at the same position, all reads before any write. Moves
+    /// whose reads never observe an earlier write emit directly; anything
+    /// else stages every value through a fresh temporary first.
+    fn emit_parallel_copy(
+        &mut self,
+        position: usize,
+        instruction: &mlil::Instruction<D>,
+        state: &mut ListState,
+    ) -> Result<()> {
+        let id = instruction.id();
+        if instruction.uses().len() != instruction.defs().len() {
+            return Err(Error::UnsupportedLift(format!(
+                "parallel copy {id} does not pair uses with definitions"
+            )));
+        }
+        let values = self.operands(position, instruction, state)?;
+        let written: Vec<VariableId> = instruction
+            .defs()
+            .iter()
+            .map(|variable| VariableId::from_raw(variable.raw()))
+            .collect();
+        let direct = values.iter().enumerate().all(|(index, &value)| {
+            let mut reads = BTreeSet::new();
+            self.expression_reads(value, &mut reads);
+            written[..index]
+                .iter()
+                .all(|earlier| !reads.contains(earlier))
+        });
+        let staged: Vec<ExpressionId> = if direct {
+            values
+        } else {
+            let Some(role) = D::temporary_role() else {
+                return Err(Error::UnsupportedLift(format!(
+                    "overlapping parallel copy {id} needs a temporary role"
+                )));
+            };
+            let mut staged = Vec::with_capacity(values.len());
+            for (&value, value_type) in values.iter().zip(instruction.use_types()) {
+                let temporary =
+                    self.builder
+                        .declare_variable(role.clone(), None, Some(value_type.clone()))?;
+                let target = self
+                    .builder
+                    .add_expression(ExpressionKind::Variable(temporary), value_type.clone())?;
+                let assign = self
+                    .builder
+                    .add_statement(StatementKind::Assign { target, value }, None)?;
+                state.statements.push(assign);
+                staged.push(
+                    self.builder
+                        .add_expression(ExpressionKind::Variable(temporary), value_type.clone())?,
+                );
+            }
+            staged
+        };
+        let mut first_statement = None;
+        for ((value, &variable), value_type) in staged
+            .into_iter()
+            .zip(&written)
+            .zip(instruction.def_types())
+        {
+            let target = self
+                .builder
+                .add_expression(ExpressionKind::Variable(variable), value_type.clone())?;
+            let statement = self
+                .builder
+                .add_statement(StatementKind::Assign { target, value }, None)?;
+            first_statement.get_or_insert(statement);
+            state.statements.push(statement);
+        }
+        if let Some(statement) = first_statement {
+            self.map_instruction(id, EntityId::Statement(statement))?;
+        }
+        Ok(())
+    }
+
+    /// Collects every variable read anywhere in one expression tree.
+    fn expression_reads(&self, expression: ExpressionId, reads: &mut BTreeSet<VariableId>) {
+        let Some(node) = self.builder.expression(expression) else {
+            return;
+        };
+        match node.kind() {
+            ExpressionKind::Variable(variable) => {
+                reads.insert(*variable);
+            }
+            ExpressionKind::Constant(_) => {}
+            ExpressionKind::Operation { operands, .. } => {
+                for operand in operands.clone() {
+                    self.expression_reads(operand, reads);
+                }
+            }
         }
     }
 

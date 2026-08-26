@@ -4,12 +4,12 @@ use cfglib::{
     BlockId, BlockOrder, Cfg, ClrExceptionRegion, ClrHandler, ClrHandlerKind, DominatorTree,
     EdgeKind, Emitter, FlowEffect, HandlerBody, HandlerTypes, Liveness, SehExceptionRegion,
     SehHandler, SehHandlerKind, color_graph, contract_edge_mapped, dead_code_elimination,
-    detect_loops_tagged, eliminate_pre, find_loop_invariants, install_clr_region,
-    install_seh_region, interference_graph, linearize, merge_blocks_mapped, remove_dead_code,
-    remove_dead_code_mapped, remove_empty_blocks_mapped, remove_unreachable,
-    remove_unreachable_mapped, resolve_jump_edges, rotate_loop, simplify, simplify_mapped,
-    split_critical_edges, split_critical_edges_mapped, split_critical_edges_with, split_node,
-    split_node_at_points, split_node_with_payload_mapped, verify,
+    detect_loops_tagged, duplicate_structuring_tails, eliminate_pre, find_loop_invariants,
+    install_clr_region, install_seh_region, interference_graph, linearize, merge_blocks_mapped,
+    promote_handler_extents, remove_dead_code, remove_dead_code_mapped, remove_empty_blocks_mapped,
+    remove_unreachable, remove_unreachable_mapped, resolve_jump_edges, rotate_loop, simplify,
+    simplify_mapped, split_critical_edges, split_critical_edges_mapped, split_critical_edges_with,
+    split_node, split_node_at_points, split_node_with_payload_mapped, verify,
 };
 
 use super::BenchmarkSuite;
@@ -447,10 +447,59 @@ fn register_frontend_utilities(suite: &mut BenchmarkSuite<'_>) {
     );
 }
 
+fn register_tail_duplication(suite: &mut BenchmarkSuite<'_>) {
+    // A short-circuit shape: two conditionals sharing one small tail.
+    let mut shared = Cfg::<ApiInst>::new();
+    let second = shared.new_block();
+    let tail = shared.new_block();
+    let then = shared.new_block();
+    let join = shared.new_block();
+    shared.add_edge(shared.entry(), tail, EdgeKind::ConditionalTrue);
+    shared.add_edge(shared.entry(), second, EdgeKind::ConditionalFalse);
+    shared.add_edge(second, tail, EdgeKind::ConditionalTrue);
+    shared.add_edge(second, then, EdgeKind::ConditionalFalse);
+    shared.add_edge(tail, join, EdgeKind::Fallthrough);
+    shared.add_edge(then, join, EdgeKind::Fallthrough);
+    benchmark_case!(
+        suite,
+        "api_duplicate_structuring_tails",
+        covers[duplicate_structuring_tails],
+        || {
+            let mut candidate = shared.clone();
+            duplicate_structuring_tails(&mut candidate)
+        },
+        |duplicated: &usize| assert_eq!(*duplicated, 1)
+    );
+}
+
 fn register_exception_regions(suite: &mut BenchmarkSuite<'_>) {
     let mut base = Cfg::<ApiInst>::new();
     let handler = base.new_block();
     let protected_blocks = BTreeSet::from([base.entry()]);
+    benchmark_case!(
+        suite,
+        "api_promote_handler_extents",
+        covers[promote_handler_extents],
+        || {
+            let mut candidate = base.clone();
+            let mut handler_types = HandlerTypes::new();
+            install_clr_region(
+                &mut candidate,
+                &mut handler_types,
+                ClrExceptionRegion {
+                    protected_blocks: protected_blocks.clone(),
+                    handlers: vec![ClrHandler {
+                        entry: handler,
+                        body: HandlerBody::Unknown,
+                        kind: ClrHandlerKind::Catch { ty: 1_u32 },
+                    }],
+                    parent: None,
+                },
+            );
+            promote_handler_extents(&mut candidate)
+        },
+        |promoted: &usize| assert!(*promoted <= 1)
+    );
     benchmark_case!(
         suite,
         "api_install_clr_region",
@@ -501,6 +550,7 @@ fn register_exception_regions(suite: &mut BenchmarkSuite<'_>) {
 
 pub(super) fn register(suite: &mut BenchmarkSuite<'_>) {
     register_cleanup(suite);
+    register_tail_duplication(suite);
     register_node_edits(suite);
     register_critical_edges(suite);
     register_dataflow_transforms(suite);

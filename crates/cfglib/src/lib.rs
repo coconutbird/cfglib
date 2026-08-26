@@ -287,9 +287,11 @@ pub use ir::mlil::{
     AnalysisDialect as MlilAnalysisDialect, Dialect as MlilDialect, EntityId as MlilEntityId,
     Error as MlilError, Function as MlilFunction, FunctionBuilder as MlilFunctionBuilder,
     Instruction as MlilInstruction, InstructionId as MlilInstructionId,
-    InstructionMetadata as MlilInstructionMetadata, ProvenanceEntry as MlilProvenanceEntry,
-    ProvenanceMap as MlilProvenanceMap, Result as MlilResult, Signature as MlilSignature,
-    TypedVariable as MlilTypedVariable, Variable as MlilVariable, VariableId as MlilVariableId,
+    InstructionMetadata as MlilInstructionMetadata, MemoryPromotion as MlilMemoryPromotion,
+    PromoteDialect as MlilPromoteDialect, PromotionAccess as MlilPromotionAccess,
+    ProvenanceEntry as MlilProvenanceEntry, ProvenanceMap as MlilProvenanceMap,
+    Result as MlilResult, Signature as MlilSignature, TypedVariable as MlilTypedVariable,
+    Variable as MlilVariable, VariableId as MlilVariableId, VariableSplit as MlilVariableSplit,
     VerificationIssue as MlilVerificationIssue, VerificationReport as MlilVerificationReport,
     VerifyDialect as MlilVerifyDialect,
 };
@@ -298,6 +300,7 @@ pub use ir::signature::Signature;
 pub use region::{
     Cleanup, CompletionReason, Continuation, Handler, HandlerBody, HandlerFilters, HandlerKind,
     HandlerMetadata, HandlerRef, HandlerTypes, Region, RegionId, RegionIndex,
+    promote_handler_extents,
 };
 pub use rewrite::RewriteMap;
 pub use transform::cleanup::{
@@ -313,6 +316,7 @@ pub use transform::critical::{
     split_critical_edges, split_critical_edges_mapped, split_critical_edges_with,
 };
 pub use transform::dce::{dead_code_elimination, remove_dead_code, remove_dead_code_mapped};
+pub use transform::duplicate::duplicate_structuring_tails;
 pub use transform::linearize::{BlockOrder, Emitter, LinearInst, linearize};
 pub use transform::loops::{LoopRotation, find_loop_invariants, rotate_loop};
 pub use transform::pre::{PreAnalysis, eliminate_pre};

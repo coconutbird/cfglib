@@ -53,6 +53,10 @@ use alloc::collections::BTreeSet;
 use alloc::vec;
 use alloc::vec::Vec;
 
+mod recover;
+
+pub use recover::promote_handler_extents;
+
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 

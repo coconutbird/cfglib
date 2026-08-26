@@ -356,7 +356,7 @@ fn handler_tail_beyond_the_declared_extent_is_preserved() {
         parent: None,
     });
 
-    let ast = lift(&cfg);
+    let (ast, report) = crate::lift_with_report(&cfg);
     let handlers = find_try_handlers(&ast).expect("region structures");
     assert!(
         !handlers[0]
@@ -365,16 +365,15 @@ fn handler_tail_beyond_the_declared_extent_is_preserved() {
             .any(|node| contains_block(node, handler_tail)),
         "handler lifting stops at the declared extent: {ast:?}"
     );
-    assert!(
-        handlers[0]
-            .body
-            .iter()
-            .any(|node| has_goto_to(node, &cfg, handler_tail)),
-        "the boundary crossing is an explicit jump: {ast:?}"
-    );
+    // The tail past the extent is the region's unique normal exit, so it
+    // becomes the try/catch continuation instead of goto residue.
     assert!(
         contains_block(&ast, handler_tail),
         "the tail beyond the extent may not be dropped: {ast:?}"
+    );
+    assert!(
+        report.gotos.is_empty(),
+        "the extent exit converges structurally: {report:?}"
     );
 }
 
