@@ -63,6 +63,7 @@ pub(super) const PUBLIC_API_FUNCTIONS: &[&str] = &[
     "kosaraju_scc",
     "lift",
     "lift_predicated",
+    "lift_with_report",
     "linearize",
     "loop_exit_blocks",
     "make_reducible",

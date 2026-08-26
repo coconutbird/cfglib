@@ -1,0 +1,608 @@
+//! MLIL → HLIL lifting: control-flow structuring plus expression recovery.
+//!
+//! [`lift_function`] structures an MLIL function's control flow through
+//! [`ir::ast`](crate::ir::ast), then translates each flat instruction list
+//! into statements and expression trees: single-use pure definitions inline
+//! into their consumer, effectful definitions inline only when evaluation
+//! order is provably preserved, and everything else materializes as an
+//! assignment. The consumer's [`LiftDialect`] supplies the per-operation
+//! translation; the library owns ordering, structuring, and provenance.
+
+extern crate alloc;
+
+use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
+
+use crate::block::BlockId;
+use crate::dataflow::liveness::Liveness;
+use crate::ir::ast::{AstNode, LiftReport, LoopKind};
+use crate::ir::mlil;
+use crate::region;
+
+mod block;
+
+use self::block::{Expect, ListEnd};
+use super::{
+    Dialect, EntityId, Error, ExpressionId, ExpressionKind, Function, FunctionBuilder, Handler,
+    HandlerKind, Result, Signature, StatementId, StatementKind, VariableId, VerifyDialect,
+};
+
+/// The HLIL translation of one MLIL operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Lifted<Operation> {
+    /// The instruction applies `operation` to its lifted operands; with one
+    /// definition it is a value, with none an effect statement.
+    Operation(Operation),
+    /// The instruction stores its **last** use into the place formed by
+    /// `location` over the preceding uses (`store(addr, v)` becomes
+    /// `location(addr) = v`).
+    Store {
+        /// The lvalue operation forming the written place.
+        location: Operation,
+    },
+    /// The block's conditional branch; the first use is the condition.
+    Branch,
+    /// The block's multi-way dispatch; the first use is the scrutinee.
+    Switch,
+    /// Function return; the uses are the returned values.
+    Return,
+    /// Pure control transfer with no HLIL form (jumps, fallthrough
+    /// helpers, no-ops).
+    ControlFlow,
+}
+
+/// The bridge between one consumer's MLIL and HLIL dialects.
+///
+/// Implemented on the same type as both level dialects; the shared
+/// [`Vocabulary`](crate::ir::dialect::Vocabulary) supertrait already
+/// equates value types, effects, variables, and source coordinates, and
+/// this trait's supertrait bound equates the constant domains.
+pub trait LiftDialect:
+    mlil::AnalysisDialect + Dialect<Constant = <Self as mlil::AnalysisDialect>::Constant>
+{
+    /// Translates one MLIL operation.
+    ///
+    /// [`AnalysisDialect::constant`](mlil::AnalysisDialect::constant) and
+    /// [`AnalysisDialect::is_copy`](mlil::AnalysisDialect::is_copy) are
+    /// consulted first, so constants and copies never reach this hook.
+    fn lift_operation(
+        operation: &<Self as mlil::Dialect>::Operation,
+    ) -> Lifted<<Self as Dialect>::Operation>;
+
+    /// The case values carried by one switch-dispatch edge.
+    ///
+    /// Lifting a switch requires every case edge to yield at least one
+    /// value; the explicit default edge is never queried.
+    fn case_values(edge: &<Self as mlil::Dialect>::Edge) -> Vec<<Self as Dialect>::Constant>;
+
+    /// The value type of an expression evaluated only for its effects.
+    fn void_type() -> Self::ValueType;
+
+    /// An operation computing the logical negation of its single operand,
+    /// used to state exit-on-true loop conditions structurally. `None`
+    /// degrades those loops to `loop { …; if (c) break; }`.
+    #[must_use]
+    fn logical_not() -> Option<<Self as Dialect>::Operation> {
+        None
+    }
+}
+
+/// The result of lifting one MLIL function.
+#[derive(Debug, Clone)]
+pub struct LiftedFunction<D: LiftDialect> {
+    /// The lifted function. Variable identities correspond one-to-one by
+    /// index with the MLIL variable table.
+    pub function: Function<D>,
+    /// The control-flow structuring fidelity report.
+    pub report: LiftReport,
+    /// MLIL instruction → the HLIL entity carrying it: a statement, or an
+    /// expression when the definition was inlined. Pure control-transfer
+    /// instructions have no entry.
+    pub instructions: BTreeMap<mlil::InstructionId, EntityId>,
+}
+
+/// Lifts one MLIL function into structured, expression-oriented HLIL.
+///
+/// # Errors
+///
+/// Returns [`Error::UnsupportedLift`] when the MLIL shape has no HLIL
+/// translation (multi-result instructions, conditional blocks whose
+/// terminator the dialect did not classify as a branch, switch case edges
+/// without values), and a verification error when the assembled function
+/// violates an HLIL invariant.
+pub fn lift_function<D>(source: &mlil::Function<D>) -> Result<LiftedFunction<D>>
+where
+    D: LiftDialect + VerifyDialect,
+{
+    let (ast, report) = source.structured_control_flow_with_report();
+    let mut lifter = Lifter::new(source)?;
+    let body = lifter.translate_node(&ast)?;
+    lifter.builder.set_body(body)?;
+    let function = lifter.builder.finish()?;
+    Ok(LiftedFunction {
+        function,
+        report,
+        instructions: lifter.instructions,
+    })
+}
+
+pub(super) struct Lifter<'a, D: LiftDialect> {
+    pub(super) source: &'a mlil::Function<D>,
+    pub(super) builder: FunctionBuilder<D>,
+    pub(super) liveness: Liveness<mlil::VariableId>,
+    pub(super) spans: BTreeMap<mlil::InstructionId, Vec<D::SourceSpan>>,
+    pub(super) instructions: BTreeMap<mlil::InstructionId, EntityId>,
+    contexts: Vec<Context>,
+}
+
+/// One enclosing breakable construct during statement translation.
+struct Context {
+    /// The loop's label when the construct is a loop; `None` for a switch.
+    loop_label: Option<String>,
+    /// Set when an unlabeled AST break had to name this loop explicitly.
+    needs_label: bool,
+}
+
+impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
+    fn new(source: &'a mlil::Function<D>) -> Result<Self> {
+        let mut builder = FunctionBuilder::new(source.source().clone());
+        for variable in source.variables() {
+            builder.declare_variable(variable.role.clone(), variable.native.clone(), None)?;
+        }
+        let signature = source.signature();
+        builder.set_signature(Signature::<D>::new(
+            signature
+                .parameters
+                .iter()
+                .map(|parameter| VariableId::from_raw(parameter.raw()))
+                .collect(),
+            signature.returns.clone(),
+        ))?;
+        let mut spans: BTreeMap<mlil::InstructionId, Vec<D::SourceSpan>> = BTreeMap::new();
+        for entry in source.provenance().entries() {
+            match entry.entity {
+                mlil::EntityId::Instruction(instruction) => {
+                    spans
+                        .entry(instruction)
+                        .or_default()
+                        .push(entry.source.clone());
+                }
+                mlil::EntityId::Variable(variable) => {
+                    builder.map_entity(
+                        entry.source.clone(),
+                        EntityId::Variable(VariableId::from_raw(variable.raw())),
+                    )?;
+                }
+                mlil::EntityId::Block(_) | mlil::EntityId::Edge(_) => {}
+            }
+        }
+        Ok(Self {
+            source,
+            builder,
+            liveness: source.liveness(),
+            spans,
+            instructions: BTreeMap::new(),
+            contexts: Vec::new(),
+        })
+    }
+
+    /// Records the HLIL entity carrying one MLIL instruction, composing its
+    /// source spans onto the new entity.
+    pub(super) fn map_instruction(
+        &mut self,
+        instruction: mlil::InstructionId,
+        entity: EntityId,
+    ) -> Result<()> {
+        self.instructions.insert(instruction, entity);
+        if let Some(spans) = self.spans.get(&instruction) {
+            for span in spans.clone() {
+                self.builder.map_entity(span, entity)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn block_label(&self, block: BlockId) -> String {
+        self.source
+            .cfg()
+            .block(block)
+            .label()
+            .map_or_else(|| format!(".bb{}", block.index()), String::from)
+    }
+
+    fn translate_nodes(
+        &mut self,
+        nodes: &[AstNode<mlil::Instruction<D>>],
+    ) -> Result<Vec<StatementId>> {
+        let mut statements = Vec::new();
+        for node in nodes {
+            statements.extend(self.translate_node(node)?);
+        }
+        Ok(statements)
+    }
+
+    fn translate_node(&mut self, node: &AstNode<mlil::Instruction<D>>) -> Result<Vec<StatementId>> {
+        match node {
+            AstNode::Sequence { body } => self.translate_nodes(body),
+            AstNode::Block { id, instructions } | AstNode::Return { id, instructions } => {
+                let (statements, _) = self.translate_list(*id, instructions, Expect::Statements)?;
+                Ok(statements)
+            }
+            AstNode::IfThenElse {
+                condition,
+                condition_instructions,
+                then_body,
+                else_body,
+            } => self.translate_if(*condition, condition_instructions, then_body, else_body),
+            AstNode::Loop { header, kind, body } => self.translate_loop(*header, kind, body, None),
+            AstNode::Switch {
+                condition,
+                condition_instructions,
+                cases,
+                default_body,
+                ..
+            } => self.translate_switch(*condition, condition_instructions, cases, default_body),
+            AstNode::Break { label } => {
+                let label = match label {
+                    Some(label) => Some(label.clone()),
+                    None => self.break_label(),
+                };
+                Ok(vec![
+                    self.builder
+                        .add_statement(StatementKind::Break { label }, None)?,
+                ])
+            }
+            AstNode::Continue { label } => Ok(vec![self.builder.add_statement(
+                StatementKind::Continue {
+                    label: label.clone(),
+                },
+                None,
+            )?]),
+            AstNode::Label { name, body } => {
+                // A label wrapping exactly one loop names that loop, so
+                // labeled breaks resolve without a second wrapper.
+                if let [AstNode::Loop { header, kind, body }] = body.as_slice() {
+                    return self.translate_loop(*header, kind, body, Some(name.clone()));
+                }
+                let statements = self.translate_nodes(body)?;
+                Ok(vec![self.builder.add_statement(
+                    StatementKind::Labeled {
+                        label: name.clone(),
+                        body: statements,
+                    },
+                    None,
+                )?])
+            }
+            AstNode::Goto { target } => Ok(vec![self.builder.add_statement(
+                StatementKind::Goto {
+                    label: target.clone(),
+                },
+                None,
+            )?]),
+            AstNode::TryCatch {
+                try_body,
+                handlers,
+                finally_body,
+            } => self.translate_try(try_body, handlers, finally_body),
+            AstNode::Guarded { .. } => Err(Error::UnsupportedLift(
+                "predicated regions have no HLIL translation".into(),
+            )),
+        }
+    }
+
+    fn translate_if(
+        &mut self,
+        condition: BlockId,
+        condition_instructions: &[mlil::Instruction<D>],
+        then_body: &[AstNode<mlil::Instruction<D>>],
+        else_body: &[AstNode<mlil::Instruction<D>>],
+    ) -> Result<Vec<StatementId>> {
+        let (mut statements, end) =
+            self.translate_list(condition, condition_instructions, Expect::Branch)?;
+        let ListEnd {
+            value: condition_expression,
+            instruction,
+        } = end.expect("Expect::Branch guarantees a branch end");
+        let then_statements = self.translate_nodes(then_body)?;
+        let else_statements = self.translate_nodes(else_body)?;
+        let statement = self.builder.add_statement(
+            StatementKind::If {
+                condition: condition_expression,
+                then_body: then_statements,
+                else_body: else_statements,
+            },
+            None,
+        )?;
+        self.map_instruction(instruction, EntityId::Statement(statement))?;
+        statements.push(statement);
+        Ok(statements)
+    }
+
+    fn translate_try(
+        &mut self,
+        try_body: &[AstNode<mlil::Instruction<D>>],
+        handlers: &[crate::ir::ast::CatchHandler<mlil::Instruction<D>>],
+        finally_body: &[AstNode<mlil::Instruction<D>>],
+    ) -> Result<Vec<StatementId>> {
+        let body = self.translate_nodes(try_body)?;
+        let mut lifted_handlers = Vec::new();
+        for handler in handlers {
+            let kind = match handler.kind {
+                region::HandlerKind::Catch => HandlerKind::Catch,
+                region::HandlerKind::CatchAll => HandlerKind::CatchAll,
+                region::HandlerKind::Fault => HandlerKind::Fault,
+                // The funclet is emitted separately by the sweep; its
+                // predicate has no structured body here.
+                region::HandlerKind::Filter { .. } => HandlerKind::Filter {
+                    filter_body: Vec::new(),
+                },
+                region::HandlerKind::Finally => {
+                    return Err(Error::UnsupportedLift(
+                        "a finally handler arm outside the finally body".into(),
+                    ));
+                }
+            };
+            lifted_handlers.push(Handler {
+                kind,
+                binding: None,
+                caught_types: Vec::new(),
+                body: self.translate_nodes(&handler.body)?,
+            });
+        }
+        let finally_statements = self.translate_nodes(finally_body)?;
+        Ok(vec![self.builder.add_statement(
+            StatementKind::Try {
+                body,
+                handlers: lifted_handlers,
+                finally_body: finally_statements,
+            },
+            None,
+        )?])
+    }
+
+    /// The explicit label an unlabeled AST break needs: at the AST level a
+    /// plain break always exits the innermost **loop**, while an unlabeled
+    /// HLIL break exits the innermost loop *or switch* — so a break inside
+    /// an intervening switch names its loop.
+    fn break_label(&mut self) -> Option<String> {
+        let mut crossed_switch = false;
+        for context in self.contexts.iter_mut().rev() {
+            match &context.loop_label {
+                None => crossed_switch = true,
+                Some(label) => {
+                    if crossed_switch {
+                        context.needs_label = true;
+                        return Some(label.clone());
+                    }
+                    return None;
+                }
+            }
+        }
+        None
+    }
+
+    fn translate_switch(
+        &mut self,
+        condition: BlockId,
+        condition_instructions: &[mlil::Instruction<D>],
+        cases: &[crate::ir::ast::SwitchCase<mlil::Instruction<D>>],
+        default_body: &[AstNode<mlil::Instruction<D>>],
+    ) -> Result<Vec<StatementId>> {
+        let (mut statements, end) =
+            self.translate_list(condition, condition_instructions, Expect::Switch)?;
+        let ListEnd {
+            value: scrutinee,
+            instruction,
+        } = end.expect("Expect::Switch guarantees a dispatch end");
+        self.contexts.push(Context {
+            loop_label: None,
+            needs_label: false,
+        });
+        let mut arms = Vec::new();
+        for case in cases {
+            let mut values = Vec::new();
+            for &edge in &case.edges {
+                values.extend(D::case_values(self.source.cfg().edge(edge).payload()));
+            }
+            if values.is_empty() {
+                self.contexts.pop();
+                return Err(Error::UnsupportedLift(format!(
+                    "switch case at block {} has no case values",
+                    case.id
+                )));
+            }
+            let body = self.translate_nodes(&case.body)?;
+            arms.push(super::SwitchArm { values, body });
+        }
+        let default_statements = self.translate_nodes(default_body)?;
+        self.contexts.pop();
+        let statement = self.builder.add_statement(
+            StatementKind::Switch {
+                scrutinee,
+                cases: arms,
+                default_body: default_statements,
+            },
+            None,
+        )?;
+        self.map_instruction(instruction, EntityId::Statement(statement))?;
+        statements.push(statement);
+        Ok(statements)
+    }
+
+    fn translate_loop(
+        &mut self,
+        header: BlockId,
+        kind: &LoopKind<mlil::Instruction<D>>,
+        body: &[AstNode<mlil::Instruction<D>>],
+        outer_label: Option<String>,
+    ) -> Result<Vec<StatementId>> {
+        let label = outer_label
+            .clone()
+            .unwrap_or_else(|| self.block_label(header));
+        self.contexts.push(Context {
+            loop_label: Some(label.clone()),
+            needs_label: false,
+        });
+        let lifted = self.translate_loop_kind(header, kind, body);
+        let context = self
+            .contexts
+            .pop()
+            .expect("the loop context pushed above is still on the stack");
+        let statement = lifted?;
+        if context.needs_label && outer_label.is_none() {
+            return Ok(vec![self.builder.add_statement(
+                StatementKind::Labeled {
+                    label,
+                    body: vec![statement],
+                },
+                None,
+            )?]);
+        }
+        if let Some(label) = outer_label {
+            return Ok(vec![self.builder.add_statement(
+                StatementKind::Labeled {
+                    label,
+                    body: vec![statement],
+                },
+                None,
+            )?]);
+        }
+        Ok(vec![statement])
+    }
+
+    fn translate_loop_kind(
+        &mut self,
+        header: BlockId,
+        kind: &LoopKind<mlil::Instruction<D>>,
+        body: &[AstNode<mlil::Instruction<D>>],
+    ) -> Result<StatementId> {
+        match kind {
+            LoopKind::Endless => {
+                let statements = self.translate_nodes(body)?;
+                Ok(self
+                    .builder
+                    .add_statement(StatementKind::Loop { body: statements }, None)?)
+            }
+            LoopKind::While {
+                condition,
+                exit_on_true,
+            } => {
+                let (condition_statements, end) =
+                    self.translate_list(header, condition, Expect::Branch)?;
+                let ListEnd { value, instruction } =
+                    end.expect("Expect::Branch guarantees a branch end");
+                let body_statements = self.translate_nodes(body)?;
+                if condition_statements.is_empty() {
+                    if let Some(value) = self.loop_condition(value, *exit_on_true)? {
+                        let statement = self.builder.add_statement(
+                            StatementKind::While {
+                                condition: value,
+                                body: body_statements,
+                            },
+                            None,
+                        )?;
+                        self.map_instruction(instruction, EntityId::Statement(statement))?;
+                        return Ok(statement);
+                    }
+                }
+                // The condition needs statements (or an unavailable
+                // negation): state the test explicitly at the loop top.
+                let test = self.exit_test(value, *exit_on_true, instruction)?;
+                let mut loop_body = condition_statements;
+                loop_body.push(test);
+                loop_body.extend(body_statements);
+                Ok(self
+                    .builder
+                    .add_statement(StatementKind::Loop { body: loop_body }, None)?)
+            }
+            LoopKind::DoWhile {
+                latch,
+                condition,
+                continue_on_true,
+            } => {
+                let body_statements = self.translate_nodes(body)?;
+                let (condition_statements, end) =
+                    self.translate_list(*latch, condition, Expect::Branch)?;
+                let ListEnd { value, instruction } =
+                    end.expect("Expect::Branch guarantees a branch end");
+                if condition_statements.is_empty() {
+                    if let Some(value) = self.loop_condition(value, !*continue_on_true)? {
+                        let statement = self.builder.add_statement(
+                            StatementKind::DoWhile {
+                                body: body_statements,
+                                condition: value,
+                            },
+                            None,
+                        )?;
+                        self.map_instruction(instruction, EntityId::Statement(statement))?;
+                        return Ok(statement);
+                    }
+                }
+                // State the post-test explicitly at the loop bottom.
+                let test = self.exit_test(value, !*continue_on_true, instruction)?;
+                let mut loop_body = body_statements;
+                loop_body.extend(condition_statements);
+                loop_body.push(test);
+                Ok(self
+                    .builder
+                    .add_statement(StatementKind::Loop { body: loop_body }, None)?)
+            }
+        }
+    }
+
+    /// The loop-continuation condition, negating when the raw condition
+    /// exits on true; `None` when negation is needed but unavailable.
+    fn loop_condition(
+        &mut self,
+        condition: ExpressionId,
+        exit_on_true: bool,
+    ) -> Result<Option<ExpressionId>> {
+        if !exit_on_true {
+            return Ok(Some(condition));
+        }
+        let Some(negation) = D::logical_not() else {
+            return Ok(None);
+        };
+        let value_type = self
+            .builder
+            .expression(condition)
+            .map_or_else(D::void_type, |expression| expression.value_type().clone());
+        Ok(Some(self.builder.add_expression(
+            ExpressionKind::Operation {
+                operation: negation,
+                operands: vec![condition],
+            },
+            value_type,
+        )?))
+    }
+
+    /// An explicit `if (…) break;` exit test with the given polarity.
+    fn exit_test(
+        &mut self,
+        condition: ExpressionId,
+        exit_on_true: bool,
+        instruction: mlil::InstructionId,
+    ) -> Result<StatementId> {
+        let break_statement = self
+            .builder
+            .add_statement(StatementKind::Break { label: None }, None)?;
+        let (then_body, else_body) = if exit_on_true {
+            (vec![break_statement], Vec::new())
+        } else {
+            (Vec::new(), vec![break_statement])
+        };
+        let statement = self.builder.add_statement(
+            StatementKind::If {
+                condition,
+                then_body,
+                else_body,
+            },
+            None,
+        )?;
+        self.map_instruction(instruction, EntityId::Statement(statement))?;
+        Ok(statement)
+    }
+}

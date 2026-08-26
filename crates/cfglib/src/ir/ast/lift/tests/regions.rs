@@ -1,10 +1,10 @@
 extern crate alloc;
 
 use super::super::lift;
-use super::{contains_block, find_try_catch, find_try_handlers, has_goto_to, has_node_kind, walk};
-use crate::ast::AstNode;
+use super::{contains_block, find_try_catch, find_try_handlers, has_goto_to, has_node_kind};
 use crate::cfg::Cfg;
 use crate::edge::EdgeKind;
+use crate::ir::ast::AstNode;
 use crate::test_util::{MockInst, ff};
 
 #[test]
@@ -313,7 +313,7 @@ fn switch_case_leaving_a_region_stays_as_a_goto() {
 
     let ast = lift(&cfg);
     let mut case_count = None;
-    walk(&ast, &mut |node| {
+    ast.visit(&mut |node| {
         if let AstNode::Switch { cases, .. } = node {
             case_count = Some(cases.len());
         }
@@ -731,7 +731,7 @@ fn try_anchored_at_a_switch_selector_keeps_the_dispatch() {
         "a dispatch anchoring a region keeps its structure inside the try: {ast:?}"
     );
     let mut case_ids = alloc::vec::Vec::new();
-    walk(&inside, &mut |node| {
+    inside.visit(&mut |node| {
         if let AstNode::Switch { cases, .. } = node {
             case_ids.extend(cases.iter().map(|case| case.id));
         }

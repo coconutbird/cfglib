@@ -2,7 +2,7 @@
 
 Generic, `no_std` graph and dataflow framework for code intelligence, program analysis, decompilation, and compiler infrastructure.
 
-`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
+`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Its generic MLIL layer combines a CFG with stable semantic identities, typed variables, checked construction, many-to-many source provenance, and reusable analyses while leaving every language vocabulary in a consumer-defined dialect. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
 
 Everything is `no_std + alloc` and the core graph structure uses `SmallVec` adjacency lists with tombstone-based edge removal for cache-friendly, arena-stable IDs.
 
@@ -97,6 +97,50 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Subgraph extraction | `subgraph()` or `subgraph_mapped()` with dense O(1) block-id remapping and payload cloning |
 | Block splitting | `split_block()`, mapped payload-aware variants, and validated multi-point splitting with automatic stable edge transfer |
 | `serde` feature | Optional serialization support |
+
+### Generic medium-level IR (`ir::mlil`)
+
+`ir::mlil::Function<D>` is a verified semantic function over the same payload-aware
+CFG used by the rest of cfglib. The `Dialect` parameter supplies the operation,
+value-type, effect, edge, source-coordinate, variable-role, and native-variable
+types. `AnalysisDialect` adds constant folding, pure-expression, copy, and call
+hooks; `VerifyDialect` appends semantic invariants after cfglib checks the
+generic graph, identities, def/use tables, edge classification, and provenance.
+
+`ir::mlil::FunctionBuilder<D>` assigns dense stable instruction and variable IDs,
+retains source expansion and fusion through `ProvenanceMap<D>`, records the
+ordered parameter/return `Signature<D>` and validated exception regions
+(`add_region`, `HandlerBody::Unknown` allowed), and exposes a function only
+after verification. The resulting function directly provides dominance, SSA,
+def-use, liveness, constant and expression recovery, copy-propagated and
+dead-code-eliminated views, identity-ordered instruction iteration, and
+structured control flow with a fidelity report.
+No language, runtime, calling convention, opcode, or source-location type is
+built into the representation; those remain in the dialect crate.
+
+### Generic high-level IR (`ir::hlil`)
+
+`ir::hlil::Function<D>` is the structured, expression-oriented level above
+MLIL: statements form trees (assignments, `if`, `while`/`do-while`/`loop`/`for`,
+`switch` over constant case values, `try` with typed handler arms, labeled
+statements and `goto` residue, and a dialect-defined `Region` statement for
+shapes like `synchronized`/`using`), while values nest as typed expression
+trees over the dialect's open operation vocabulary. Every expression is one
+typed occurrence with exactly one parent, and verification enforces tree
+shape, label resolution, and transfer contexts.
+
+The level-independent vocabulary (`Vocabulary`: value types, effects, source
+coordinates, variable roles) is shared with `ir::mlil::Dialect`, so one
+consumer dialect type serves both levels. Two front doors construct HLIL:
+
+| Front door | Description |
+|---|---|
+| `FunctionBuilder<D>` | Checked bottom-up construction for source-language lowering (`add_expression` / `add_statement` / `set_body`) |
+| `lift_function(&mlil::Function<D>)` | Binary/bytecode lifting: structures control flow via `ir::ast`, recognizes `while`/`do-while` conditions, recovers switch case values from dispatch-edge payloads, structures declared exception regions, and inlines single-use definitions into expression trees while provably preserving effect and exception order |
+
+Lifting returns the structuring `LiftReport` plus a per-instruction map from
+MLIL identity to the HLIL statement or expression carrying it, and composes
+MLIL source provenance onto the new entities.
 
 ### Graph algorithms
 
@@ -196,17 +240,23 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Graph coloring | `interference_graph`, `color_graph` | Interference builder uses `DirectedGraph`; coloring accepts any graph view |
 | Linearization | `linearize`, `Emitter` trait, `BlockOrder` | Re-serialize CFG to a flat stream; emitters speak `BlockId`, naming is theirs |
 
-### AST recovery
+### AST recovery (`ir::ast`)
+
+`ir::ast` structures control flow without changing the semantic level of its
+generic instruction payload.
 
 | Feature | Description |
 |---|---|
 | `lift()` → `AstNode<I>` | Recover structured control flow from a CFG |
+| `lift_with_report()` | The same tree plus a `LiftReport`: every emitted goto with its reason, swept blocks, unstructured regions, unresolved labels — per-construct degradation instead of guessing from the tree |
 | `lift_predicated()` | Additionally regionize `Predicated` instruction runs into `Guarded` nodes (ARM IT, GPU wavefront, CMOV) |
-| If/then/else | Diamond and triangle patterns |
-| Loops | While, do-while, infinite; with `break` and `continue` |
-| Switch/case | Multi-way branches with fallthrough |
+| If/then/else | Diamond and triangle patterns; arms stop exactly at the post-dominator merge |
+| Loops | `LoopKind` classifies pre-tested (`While` with condition witness and polarity), post-tested (`DoWhile` with latch), and endless loops from natural-loop membership |
+| Break/continue | Derived from loop follows and continue points — including machine-shaped CFGs — with labeled multi-level forms wrapping the target loop in a `Label` |
+| Switch/case | Case arms carry their dispatch `EdgeId`s (case keys stay on caller edge payloads) and the explicit default arm is captured |
 | Try/catch/finally | From region metadata; unknown or malformed handler extents degrade to explicit `Goto`/`Label` flow — reachable code is never dropped |
-| Label/goto | Fallback for irreducible control flow |
+| Label/goto | Exact post-pass labeling: only blocks a goto actually targets are wrapped |
+| Traversal | `visit`, `for_each_instruction`, and `map_instructions` — the re-leveling hook from opaque payloads to another representation |
 | Pseudocode | `to_pseudocode` via `DisplayInstr` — rendering never requires flow classification |
 
 ## Extension contracts
@@ -241,7 +291,7 @@ SwitchSource              (switch table recovery — associated Target)
 
 | Crate | Description |
 |---|---|
-| **cfglib** | Generic graph, CFG, SSA, and dataflow framework |
+| **cfglib** | Generic graph, CFG, dialect-driven MLIL/HLIL, SSA, and dataflow framework |
 | **cfglib-dxbc** | SM4/SM5 CFG and component-granular SSA adapter over `dxbc` |
 
 ## Adapting a language, IR, or existing graph

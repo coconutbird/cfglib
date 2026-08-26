@@ -14,6 +14,22 @@
 //! instruction-adjacent axis — variables, constants, operators, effects,
 //! branch targets, callees — is consumer-typed rather than imposed by the
 //! library.
+//! [`ir::ast`] reconstructs structured control flow over any instruction
+//! payload without changing its semantic level — loops classified as
+//! pre-/post-tested, switch arms with their dispatch edges and default,
+//! breaks and continues derived from natural-loop membership, and a
+//! [`LiftReport`] naming exactly what degraded to gotos.
+//! [`ir::mlil`] layers stable semantic identities, point-specific types,
+//! many-to-many source provenance, checked construction (including
+//! exception regions and signatures), and reusable analyses over that CFG.
+//! [`ir::hlil`] is the structured, expression-oriented level above it:
+//! statement trees with nested typed expression trees, built either
+//! bottom-up by a source frontend ([`HlilFunctionBuilder`]) or lifted from
+//! MLIL ([`lift_hlil_function`]) with effect-ordered single-use inlining.
+//! Every level's dialect ([`Vocabulary`], [`ir::mlil::Dialect`],
+//! [`ir::hlil::Dialect`]) keeps operations, types, effects, edge meaning,
+//! and source coordinates entirely consumer-defined, so one dialect type
+//! serves source lowering and binary lifting alike.
 //!
 //! # Quick start
 //!
@@ -109,7 +125,6 @@ pub(crate) fn usize_to_f64(value: usize) -> f64 {
 }
 
 pub mod analysis;
-pub mod ast;
 pub mod block;
 pub mod builder;
 pub mod cfg;
@@ -119,6 +134,7 @@ pub mod edge;
 pub mod exception;
 pub mod flow;
 pub mod graph;
+pub mod ir;
 pub mod region;
 pub mod rewrite;
 pub mod transform;
@@ -145,7 +161,6 @@ pub use analysis::tail_call::{TailCall, detect_explicit_tail_calls, detect_tail_
 pub use analysis::value_numbering::{
     BlockValueNumbers, ValueNumber, ValueNumberInfo, ValueNumbering,
 };
-pub use ast::{AstNode, CatchHandler, SwitchCase, lift, lift_predicated};
 pub use block::{BasicBlock, BlockId};
 pub use builder::{BuildError, CfgBuilder, JumpResolution, resolve_jump_edges};
 pub use cfg::{Cfg, Predecessors, SplitPointError, Successors};
@@ -246,6 +261,36 @@ pub use graph::verify::{
     verify_view, verify_with,
 };
 pub use graph::view::{DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView};
+pub use ir::ast::{
+    AstNode, CatchHandler, GotoDiagnostic, GotoReason, LiftReport, LoopKind, SwitchCase, lift,
+    lift_predicated, lift_with_report,
+};
+pub use ir::dialect::Vocabulary;
+pub use ir::hlil::{
+    Dialect as HlilDialect, EntityId as HlilEntityId, Error as HlilError,
+    Expression as HlilExpression, ExpressionId as HlilExpressionId,
+    ExpressionKind as HlilExpressionKind, Function as HlilFunction,
+    FunctionBuilder as HlilFunctionBuilder, Handler as HlilHandler, HandlerKind as HlilHandlerKind,
+    LiftDialect as HlilLiftDialect, Lifted as HlilLifted, LiftedFunction as HlilLiftedFunction,
+    ProvenanceEntry as HlilProvenanceEntry, ProvenanceMap as HlilProvenanceMap,
+    Result as HlilResult, Signature as HlilSignature, Statement as HlilStatement,
+    StatementId as HlilStatementId, StatementKind as HlilStatementKind, SwitchArm as HlilSwitchArm,
+    Variable as HlilVariable, VariableId as HlilVariableId,
+    VerificationIssue as HlilVerificationIssue, VerificationReport as HlilVerificationReport,
+    VerifyDialect as HlilVerifyDialect, lift_function as lift_hlil_function,
+};
+pub use ir::mlil::{
+    AnalysisDialect as MlilAnalysisDialect, Dialect as MlilDialect, EntityId as MlilEntityId,
+    Error as MlilError, Function as MlilFunction, FunctionBuilder as MlilFunctionBuilder,
+    Instruction as MlilInstruction, InstructionId as MlilInstructionId,
+    InstructionMetadata as MlilInstructionMetadata, ProvenanceEntry as MlilProvenanceEntry,
+    ProvenanceMap as MlilProvenanceMap, Result as MlilResult, Signature as MlilSignature,
+    TypedVariable as MlilTypedVariable, Variable as MlilVariable, VariableId as MlilVariableId,
+    VerificationIssue as MlilVerificationIssue, VerificationReport as MlilVerificationReport,
+    VerifyDialect as MlilVerifyDialect,
+};
+pub use ir::provenance::{ProvenanceEntry, ProvenanceError, ProvenanceMap};
+pub use ir::signature::Signature;
 pub use region::{
     Cleanup, CompletionReason, Continuation, Handler, HandlerBody, HandlerFilters, HandlerKind,
     HandlerMetadata, HandlerRef, HandlerTypes, Region, RegionId, RegionIndex,
