@@ -71,6 +71,10 @@ pub enum Error {
     InvalidProvenance(String),
     /// A lifted function's source representation cannot be translated.
     UnsupportedLift(String),
+    /// A lowered function's statement shape cannot be translated.
+    UnsupportedLower(String),
+    /// Lowering produced an invalid MLIL function.
+    Lowering(crate::ir::mlil::Error),
     /// The completed function violates one or more HLIL invariants.
     Verification(VerificationReport),
 }
@@ -87,6 +91,10 @@ impl fmt::Display for Error {
             Self::UnsupportedLift(message) => {
                 write!(formatter, "unsupported HLIL lift: {message}")
             }
+            Self::UnsupportedLower(message) => {
+                write!(formatter, "unsupported HLIL lowering: {message}")
+            }
+            Self::Lowering(error) => write!(formatter, "HLIL lowering failed: {error}"),
             Self::Verification(report) => report.fmt(formatter),
         }
     }
@@ -96,10 +104,18 @@ impl core::error::Error for Error {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
             Self::Verification(report) => Some(report),
+            Self::Lowering(error) => Some(error),
             Self::InvalidConstruction(_)
             | Self::InvalidProvenance(_)
-            | Self::UnsupportedLift(_) => None,
+            | Self::UnsupportedLift(_)
+            | Self::UnsupportedLower(_) => None,
         }
+    }
+}
+
+impl From<crate::ir::mlil::Error> for Error {
+    fn from(error: crate::ir::mlil::Error) -> Self {
+        Self::Lowering(error)
     }
 }
 

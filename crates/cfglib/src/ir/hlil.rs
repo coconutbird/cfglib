@@ -7,11 +7,14 @@
 //! effect, source, and variable vocabularies — the same neutrality
 //! contract as [`ir::mlil`](crate::ir::mlil).
 //!
-//! Two front doors build HLIL:
+//! Three doors move functions through HLIL:
 //! - [`FunctionBuilder`] — checked bottom-up construction, the path for
 //!   source-language frontends lowering syntax trees;
 //! - [`lift_function`] — structuring and expression recovery over an MLIL
-//!   function, the path for binary and bytecode frontends lifting upward.
+//!   function, the path for binary and bytecode frontends lifting upward;
+//! - [`lower_function`] — control-flow flattening and expression
+//!   linearization down to MLIL, the path from lowered source onward to
+//!   flat analyses and consumer code generation.
 
 mod builder;
 mod dialect;
@@ -21,6 +24,7 @@ mod expression;
 mod function;
 mod identity;
 mod lift;
+mod lower;
 mod statement;
 mod variable;
 mod verify;
@@ -32,6 +36,7 @@ pub use expression::{Expression, ExpressionKind};
 pub use function::Function;
 pub use identity::{EntityId, ExpressionId, StatementId, VariableId};
 pub use lift::{LiftDialect, Lifted, LiftedFunction, lift_function};
+pub use lower::{LowerDialect, LoweredFunction, lower_function};
 pub use statement::{Handler, HandlerKind, Statement, StatementKind, SwitchArm};
 pub use variable::Variable;
 

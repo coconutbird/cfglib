@@ -9,8 +9,8 @@ use crate::ir::mlil;
 use crate::{EdgeKind, FlowEffect};
 
 use super::{
-    Dialect, ExpressionKind, FunctionBuilder, LiftDialect, Lifted, Signature, StatementKind,
-    VerificationIssue, VerifyDialect, lift_function,
+    Dialect, ExpressionKind, FunctionBuilder, LiftDialect, Lifted, LowerDialect, Signature,
+    StatementKind, VerificationIssue, VerifyDialect, lift_function,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -86,7 +86,9 @@ enum MediumOperation {
     Copy,
     Add,
     LessThan,
+    Not,
     Call,
+    Store,
     Branch,
     Switch,
     Jump,
@@ -99,6 +101,7 @@ enum Edge {
     True,
     False,
     Fall,
+    Jump,
     Case(i64),
     Except,
 }
@@ -112,7 +115,9 @@ impl mlil::Dialect for Toy {
         may_throw: bool,
     ) -> mlil::InstructionMetadata<Self::Effect> {
         let (effects, flow) = match operation {
-            MediumOperation::Call => (vec![Effect::Io], FlowEffect::Fallthrough),
+            MediumOperation::Call | MediumOperation::Store => {
+                (vec![Effect::Io], FlowEffect::Fallthrough)
+            }
             MediumOperation::Branch => (Vec::new(), FlowEffect::ConditionalJump),
             MediumOperation::Switch => (Vec::new(), FlowEffect::IndirectJump),
             MediumOperation::Jump => (Vec::new(), FlowEffect::Jump),
@@ -128,7 +133,9 @@ impl mlil::Dialect for Toy {
             MediumOperation::Copy => "copy",
             MediumOperation::Add => "add",
             MediumOperation::LessThan => "lt",
+            MediumOperation::Not => "not",
             MediumOperation::Call => "call",
+            MediumOperation::Store => "store",
             MediumOperation::Branch => "branch",
             MediumOperation::Switch => "switch",
             MediumOperation::Jump => "jump",
@@ -141,6 +148,7 @@ impl mlil::Dialect for Toy {
             Edge::Entry | Edge::Fall => EdgeKind::Fallthrough,
             Edge::True => EdgeKind::ConditionalTrue,
             Edge::False => EdgeKind::ConditionalFalse,
+            Edge::Jump => EdgeKind::Jump,
             Edge::Case(_) => EdgeKind::SwitchCase,
             Edge::Except => EdgeKind::ExceptionHandler,
         }
@@ -196,13 +204,16 @@ impl LiftDialect for Toy {
         match operation {
             MediumOperation::Add => Lifted::Operation(Operation::Add),
             MediumOperation::LessThan => Lifted::Operation(Operation::LessThan),
+            MediumOperation::Not => Lifted::Operation(Operation::Not),
             MediumOperation::Call => Lifted::Operation(Operation::Call),
             MediumOperation::Branch => Lifted::Branch,
             MediumOperation::Switch => Lifted::Switch,
             MediumOperation::Return => Lifted::Return,
-            MediumOperation::Jump | MediumOperation::Constant(_) | MediumOperation::Copy => {
-                Lifted::ControlFlow
-            }
+            // Stores are not exercised by these tests.
+            MediumOperation::Store
+            | MediumOperation::Jump
+            | MediumOperation::Constant(_)
+            | MediumOperation::Copy => Lifted::ControlFlow,
         }
     }
 
@@ -219,6 +230,81 @@ impl LiftDialect for Toy {
 
     fn logical_not() -> Option<Operation> {
         Some(Operation::Not)
+    }
+}
+
+impl LowerDialect for Toy {
+    fn lower_operation(operation: &Operation) -> MediumOperation {
+        match operation {
+            Operation::Add => MediumOperation::Add,
+            Operation::LessThan => MediumOperation::LessThan,
+            Operation::Not => MediumOperation::Not,
+            Operation::Call => MediumOperation::Call,
+        }
+    }
+
+    fn lower_constant(constant: &i64) -> MediumOperation {
+        MediumOperation::Constant(*constant)
+    }
+
+    fn copy_operation() -> MediumOperation {
+        MediumOperation::Copy
+    }
+
+    fn store_operation(_location: &Operation) -> MediumOperation {
+        MediumOperation::Store
+    }
+
+    fn branch_operation() -> MediumOperation {
+        MediumOperation::Branch
+    }
+
+    fn switch_operation() -> MediumOperation {
+        MediumOperation::Switch
+    }
+
+    fn return_operation() -> MediumOperation {
+        MediumOperation::Return
+    }
+
+    fn temporary_role() -> u8 {
+        1
+    }
+
+    fn operation_may_throw(operation: &MediumOperation) -> bool {
+        *operation == MediumOperation::Call
+    }
+
+    fn entry_edge() -> Edge {
+        Edge::Entry
+    }
+
+    fn fallthrough_edge() -> Edge {
+        Edge::Fall
+    }
+
+    fn jump_edge() -> Edge {
+        Edge::Jump
+    }
+
+    fn true_edge() -> Edge {
+        Edge::True
+    }
+
+    fn false_edge() -> Edge {
+        Edge::False
+    }
+
+    fn case_edge(value: &i64) -> Edge {
+        Edge::Case(*value)
+    }
+
+    fn default_edge() -> Edge {
+        Edge::Fall
+    }
+
+    fn unwind_edge() -> Edge {
+        Edge::Except
     }
 }
 
@@ -624,7 +710,6 @@ fn lift_structures_declared_exception_regions() {
     assert!(pseudo.contains("v0 = call();"), "{pseudo}");
     assert!(pseudo.contains("return v0;"), "{pseudo}");
 }
-
 #[test]
 fn effectful_definitions_inline_only_when_order_is_preserved() {
     let mut builder = mlil::FunctionBuilder::<Toy>::new("toy::calls".into());
@@ -714,3 +799,6 @@ fn effectful_definitions_inline_only_when_order_is_preserved() {
     assert!(second < third, "{pseudo}");
     assert!(pseudo.contains("return v2;"), "{pseudo}");
 }
+
+/// HLIL → MLIL lowering tests, split out to respect the source-size policy.
+mod lowering;

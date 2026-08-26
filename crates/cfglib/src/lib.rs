@@ -25,7 +25,9 @@
 //! [`ir::hlil`] is the structured, expression-oriented level above it:
 //! statement trees with nested typed expression trees, built either
 //! bottom-up by a source frontend ([`HlilFunctionBuilder`]) or lifted from
-//! MLIL ([`lift_hlil_function`]) with effect-ordered single-use inlining.
+//! MLIL ([`lift_hlil_function`]) with effect-ordered single-use inlining,
+//! and lowered back to flat MLIL ([`lower_hlil_function`]) so both
+//! directions of the pipeline meet at either level.
 //! Every level's dialect ([`Vocabulary`], [`ir::mlil::Dialect`],
 //! [`ir::hlil::Dialect`]) keeps operations, types, effects, edge meaning,
 //! and source coordinates entirely consumer-defined, so one dialect type
@@ -272,12 +274,14 @@ pub use ir::hlil::{
     ExpressionKind as HlilExpressionKind, Function as HlilFunction,
     FunctionBuilder as HlilFunctionBuilder, Handler as HlilHandler, HandlerKind as HlilHandlerKind,
     LiftDialect as HlilLiftDialect, Lifted as HlilLifted, LiftedFunction as HlilLiftedFunction,
+    LowerDialect as HlilLowerDialect, LoweredFunction as HlilLoweredFunction,
     ProvenanceEntry as HlilProvenanceEntry, ProvenanceMap as HlilProvenanceMap,
     Result as HlilResult, Signature as HlilSignature, Statement as HlilStatement,
     StatementId as HlilStatementId, StatementKind as HlilStatementKind, SwitchArm as HlilSwitchArm,
     Variable as HlilVariable, VariableId as HlilVariableId,
     VerificationIssue as HlilVerificationIssue, VerificationReport as HlilVerificationReport,
     VerifyDialect as HlilVerifyDialect, lift_function as lift_hlil_function,
+    lower_function as lower_hlil_function,
 };
 pub use ir::mlil::{
     AnalysisDialect as MlilAnalysisDialect, Dialect as MlilDialect, EntityId as MlilEntityId,

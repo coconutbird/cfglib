@@ -126,6 +126,12 @@ impl<D: Dialect> FunctionBuilder<D> {
         self.cfg.entry()
     }
 
+    /// Returns the number of blocks, including the synthetic root.
+    #[must_use]
+    pub fn block_count(&self) -> usize {
+        self.cfg.block_count()
+    }
+
     /// Allocates a semantic block with a diagnostic label.
     pub fn new_block(&mut self, label: impl Into<String>) -> BlockId {
         let block = self.cfg.new_block();

@@ -131,16 +131,18 @@ shape, label resolution, and transfer contexts.
 
 The level-independent vocabulary (`Vocabulary`: value types, effects, source
 coordinates, variable roles) is shared with `ir::mlil::Dialect`, so one
-consumer dialect type serves both levels. Two front doors construct HLIL:
+consumer dialect type serves both levels. Three doors move functions through
+HLIL:
 
-| Front door | Description |
+| Door | Description |
 |---|---|
 | `FunctionBuilder<D>` | Checked bottom-up construction for source-language lowering (`add_expression` / `add_statement` / `set_body`) |
 | `lift_function(&mlil::Function<D>)` | Binary/bytecode lifting: structures control flow via `ir::ast`, recognizes `while`/`do-while` conditions, recovers switch case values from dispatch-edge payloads, structures declared exception regions, and inlines single-use definitions into expression trees while provably preserving effect and exception order |
+| `lower_function(&hlil::Function<D>)` | The downward mirror: statements flatten to blocks and edges with lazy join materialization, expression trees linearize into typed temporaries, loops/switches/labels wire their transfers, and declared `try` regions register with known handler extents and unwind edges — producing a verified `mlil::Function` for flat analyses or consumer code generation |
 
-Lifting returns the structuring `LiftReport` plus a per-instruction map from
-MLIL identity to the HLIL statement or expression carrying it, and composes
-MLIL source provenance onto the new entities.
+Both level bridges return per-instruction maps between MLIL identities and
+the HLIL entities carrying them, and compose source provenance across the
+translation, so source maps survive in either direction.
 
 ### Graph algorithms
 
