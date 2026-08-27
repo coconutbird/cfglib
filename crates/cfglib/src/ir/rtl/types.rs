@@ -18,6 +18,11 @@ use core::fmt::Debug;
 /// contract. `merge` must be commutative, and merging equal constraints
 /// must yield that constraint back.
 pub trait Constraint: Clone + Debug + Eq {
+    /// External context merging consults — a class hierarchy, a type
+    /// table — passed through [`lift`](super::lift()) by the caller.
+    /// `()` when the constraint values are self-contained.
+    type Context: ?Sized;
+
     /// The unconstrained element: observing it imposes nothing.
     fn free() -> Self;
 
@@ -25,13 +30,13 @@ pub trait Constraint: Clone + Debug + Eq {
     fn conflicted() -> Self;
 
     /// The merge of two observations, or `None` for a genuine conflict.
-    fn merge(&self, other: &Self) -> Option<Self>;
+    fn merge(&self, other: &Self, context: &Self::Context) -> Option<Self>;
 
     /// The lane width in bits, when the constraint fixes one.
     ///
     /// Reinterpretation validation treats an unknown width as compatible
-    /// with anything, and constants carry [`words`](Self::words) 64-bit
-    /// words per lane.
+    /// with anything, and constants carry
+    /// [`word_count`](Self::word_count) 64-bit words per lane.
     fn width(&self) -> Option<u32> {
         None
     }
@@ -39,7 +44,7 @@ pub trait Constraint: Clone + Debug + Eq {
     /// The number of 64-bit words one lane's bit pattern occupies in a
     /// constant — the width rounded up to whole words, one word when the
     /// constraint fixes no width.
-    fn words(&self) -> usize {
+    fn word_count(&self) -> usize {
         self.width().map_or(1, |width| width.div_ceil(64) as usize)
     }
 }
@@ -124,7 +129,7 @@ impl ScalarType {
     /// constant — `width` rounded up to whole words, one word when the
     /// interpretation fixes no width.
     #[must_use]
-    pub const fn words(self) -> usize {
+    pub const fn word_count(self) -> usize {
         match self.width() {
             Some(width) => width.div_ceil(64) as usize,
             None => 1,
@@ -151,6 +156,8 @@ impl ScalarType {
 }
 
 impl Constraint for ScalarType {
+    type Context = ();
+
     fn free() -> Self {
         Self::Bits
     }
@@ -159,7 +166,7 @@ impl Constraint for ScalarType {
         Self::Bits
     }
 
-    fn merge(&self, other: &Self) -> Option<Self> {
+    fn merge(&self, other: &Self, (): &()) -> Option<Self> {
         if self == other {
             return Some(*self);
         }
@@ -194,13 +201,13 @@ impl<C: Constraint> Inference<C> {
     ///
     /// [`Constraint::free`] observations impose nothing and leave the
     /// state untouched; unmergeable observations conflict permanently.
-    pub fn observe(&mut self, constraint: &C) {
+    pub fn observe(&mut self, constraint: &C, context: &C::Context) {
         if *constraint == C::free() {
             return;
         }
         *self = match &*self {
             Self::Unseen => Self::Known(constraint.clone()),
-            Self::Known(known) => match known.merge(constraint) {
+            Self::Known(known) => match known.merge(constraint, context) {
                 Some(merged) => Self::Known(merged),
                 None => Self::Conflict,
             },
@@ -226,7 +233,7 @@ pub type ScalarInference = Inference<ScalarType>;
 
 /// The shape of one value: a lane constraint across `lanes` lanes.
 ///
-/// A lane's bit pattern travels as [`Constraint::words`] little-endian
+/// A lane's bit pattern travels as [`Constraint::word_count`] little-endian
 /// 64-bit words in constants, so constraints up to 512 bits stay one
 /// lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

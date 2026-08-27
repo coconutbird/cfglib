@@ -1,7 +1,7 @@
 //! A managed-language test dialect: verifier-style reference
-//! constraints over a class hierarchy, exceptional edges carrying exact
-//! throw sites, dispatch, semantic multi-instruction emission, and the
-//! MLIL → RTL lowering direction.
+//! constraints over a class hierarchy, distinct per-level edge
+//! vocabularies with exact throw-site identities, dispatch, semantic
+//! multi-instruction emission, and the MLIL → RTL lowering direction.
 
 extern crate alloc;
 
@@ -17,8 +17,47 @@ use crate::ir::mlil::{self, InstructionId, InstructionMetadata, TypedVariable};
 
 use super::super::{
     Constraint, Dialect, EdgeContext, Emission, Expr, FunctionBuilder, Lift, LiftedStatement,
-    Lower, LowerContext, Place, Result, ScalarType, Shape, Statement, VarExpr, lift, lower,
+    Lower, LowerContext, LowerEdgeContext, Place, Placement, Result, ScalarType, Shape, Statement,
+    StatementId, VarExpr, lift, lower,
 };
+
+/// Exceptional-flow tests: throw-site ownership, continuation splits,
+/// emission validation, and cross-domain edge remapping.
+mod exceptional;
+
+/// A two-level class hierarchy: `parents` maps each class to its
+/// superclass; class 0 is the root.
+#[derive(Debug, Clone, Default)]
+struct Hierarchy {
+    parents: BTreeMap<u8, u8>,
+}
+
+impl Hierarchy {
+    fn ancestors(&self, class: u8) -> Vec<u8> {
+        let mut chain = vec![class];
+        let mut cursor = class;
+        while let Some(&parent) = self.parents.get(&cursor) {
+            chain.push(parent);
+            cursor = parent;
+        }
+        chain
+    }
+
+    /// The nearest common ancestor of two classes.
+    fn join(&self, a: u8, b: u8) -> u8 {
+        let ancestors = self.ancestors(b);
+        self.ancestors(a)
+            .into_iter()
+            .find(|class| ancestors.contains(class))
+            .unwrap_or(0)
+    }
+}
+
+fn hierarchy() -> Hierarchy {
+    Hierarchy {
+        parents: [(1, 0), (2, 0)].into_iter().collect(),
+    }
+}
 
 /// Verifier-style lane constraints over a two-level class hierarchy:
 /// class 0 is the root, classes 1 and 2 extend it.
@@ -36,11 +75,9 @@ enum JvmConstraint {
     Conflict,
 }
 
-fn superclass(a: u8, b: u8) -> u8 {
-    if a == b { a } else { 0 }
-}
-
 impl Constraint for JvmConstraint {
+    type Context = Hierarchy;
+
     fn free() -> Self {
         Self::Unknown
     }
@@ -49,13 +86,11 @@ impl Constraint for JvmConstraint {
         Self::Conflict
     }
 
-    fn merge(&self, other: &Self) -> Option<Self> {
+    fn merge(&self, other: &Self, context: &Hierarchy) -> Option<Self> {
         match (self, other) {
             (a, b) if a == b => Some(*a),
-            (Self::Word(a), Self::Word(b)) => Constraint::merge(a, b).map(Self::Word),
-            (Self::Reference(a), Self::Reference(b)) => {
-                Some(Self::Reference(superclass(*a, *b)))
-            }
+            (Self::Word(a), Self::Word(b)) => Constraint::merge(a, b, &()).map(Self::Word),
+            (Self::Reference(a), Self::Reference(b)) => Some(Self::Reference(context.join(*a, *b))),
             (Self::Reference(class), Self::Null) | (Self::Null, Self::Reference(class)) => {
                 Some(Self::Reference(*class))
             }
@@ -73,10 +108,22 @@ impl Constraint for JvmConstraint {
 
 type JvmShape = Shape<JvmConstraint>;
 
-/// Exact caller-owned edge metadata, including exceptional edges that
-/// carry their emitted throw site after the lift.
+/// RTL-level edge metadata: an exceptional edge names its owning throw
+/// in the statement identity domain, self-contained at this level.
 #[derive(Debug, Clone, PartialEq, Eq)]
-enum JvmEdge {
+enum JvmRtlEdge {
+    Entry,
+    Fall,
+    True,
+    False,
+    Case(i64),
+    Except { site: Option<StatementId> },
+}
+
+/// MLIL-level edge metadata: an exceptional edge names its exact
+/// emitted throw-site instruction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum JvmMlilEdge {
     Entry,
     Fall,
     True,
@@ -142,7 +189,7 @@ impl Dialect for Managed {
     type Constraint = JvmConstraint;
     type Operator = Operator;
     type EffectOp = EffectOp;
-    type Edge = JvmEdge;
+    type Edge = JvmRtlEdge;
 
     fn mnemonic(operator: &Self::Operator) -> &str {
         match operator {
@@ -162,22 +209,22 @@ impl Dialect for Managed {
 
     fn edge_kind(edge: &Self::Edge) -> EdgeKind {
         match edge {
-            JvmEdge::Entry | JvmEdge::Fall => EdgeKind::Fallthrough,
-            JvmEdge::True => EdgeKind::ConditionalTrue,
-            JvmEdge::False => EdgeKind::ConditionalFalse,
-            JvmEdge::Case(_) => EdgeKind::SwitchCase,
-            JvmEdge::Except { .. } => EdgeKind::ExceptionHandler,
+            JvmRtlEdge::Entry | JvmRtlEdge::Fall => EdgeKind::Fallthrough,
+            JvmRtlEdge::True => EdgeKind::ConditionalTrue,
+            JvmRtlEdge::False => EdgeKind::ConditionalFalse,
+            JvmRtlEdge::Case(_) => EdgeKind::SwitchCase,
+            JvmRtlEdge::Except { .. } => EdgeKind::ExceptionHandler,
         }
     }
 
     fn is_entry_edge(edge: &Self::Edge) -> bool {
-        *edge == JvmEdge::Entry
+        *edge == JvmRtlEdge::Entry
     }
 }
 
 impl mlil::Dialect for Managed {
     type Operation = LiftedStatement<Managed>;
-    type Edge = JvmEdge;
+    type Edge = JvmMlilEdge;
 
     fn instruction_metadata(
         operation: &Self::Operation,
@@ -199,11 +246,17 @@ impl mlil::Dialect for Managed {
     }
 
     fn edge_kind(edge: &Self::Edge) -> EdgeKind {
-        <Managed as Dialect>::edge_kind(edge)
+        match edge {
+            JvmMlilEdge::Entry | JvmMlilEdge::Fall => EdgeKind::Fallthrough,
+            JvmMlilEdge::True => EdgeKind::ConditionalTrue,
+            JvmMlilEdge::False => EdgeKind::ConditionalFalse,
+            JvmMlilEdge::Case(_) => EdgeKind::SwitchCase,
+            JvmMlilEdge::Except { .. } => EdgeKind::ExceptionHandler,
+        }
     }
 
     fn is_entry_edge(edge: &Self::Edge) -> bool {
-        <Managed as Dialect>::is_entry_edge(edge)
+        *edge == JvmMlilEdge::Entry
     }
 }
 
@@ -258,10 +311,10 @@ impl hlil::LiftDialect for Managed {
         operation.lifted()
     }
 
-    fn case_values(edge: &JvmEdge) -> Vec<Vec<u64>> {
+    fn case_values(edge: &JvmMlilEdge) -> Vec<Vec<u64>> {
         match edge {
             #[expect(clippy::cast_sign_loss, reason = "case value as raw pattern")]
-            JvmEdge::Case(value) => vec![vec![*value as u64]],
+            JvmMlilEdge::Case(value) => vec![vec![*value as u64]],
             _ => Vec::new(),
         }
     }
@@ -307,15 +360,18 @@ impl Lift for Managed {
                 Ok(())
             }
             // Semantic expansion: an addition computes into a dialect
-            // temporary, then commits to the native target — two MLIL
-            // instructions from one statement, throw site on the first.
+            // temporary, then commits to the native target in a fresh
+            // continuation block — two MLIL instructions from one
+            // statement, the throw site terminal in its block, native
+            // state committed only on the normal path.
             LiftedStatement::Assign {
                 positions,
                 width,
-                value: VarExpr::Apply {
-                    operator: Operator::Add,
-                    ..
-                },
+                value:
+                    VarExpr::Apply {
+                        operator: Operator::Add,
+                        ..
+                    },
                 ..
             } => {
                 let target = context
@@ -327,6 +383,7 @@ impl Lift for Managed {
                 let reads = context.reads().to_vec();
                 let may_throw = context.may_throw();
                 context.append(compute, reads, vec![temporary.clone()], may_throw)?;
+                context.continuation(JvmMlilEdge::Fall)?;
                 let commit = LiftedStatement::Assign {
                     positions: positions.clone(),
                     width: *width,
@@ -347,27 +404,43 @@ impl Lift for Managed {
         }
     }
 
-    fn lift_edge(edge: &JvmEdge, context: &EdgeContext<'_>) -> JvmEdge {
+    fn lift_edge(edge: &JvmRtlEdge, context: &EdgeContext<'_>) -> JvmMlilEdge {
         match edge {
-            JvmEdge::Except { .. } => JvmEdge::Except {
+            JvmRtlEdge::Entry => JvmMlilEdge::Entry,
+            JvmRtlEdge::Fall => JvmMlilEdge::Fall,
+            JvmRtlEdge::True => JvmMlilEdge::True,
+            JvmRtlEdge::False => JvmMlilEdge::False,
+            JvmRtlEdge::Case(value) => JvmMlilEdge::Case(*value),
+            // The exceptional payload crosses into the MLIL identity
+            // domain: the owning statement's emitted throw site.
+            JvmRtlEdge::Except { .. } => JvmMlilEdge::Except {
                 site: context
                     .owner()
                     .and_then(|statement| context.throw_site(statement)),
             },
-            other => other.clone(),
         }
     }
 }
 
 impl Lower for Managed {
-    fn place(
-        _function: &mlil::Function<Self>,
-        variable: mlil::VariableId,
-    ) -> Result<Place<Self>> {
-        Ok(Place {
-            storage: u8::try_from(variable.raw()).unwrap_or(u8::MAX),
-            lanes: vec![0],
-        })
+    fn plan(function: &mlil::Function<Self>) -> Result<Placement<Self>> {
+        // A coordinated whole-function pass: every touched variable gets
+        // a slot in one sweep.
+        let mut placement = Placement::new();
+        for block in function.cfg().blocks() {
+            for instruction in block.instructions() {
+                for &variable in instruction.uses().iter().chain(instruction.defs()) {
+                    placement.assign(
+                        variable,
+                        Place {
+                            storage: u8::try_from(variable.raw()).unwrap_or(u8::MAX),
+                            lanes: vec![0],
+                        },
+                    );
+                }
+            }
+        }
+        Ok(placement)
     }
 
     fn lower_instruction(
@@ -416,9 +489,9 @@ impl Lower for Managed {
             }
             LiftedStatement::Branch { .. } => {
                 let mut operands = reads(context)?;
-                let condition = operands
-                    .pop()
-                    .ok_or_else(|| super::super::Error::Lowering("branch without a condition".into()))?;
+                let condition = operands.pop().ok_or_else(|| {
+                    super::super::Error::Lowering("branch without a condition".into())
+                })?;
                 context.emit(Statement::Branch { condition })?;
                 Ok(())
             }
@@ -444,6 +517,23 @@ impl Lower for Managed {
                 })?;
                 Ok(())
             }
+        }
+    }
+
+    fn lower_edge(edge: &JvmMlilEdge, context: &LowerEdgeContext<'_>) -> JvmRtlEdge {
+        match edge {
+            JvmMlilEdge::Entry => JvmRtlEdge::Entry,
+            JvmMlilEdge::Fall => JvmRtlEdge::Fall,
+            JvmMlilEdge::True => JvmRtlEdge::True,
+            JvmMlilEdge::False => JvmRtlEdge::False,
+            JvmMlilEdge::Case(value) => JvmRtlEdge::Case(*value),
+            // The exceptional payload crosses back into the RTL identity
+            // domain: the owning instruction's lowered statement.
+            JvmMlilEdge::Except { .. } => JvmRtlEdge::Except {
+                site: context
+                    .owner()
+                    .and_then(|instruction| context.statements(instruction).first().copied()),
+            },
         }
     }
 }
@@ -495,11 +585,11 @@ fn reference_constraints_merge_through_the_hierarchy() {
     let then = builder.new_block("then");
     let other = builder.new_block("else");
     let join = builder.new_block("join");
-    builder.add_edge(entry, head, JvmEdge::Entry).unwrap();
-    builder.add_edge(head, then, JvmEdge::True).unwrap();
-    builder.add_edge(head, other, JvmEdge::False).unwrap();
-    builder.add_edge(then, join, JvmEdge::Fall).unwrap();
-    builder.add_edge(other, join, JvmEdge::Fall).unwrap();
+    builder.add_edge(entry, head, JvmRtlEdge::Entry).unwrap();
+    builder.add_edge(head, then, JvmRtlEdge::True).unwrap();
+    builder.add_edge(head, other, JvmRtlEdge::False).unwrap();
+    builder.add_edge(then, join, JvmRtlEdge::Fall).unwrap();
+    builder.add_edge(other, join, JvmRtlEdge::Fall).unwrap();
     builder
         .append(
             head,
@@ -510,10 +600,16 @@ fn reference_constraints_merge_through_the_hierarchy() {
         )
         .unwrap();
     // Slot 0: new A(1) vs new B(2) — merges to the common superclass 0.
-    builder.append(then, slot_write(0, allocate(1)), None).unwrap();
-    builder.append(other, slot_write(0, allocate(2)), None).unwrap();
+    builder
+        .append(then, slot_write(0, allocate(1)), None)
+        .unwrap();
+    builder
+        .append(other, slot_write(0, allocate(2)), None)
+        .unwrap();
     // Slot 1: new A(1) vs null — null yields, the reference survives.
-    builder.append(then, slot_write(1, allocate(1)), None).unwrap();
+    builder
+        .append(then, slot_write(1, allocate(1)), None)
+        .unwrap();
     builder
         .append(
             other,
@@ -528,8 +624,12 @@ fn reference_constraints_merge_through_the_hierarchy() {
         )
         .unwrap();
     // Slot 2: an integer vs a reference — a genuine conflict.
-    builder.append(then, slot_write(2, word_const(7)), None).unwrap();
-    builder.append(other, slot_write(2, allocate(1)), None).unwrap();
+    builder
+        .append(then, slot_write(2, word_const(7)), None)
+        .unwrap();
+    builder
+        .append(other, slot_write(2, allocate(1)), None)
+        .unwrap();
     for slot in 0..3u8 {
         builder
             .append(
@@ -544,7 +644,7 @@ fn reference_constraints_merge_through_the_hierarchy() {
         .unwrap();
     let function = builder.finish().unwrap();
 
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &hierarchy()).unwrap();
     let constraint = |storage: u8| {
         lifting
             .webs
@@ -570,13 +670,13 @@ fn dispatch_lifts_to_a_structured_switch() {
     let two = builder.new_block("two");
     let fallback = builder.new_block("fallback");
     let merge = builder.new_block("merge");
-    builder.add_edge(entry, head, JvmEdge::Entry).unwrap();
-    builder.add_edge(head, one, JvmEdge::Case(1)).unwrap();
-    builder.add_edge(head, two, JvmEdge::Case(2)).unwrap();
-    builder.add_edge(head, fallback, JvmEdge::Fall).unwrap();
-    builder.add_edge(one, merge, JvmEdge::Fall).unwrap();
-    builder.add_edge(two, merge, JvmEdge::Fall).unwrap();
-    builder.add_edge(fallback, merge, JvmEdge::Fall).unwrap();
+    builder.add_edge(entry, head, JvmRtlEdge::Entry).unwrap();
+    builder.add_edge(head, one, JvmRtlEdge::Case(1)).unwrap();
+    builder.add_edge(head, two, JvmRtlEdge::Case(2)).unwrap();
+    builder.add_edge(head, fallback, JvmRtlEdge::Fall).unwrap();
+    builder.add_edge(one, merge, JvmRtlEdge::Fall).unwrap();
+    builder.add_edge(two, merge, JvmRtlEdge::Fall).unwrap();
+    builder.add_edge(fallback, merge, JvmRtlEdge::Fall).unwrap();
     builder
         .append(
             head,
@@ -605,7 +705,7 @@ fn dispatch_lifts_to_a_structured_switch() {
         .unwrap();
     let function = builder.finish().unwrap();
 
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &hierarchy()).unwrap();
     let function = lifting.builder.finish().unwrap();
     let lifted = lift_hlil(&function).unwrap();
     assert!(lifted.report.is_fully_structured(), "{:?}", lifted.report);
@@ -619,210 +719,8 @@ fn dispatch_lifts_to_a_structured_switch() {
     );
 }
 
-/// A throwing invoke expands into two MLIL instructions, the first owns
-/// the exceptional behavior, and the lifted exceptional edge's payload
-/// carries that exact emitted throw site.
-#[test]
-fn exceptional_edge_carries_the_emitted_throw_site() {
-    let mut builder = FunctionBuilder::<Managed>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    let exit = builder.new_block("exit");
-    let handler = builder.new_block("handler");
-    builder.add_edge(entry, body, JvmEdge::Entry).unwrap();
-    builder.add_edge(body, exit, JvmEdge::Fall).unwrap();
-    builder
-        .add_edge(body, handler, JvmEdge::Except { site: None })
-        .unwrap();
-    // An invoke-shaped throwing assignment whose Add value triggers the
-    // dialect's two-instruction expansion.
-    let invoke = builder
-        .append(
-            body,
-            Statement::Transfer {
-                assignments: vec![(
-                    Place {
-                        storage: 0,
-                        lanes: vec![0],
-                    },
-                    Expr::Apply {
-                        operator: Operator::Add,
-                        operands: vec![word_const(1), word_const(2)],
-                        shape: JvmShape::scalar(JvmConstraint::Word(ScalarType::I32)),
-                    },
-                )],
-                effects: vec![Effect::Call],
-                may_throw: true,
-            },
-            None,
-        )
-        .unwrap();
-    builder
-        .append(exit, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    builder
-        .append(
-            handler,
-            Statement::Raise {
-                operation: EffectOp::Throw,
-                operands: Vec::new(),
-                effects: vec![Effect::Call],
-            },
-            None,
-        )
-        .unwrap();
-    let function = builder.finish().unwrap();
-
-    let lifting = lift(&function).unwrap();
-    let emitted = lifting.maps.instructions(invoke);
-    assert_eq!(emitted.len(), 2, "the addition expands into two instructions");
-    let site = lifting.maps.throw_site(invoke).expect("a designated throw site");
-    assert_eq!(site, emitted[0], "the first instruction owns the throw");
-
-    let function = lifting.builder.finish().unwrap();
-    let payload = function
-        .cfg()
-        .edges()
-        .find_map(|edge| match edge.payload() {
-            JvmEdge::Except { site } => Some(*site),
-            _ => None,
-        })
-        .expect("the exceptional edge survives the lift");
-    assert_eq!(payload, Some(site), "the edge payload names the throw site");
-    let instruction = function.instruction(site).expect("the throw site exists");
-    assert!(instruction.may_throw());
-}
-
-/// An emission that ignores the statement's exceptional behavior is
-/// rejected instead of silently dropping it.
-#[test]
-fn dropped_exceptional_behavior_is_rejected() {
-    let mut builder = FunctionBuilder::<Managed>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, JvmEdge::Entry).unwrap();
-    builder
-        .append(
-            body,
-            Statement::Effect {
-                operation: EffectOp::DropThrow,
-                operands: Vec::new(),
-                effects: vec![Effect::Call],
-                may_throw: true,
-            },
-            None,
-        )
-        .unwrap();
-    builder
-        .append(body, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    let function = builder.finish().unwrap();
-    assert!(lift(&function).is_err(), "the dropped throw must be caught");
-}
-
-/// An emission that references a variable outside the statement's reads
-/// is rejected — read/definition alignment survives consumer expansion.
-#[test]
-fn foreign_operand_is_rejected() {
-    let mut builder = FunctionBuilder::<Managed>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, JvmEdge::Entry).unwrap();
-    builder
-        .append(
-            body,
-            Statement::Effect {
-                operation: EffectOp::Smuggle,
-                operands: Vec::new(),
-                effects: Vec::new(),
-                may_throw: false,
-            },
-            None,
-        )
-        .unwrap();
-    builder
-        .append(body, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    let function = builder.finish().unwrap();
-    assert!(lift(&function).is_err(), "the foreign operand must be caught");
-}
-
-/// A block with exceptional edges must contain exactly one throwing
-/// statement to own them.
-#[test]
-fn exceptional_edges_need_one_owning_statement() {
-    let mut builder = FunctionBuilder::<Managed>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    let exit = builder.new_block("exit");
-    let handler = builder.new_block("handler");
-    builder.add_edge(entry, body, JvmEdge::Entry).unwrap();
-    builder.add_edge(body, exit, JvmEdge::Fall).unwrap();
-    builder
-        .add_edge(body, handler, JvmEdge::Except { site: None })
-        .unwrap();
-    for _ in 0..2 {
-        builder
-            .append(
-                body,
-                Statement::Effect {
-                    operation: EffectOp::Invoke,
-                    operands: Vec::new(),
-                    effects: vec![Effect::Call],
-                    may_throw: true,
-                },
-                None,
-            )
-            .unwrap();
-    }
-    builder
-        .append(exit, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    builder
-        .append(
-            handler,
-            Statement::Raise {
-                operation: EffectOp::Throw,
-                operands: Vec::new(),
-                effects: Vec::new(),
-            },
-            None,
-        )
-        .unwrap();
-    assert!(
-        builder.finish().is_err(),
-        "two throwing statements cannot share the block's edges"
-    );
-}
-
-/// A raise block must not continue normally.
-#[test]
-fn raise_with_normal_edge_is_rejected() {
-    let mut builder = FunctionBuilder::<Managed>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    let after = builder.new_block("after");
-    builder.add_edge(entry, body, JvmEdge::Entry).unwrap();
-    builder.add_edge(body, after, JvmEdge::Fall).unwrap();
-    builder
-        .append(
-            body,
-            Statement::Raise {
-                operation: EffectOp::Throw,
-                operands: Vec::new(),
-                effects: Vec::new(),
-            },
-            None,
-        )
-        .unwrap();
-    builder
-        .append(after, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    assert!(builder.finish().is_err());
-}
-
 /// Lowering walks an MLIL function back onto target RTL with complete
-/// rewrite maps, refusing nothing on a representable function.
+/// rewrite maps and the retained storage plan.
 #[test]
 fn lowering_round_trips_with_rewrite_maps() {
     // Build RTL, lift it, then lower the MLIL back down.
@@ -832,11 +730,11 @@ fn lowering_round_trips_with_rewrite_maps() {
     let then = builder.new_block("then");
     let other = builder.new_block("else");
     let join = builder.new_block("join");
-    builder.add_edge(entry, head, JvmEdge::Entry).unwrap();
-    builder.add_edge(head, then, JvmEdge::True).unwrap();
-    builder.add_edge(head, other, JvmEdge::False).unwrap();
-    builder.add_edge(then, join, JvmEdge::Fall).unwrap();
-    builder.add_edge(other, join, JvmEdge::Fall).unwrap();
+    builder.add_edge(entry, head, JvmRtlEdge::Entry).unwrap();
+    builder.add_edge(head, then, JvmRtlEdge::True).unwrap();
+    builder.add_edge(head, other, JvmRtlEdge::False).unwrap();
+    builder.add_edge(then, join, JvmRtlEdge::Fall).unwrap();
+    builder.add_edge(other, join, JvmRtlEdge::Fall).unwrap();
     builder
         .append(
             head,
@@ -846,8 +744,12 @@ fn lowering_round_trips_with_rewrite_maps() {
             None,
         )
         .unwrap();
-    builder.append(then, slot_write(0, word_const(1)), None).unwrap();
-    builder.append(other, slot_write(0, word_const(2)), None).unwrap();
+    builder
+        .append(then, slot_write(0, word_const(1)), None)
+        .unwrap();
+    builder
+        .append(other, slot_write(0, word_const(2)), None)
+        .unwrap();
     builder
         .append(
             join,
@@ -858,7 +760,7 @@ fn lowering_round_trips_with_rewrite_maps() {
         )
         .unwrap();
     let function = builder.finish().unwrap();
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &hierarchy()).unwrap();
     let mlil_function = lifting.builder.finish().unwrap();
 
     let lowered = lower(&mlil_function).unwrap();
@@ -877,6 +779,13 @@ fn lowering_round_trips_with_rewrite_maps() {
             assert!(
                 !lowered.statements(instruction.id()).is_empty(),
                 "every instruction lowers to at least one statement"
+            );
+            assert!(
+                instruction
+                    .defs()
+                    .iter()
+                    .all(|&variable| lowered.placement.place(variable).is_some()),
+                "the retained plan places every defined variable"
             );
         }
     }

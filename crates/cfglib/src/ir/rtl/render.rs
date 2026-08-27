@@ -21,7 +21,7 @@ use crate::ir::mlil::VariableId;
 
 use super::dialect::Dialect;
 use super::error::{Error, Result};
-use super::lift::{LiftedStatement, VarExpr, WebInfo};
+use super::template::{LiftedStatement, VarExpr, WebInfo};
 
 impl<D: Dialect> VarExpr<D> {
     /// The number of [`Read`](VarExpr::Read) nodes in pre-order — the

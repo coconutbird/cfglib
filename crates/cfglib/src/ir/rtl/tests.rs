@@ -7,17 +7,25 @@ use alloc::vec::Vec;
 
 use crate::EdgeKind;
 use crate::ir::dialect::Vocabulary;
-use crate::ir::hlil::{self, ExpressionKind, Lifted, StatementKind, lift_function as lift_hlil};
+use crate::ir::hlil::{self, Lifted};
 use crate::ir::mlil::{self, InstructionMetadata, VerificationIssue};
 
 use super::{
-    Dialect, Edge, Expr, Function, FunctionBuilder, Lift, LiftedStatement, Place, ReadResolver,
-    ResolvedRead, ScalarType, Statement, ValueShape, VarExpr, lift, referenced_webs,
+    Dialect, Edge, Expr, Function, FunctionBuilder, Lift, LiftedStatement, Place, ScalarType,
+    Statement, ValueShape, VarExpr, lift,
 };
 
 /// Managed-language dialect tests: constraint domains, exceptional
 /// ownership, dispatch, expansion, and lowering.
 mod managed;
+/// Read-resolver tests, split out to respect the source-size policy.
+mod resolver;
+/// Return-value lowering tests, split out to respect the source-size
+/// policy.
+mod returns;
+/// Construction and completion validation tests, split out to respect
+/// the source-size policy.
+mod validation;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Effect {
@@ -208,6 +216,10 @@ impl Lift for TestDialect {
         context.single(statement)?;
         Ok(())
     }
+
+    fn lift_edge(edge: &Edge, _context: &super::EdgeContext<'_>) -> Edge {
+        *edge
+    }
 }
 
 fn read(storage: u8, lanes: &[u8], scalar: ScalarType) -> Expr<TestDialect> {
@@ -259,9 +271,7 @@ fn vector_const(bits: &[u64], scalar: ScalarType) -> Expr<TestDialect> {
 }
 
 /// Every MLIL instruction of a lifted function, in block order.
-fn instructions(
-    function: &mlil::Function<TestDialect>,
-) -> Vec<&mlil::Instruction<TestDialect>> {
+fn instructions(function: &mlil::Function<TestDialect>) -> Vec<&mlil::Instruction<TestDialect>> {
     function
         .cfg()
         .blocks()
@@ -334,7 +344,7 @@ fn storage_reuse_splits_into_typed_webs() {
         .unwrap();
     let function: Function<TestDialect> = builder.finish().unwrap();
 
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &()).unwrap();
     let r0_webs: Vec<_> = lifting
         .webs
         .iter()
@@ -419,7 +429,7 @@ fn parallel_hazard_pre_copies_when_webs_unite() {
         .unwrap();
     let function = builder.finish().unwrap();
 
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &()).unwrap();
     let synthetic: Vec<_> = lifting
         .webs
         .iter()
@@ -482,7 +492,7 @@ fn join_unites_definitions_into_one_web() {
         .unwrap();
     let function = builder.finish().unwrap();
 
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &()).unwrap();
     let r0_webs: Vec<_> = lifting
         .webs
         .iter()
@@ -543,7 +553,7 @@ fn dead_header_phi_keeps_lifetimes_apart() {
         .unwrap();
     let function = builder.finish().unwrap();
 
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &()).unwrap();
     let r0_webs: Vec<_> = lifting
         .webs
         .iter()
@@ -587,7 +597,7 @@ fn conflicting_interpretations_resolve_to_bits() {
         .unwrap();
     let function = builder.finish().unwrap();
 
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &()).unwrap();
     let r0_web = lifting
         .webs
         .iter()
@@ -646,7 +656,7 @@ fn partial_rewrite_splits_the_web_and_reads_compose() {
         .unwrap();
     let function = builder.finish().unwrap();
 
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &()).unwrap();
     let r0_webs: Vec<_> = lifting
         .webs
         .iter()
@@ -728,7 +738,7 @@ fn partial_overwrite_after_join_merges_prior_state() {
         .unwrap();
     let function = builder.finish().unwrap();
 
-    let lifting = lift(&function).unwrap();
+    let lifting = lift(&function, &()).unwrap();
     let r0_webs: Vec<_> = lifting
         .webs
         .iter()
@@ -831,478 +841,4 @@ fn for_each_expression_visits_pre_order() {
     let mut mnemonics: Vec<String> = Vec::new();
     value.for_each_expression(&mut |expression| mnemonics.push(expression.mnemonic().into()));
     assert_eq!(mnemonics, vec!["add", "bitcast", "const", "compose", "mov"]);
-}
-
-/// A transfer with no assignments is rejected: it would silently drop
-/// its effects and exceptional behavior in lowering.
-#[test]
-fn empty_transfer_is_rejected() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    let error = builder.append(
-        body,
-        Statement::Transfer {
-            assignments: Vec::new(),
-            effects: vec![Effect::Emit],
-            may_throw: true,
-        },
-        None,
-    );
-    assert!(error.is_err(), "an empty transfer must not validate");
-}
-
-/// One lane written by two places of one transfer is rejected: the
-/// parallel semantics leave no defined result.
-#[test]
-fn duplicate_lane_across_assignments_is_rejected() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    let error = builder.append(
-        body,
-        Statement::Transfer {
-            assignments: vec![
-                (
-                    Place {
-                        storage: 0,
-                        lanes: vec![0],
-                    },
-                    constant(1, ScalarType::U32),
-                ),
-                (
-                    Place {
-                        storage: 0,
-                        lanes: vec![0],
-                    },
-                    constant(2, ScalarType::U32),
-                ),
-            ],
-            effects: Vec::new(),
-            may_throw: false,
-        },
-        None,
-    );
-    assert!(error.is_err(), "two writes of one lane must not validate");
-}
-
-/// Reinterpretation preserves lane width, not just lane count.
-#[test]
-fn cross_width_reinterpret_is_rejected() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    let error = builder.append(
-        body,
-        assign(
-            1,
-            &[0],
-            Expr::Reinterpret {
-                operand: alloc::boxed::Box::new(constant(1, ScalarType::F32)),
-                shape: ValueShape::scalar(ScalarType::F64),
-            },
-        ),
-        None,
-    );
-    assert!(error.is_err(), "a 32-to-64-bit reinterpretation must fail");
-    builder
-        .append(
-            body,
-            assign(
-                1,
-                &[0],
-                Expr::Reinterpret {
-                    operand: alloc::boxed::Box::new(constant(1, ScalarType::F32)),
-                    shape: ValueShape::scalar(ScalarType::U32),
-                },
-            ),
-            None,
-        )
-        .expect("a same-width reinterpretation validates");
-}
-
-/// A wide scalar lane carries multiple constant words.
-#[test]
-fn wide_lane_constants_validate_by_words() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    builder
-        .append(
-            body,
-            assign(
-                0,
-                &[0],
-                Expr::Const {
-                    bits: vec![1, 2, 3, 4],
-                    shape: ValueShape::scalar(ScalarType::U256),
-                },
-            ),
-            None,
-        )
-        .expect("a 256-bit lane carries four words");
-    let error = builder.append(
-        body,
-        assign(
-            0,
-            &[0],
-            Expr::Const {
-                bits: vec![1, 2],
-                shape: ValueShape::scalar(ScalarType::U256),
-            },
-        ),
-        None,
-    );
-    assert!(error.is_err(), "a short word count must not validate");
-}
-
-/// A block ending in a return must not continue anywhere.
-#[test]
-fn return_block_with_successor_is_rejected() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    let extra = builder.new_block("extra");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    builder.add_edge(body, extra, Edge::Fall).unwrap();
-    builder
-        .append(body, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    builder
-        .append(extra, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    assert!(builder.finish().is_err());
-}
-
-/// A branch decides between at least two outgoing edges.
-#[test]
-fn branch_with_single_successor_is_rejected() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    let exit = builder.new_block("exit");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    builder.add_edge(body, exit, Edge::True).unwrap();
-    builder
-        .append(
-            body,
-            Statement::Branch {
-                condition: read(9, &[0], ScalarType::U32),
-            },
-            None,
-        )
-        .unwrap();
-    builder
-        .append(exit, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    assert!(builder.finish().is_err());
-}
-
-/// Every block participates in the function.
-#[test]
-fn unreachable_block_is_rejected() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.new_block("orphan");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    builder
-        .append(body, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    assert!(builder.finish().is_err());
-}
-
-/// A returned expression materializes into a temporary, so the return's
-/// MLIL uses pair one-to-one with its values and HLIL sees exactly one
-/// returned value.
-#[test]
-fn return_expression_materializes_a_temporary() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    builder
-        .append(
-            body,
-            Statement::Return {
-                values: vec![apply(
-                    Operator::Add,
-                    vec![
-                        constant(0x3f80_0000, ScalarType::F32),
-                        constant(0x4000_0000, ScalarType::F32),
-                    ],
-                    ValueShape::scalar(ScalarType::F32),
-                )],
-            },
-            None,
-        )
-        .unwrap();
-    let function = builder.finish().unwrap();
-
-    let lifting = lift(&function).unwrap();
-    assert_eq!(
-        lifting
-            .webs
-            .iter()
-            .filter(|web| web.storage.is_none())
-            .count(),
-        1,
-        "the returned expression lives in a temporary"
-    );
-    let function = lifting.builder.finish().unwrap();
-    let return_uses = instructions(&function)
-        .into_iter()
-        .find_map(|instruction| {
-            matches!(instruction.operation(), LiftedStatement::Return { .. })
-                .then(|| instruction.uses().len())
-        })
-        .expect("one return instruction");
-    assert_eq!(return_uses, 1, "one use per returned value");
-
-    let lifted = lift_hlil(&function).unwrap();
-    assert!(lifted.report.is_fully_structured());
-    let mut returns = 0usize;
-    for statement in lifted.function.statements() {
-        if let StatementKind::Return { values } = statement.kind() {
-            returns += 1;
-            assert_eq!(values.len(), 1, "one returned value survives to HLIL");
-            let value = lifted.function.expression(values[0]).unwrap();
-            assert!(
-                matches!(
-                    value.kind(),
-                    ExpressionKind::Operation {
-                        operation: LiftedStatement::Assign {
-                            value: VarExpr::Apply { .. },
-                            ..
-                        },
-                        ..
-                    }
-                ),
-                "the temporary inlines back into the return"
-            );
-        }
-    }
-    assert_eq!(returns, 1);
-}
-
-/// A returned constant is still one returned value, never a void return.
-#[test]
-fn returned_constant_stays_a_returned_value() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    builder
-        .append(
-            body,
-            Statement::Return {
-                values: vec![constant(42, ScalarType::U32)],
-            },
-            None,
-        )
-        .unwrap();
-    let function = builder.finish().unwrap();
-
-    let lifting = lift(&function).unwrap();
-    let function = lifting.builder.finish().unwrap();
-    let lifted = lift_hlil(&function).unwrap();
-    let mut returns = 0usize;
-    for statement in lifted.function.statements() {
-        if let StatementKind::Return { values } = statement.kind() {
-            returns += 1;
-            assert_eq!(values.len(), 1, "a constant return is not void");
-        }
-    }
-    assert_eq!(returns, 1);
-}
-
-/// A whole identity read of one web returns as-is, without a temporary.
-#[test]
-fn whole_web_return_passes_through() {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    builder
-        .append(
-            body,
-            Statement::Return {
-                values: vec![read(0, &[0, 1], ScalarType::F32)],
-            },
-            None,
-        )
-        .unwrap();
-    let function = builder.finish().unwrap();
-
-    let lifting = lift(&function).unwrap();
-    assert!(
-        lifting.webs.iter().all(|web| web.storage.is_some()),
-        "no temporary for a whole-web read"
-    );
-    let function = lifting.builder.finish().unwrap();
-    let return_uses = instructions(&function)
-        .into_iter()
-        .find_map(|instruction| {
-            matches!(instruction.operation(), LiftedStatement::Return { .. })
-                .then(|| instruction.uses().len())
-        })
-        .expect("one return instruction");
-    assert_eq!(return_uses, 1);
-}
-
-/// Lifts a single-block RTL body through MLIL into HLIL.
-fn structured(
-    statements: Vec<Statement<TestDialect>>,
-) -> (hlil::LiftedFunction<TestDialect>, super::Webs<TestDialect>) {
-    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
-    let entry = builder.entry();
-    let body = builder.new_block("body");
-    builder.add_edge(entry, body, Edge::Entry).unwrap();
-    for statement in statements {
-        builder.append(body, statement, None).unwrap();
-    }
-    builder
-        .append(body, Statement::Return { values: Vec::new() }, None)
-        .unwrap();
-    let function = builder.finish().unwrap();
-    let lifting = lift(&function).unwrap();
-    let webs = lifting.webs;
-    let function = lifting.builder.finish().unwrap();
-    let lifted = lift_hlil(&function).unwrap();
-    assert!(lifted.report.is_fully_structured());
-    (lifted, webs)
-}
-
-fn emit_twice(storage: u8, scalar: ScalarType) -> Statement<TestDialect> {
-    Statement::Effect {
-        operation: EffectOp::Emit,
-        operands: vec![read(storage, &[0], scalar), read(storage, &[0], scalar)],
-        effects: vec![Effect::Emit],
-        may_throw: false,
-    }
-}
-
-/// A read of an inlined producer resolves with the position remap the
-/// producer's written order dictates.
-#[test]
-fn read_resolver_remaps_through_an_inlined_producer() {
-    // r0.xy ← add (single use, inlines); r1.xy ← r0.yx (swapped read).
-    let (lifted, webs) = structured(vec![
-        assign(
-            0,
-            &[0, 1],
-            apply(
-                Operator::Add,
-                vec![
-                    vector_const(&[1, 2], ScalarType::F32),
-                    vector_const(&[3, 4], ScalarType::F32),
-                ],
-                ValueShape::vector(ScalarType::F32, 2),
-            ),
-        ),
-        assign(1, &[0, 1], read(0, &[1, 0], ScalarType::F32)),
-        emit_twice(1, ScalarType::F32),
-    ]);
-    let assignment = lifted
-        .function
-        .statements()
-        .iter()
-        .find_map(|statement| match statement.kind() {
-            StatementKind::Assign { value, .. } => lifted.function.expression(*value),
-            _ => None,
-        })
-        .expect("the r1 assignment survives as a statement");
-    let ExpressionKind::Operation {
-        operation:
-            LiftedStatement::Assign {
-                value: VarExpr::Read { positions, .. },
-                ..
-            },
-        operands,
-    } = assignment.kind()
-    else {
-        panic!("expected an assignment of a read");
-    };
-    assert_eq!(positions.as_slice(), &[1, 0]);
-    let mut reads = ReadResolver::new(&lifted.function, operands);
-    let ResolvedRead::Inlined { value, remap, .. } = reads.resolve(positions).unwrap() else {
-        panic!("single-use producer inlines");
-    };
-    assert!(matches!(
-        value,
-        VarExpr::Apply {
-            operator: Operator::Add,
-            ..
-        }
-    ));
-    assert_eq!(remap, Some(vec![1, 0]));
-    // The inlined producer's target never renders: it is not referenced.
-    let referenced = referenced_webs(&lifted.function);
-    let r0_web = webs.iter().find(|web| web.storage == Some(0)).unwrap();
-    let r1_web = webs.iter().find(|web| web.storage == Some(1)).unwrap();
-    assert!(!referenced.contains(&r0_web.variable));
-    assert!(referenced.contains(&r1_web.variable));
-}
-
-/// A read of a multi-use producer resolves as a variable occurrence, and
-/// the webs resolve by both levels' variable identities.
-#[test]
-fn read_resolver_names_multi_use_producers() {
-    let (lifted, webs) = structured(vec![
-        assign(
-            0,
-            &[0],
-            apply(
-                Operator::Add,
-                vec![constant(1, ScalarType::U32), constant(2, ScalarType::U32)],
-                ValueShape::scalar(ScalarType::U32),
-            ),
-        ),
-        assign(1, &[0], read(0, &[0], ScalarType::U32)),
-        assign(2, &[0], read(0, &[0], ScalarType::U32)),
-        emit_twice(1, ScalarType::U32),
-        emit_twice(2, ScalarType::U32),
-    ]);
-    let mut resolved = Vec::new();
-    for statement in lifted.function.statements() {
-        let StatementKind::Assign { value, .. } = statement.kind() else {
-            continue;
-        };
-        let Some(expression) = lifted.function.expression(*value) else {
-            continue;
-        };
-        let ExpressionKind::Operation {
-            operation:
-                LiftedStatement::Assign {
-                    value: VarExpr::Read { positions, .. },
-                    ..
-                },
-            operands,
-        } = expression.kind()
-        else {
-            continue;
-        };
-        let mut reads = ReadResolver::new(&lifted.function, operands);
-        resolved.push(reads.resolve(positions).unwrap());
-    }
-    let r0_web = webs.iter().find(|web| web.storage == Some(0)).unwrap();
-    assert_eq!(resolved.len(), 2, "both reads of r0 stay variable reads");
-    for entry in resolved {
-        let ResolvedRead::Variable(variable) = entry else {
-            panic!("multi-use producer must not inline");
-        };
-        assert_eq!(webs.of_lifted(variable).unwrap().variable, r0_web.variable);
-        assert_eq!(
-            webs.of(mlil::VariableId::from_raw(variable.raw()))
-                .unwrap()
-                .variable,
-            r0_web.variable
-        );
-    }
-    let referenced = referenced_webs(&lifted.function);
-    assert!(referenced.contains(&r0_web.variable));
 }

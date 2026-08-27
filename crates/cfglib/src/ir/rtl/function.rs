@@ -130,14 +130,18 @@ impl<D: Dialect> FunctionBuilder<D> {
 
     /// Completes the function, validating its control-flow structure.
     ///
+    /// Unreachable blocks are legal and preserved — dead code after a
+    /// return or throw is source-faithful in managed bytecode, and SSA
+    /// annotates such blocks as their own dominator-tree roots.
+    ///
     /// # Errors
     ///
     /// Returns an error when a terminating statement sits before the end
     /// of its block, a branch block carries fewer than two outgoing
     /// normal edges, a dispatch block carries none, a return block
-    /// carries any edge, a raise block carries a non-exceptional edge, a
-    /// block with exceptional edges lacks exactly one throwing statement
-    /// to own them, or a block is unreachable from the entry.
+    /// carries any edge, a raise block carries a non-exceptional edge,
+    /// or a block with exceptional edges lacks exactly one throwing
+    /// statement to own them.
     pub fn finish(self) -> Result<Function<D>> {
         for block in self.cfg.blocks() {
             let statements = block.instructions();
@@ -153,10 +157,8 @@ impl<D: Dialect> FunctionBuilder<D> {
 
         let mut normal: Vec<usize> = vec![0; self.cfg.block_count()];
         let mut exceptional: Vec<usize> = vec![0; self.cfg.block_count()];
-        let mut successors: Vec<Vec<usize>> = vec![Vec::new(); self.cfg.block_count()];
         for edge in self.cfg.edges() {
             let source = edge.source().index();
-            successors[source].push(edge.target().index());
             if edge.kind().is_exceptional() {
                 exceptional[source] += 1;
             } else {
@@ -208,22 +210,6 @@ impl<D: Dialect> FunctionBuilder<D> {
                     )));
                 }
             }
-        }
-
-        let mut reached = vec![false; self.cfg.block_count()];
-        let mut stack = vec![self.cfg.entry().index()];
-        reached[self.cfg.entry().index()] = true;
-        while let Some(block) = stack.pop() {
-            for &target in &successors[block] {
-                if !core::mem::replace(&mut reached[target], true) {
-                    stack.push(target);
-                }
-            }
-        }
-        if let Some(unreachable) = reached.iter().position(|&reached| !reached) {
-            return Err(Error::InvalidConstruction(format!(
-                "block {unreachable} is unreachable from the entry"
-            )));
         }
 
         Ok(Function {
@@ -333,7 +319,7 @@ fn validate_expr<D: Dialect>(expr: &Expr<D>) -> Result<()> {
                     "constant carries no lanes".into(),
                 ));
             }
-            let words = shape.scalar.words();
+            let words = shape.scalar.word_count();
             if bits.len() != usize::from(shape.lanes) * words {
                 return Err(Error::InvalidConstruction(format!(
                     "constant carries {} words for a {}-lane shape of {words}-word lanes",

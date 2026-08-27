@@ -50,6 +50,7 @@
 //! functions.
 
 mod dialect;
+mod emission;
 mod error;
 mod expr;
 mod function;
@@ -57,18 +58,19 @@ mod lift;
 mod lower;
 mod render;
 mod statement;
+mod template;
 mod types;
 
 pub use dialect::{Dialect, Edge, Lift};
+pub use emission::{EdgeContext, Emission, LiftMaps, Lifting};
 pub use error::{Error, Result};
 pub use expr::{Expr, Place};
 pub use function::{Function, FunctionBuilder};
-pub use lift::{
-    EdgeContext, Emission, LiftMaps, LiftedStatement, Lifting, VarExpr, WebInfo, lift,
-};
-pub use lower::{Lower, LowerContext, Lowered, lower};
+pub use lift::lift;
+pub use lower::{Lower, LowerContext, LowerEdgeContext, Lowered, Placement, lower};
 pub use render::{ReadResolver, ResolvedRead, Webs, referenced_webs};
 pub use statement::{Lane, Statement, StatementId, StatementNode};
+pub use template::{LiftedStatement, VarExpr, WebInfo};
 pub use types::{Constraint, Inference, ScalarInference, ScalarType, Shape, ValueShape};
 
 #[cfg(test)]

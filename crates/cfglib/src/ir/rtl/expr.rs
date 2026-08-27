@@ -30,7 +30,7 @@ pub enum Expr<D: Dialect> {
     /// An immediate value, one bit pattern per lane.
     Const {
         /// Raw lane bit patterns:
-        /// [`Constraint::words`](super::Constraint::words) little-endian
+        /// [`Constraint::word_count`](super::Constraint::word_count) little-endian
         /// 64-bit words per lane, lanes in order.
         bits: Vec<u64>,
         /// The shape of the constant.

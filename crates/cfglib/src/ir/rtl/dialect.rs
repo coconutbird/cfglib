@@ -5,8 +5,9 @@ use core::fmt::Debug;
 use crate::EdgeKind;
 use crate::ir::dialect::Vocabulary;
 
+use super::emission::{EdgeContext, Emission};
 use super::error::Result;
-use super::lift::{EdgeContext, Emission, LiftedStatement};
+use super::template::LiftedStatement;
 use super::types::{Constraint, Shape};
 
 /// The canonical edge vocabulary for dialects with plain two-way
@@ -92,8 +93,13 @@ pub trait Dialect: Vocabulary {
 ///
 /// A consumer implements this on the same type that implements
 /// [`crate::ir::mlil::Dialect`], so the two levels share one vocabulary
-/// and one edge type by construction.
-pub trait Lift: Dialect + crate::ir::mlil::Dialect<Edge = <Self as Dialect>::Edge> {
+/// by construction. The edge types stay independent: each level keeps
+/// self-contained metadata — an RTL exceptional edge can name a
+/// [`StatementId`](super::StatementId) while its MLIL counterpart names
+/// an emitted instruction — and [`lift_edge`](Self::lift_edge)
+/// translates between them. A dialect using one edge type for both
+/// levels translates by cloning.
+pub trait Lift: Dialect + crate::ir::mlil::Dialect {
     /// The MLIL value type of one lifted web shape.
     fn value_type(shape: Shape<Self::Constraint>) -> <Self as Vocabulary>::ValueType;
 
@@ -120,15 +126,17 @@ pub trait Lift: Dialect + crate::ir::mlil::Dialect<Edge = <Self as Dialect>::Edg
     /// Returns an error when the statement has no legal translation.
     fn emit(context: &mut Emission<'_, '_, Self>, statement: LiftedStatement<Self>) -> Result<()>;
 
-    /// Rewrites one RTL edge's metadata for the lifted function.
+    /// Translates one RTL edge into the lifted function's MLIL edge
+    /// metadata.
     ///
     /// Runs after every instruction is emitted, so the context resolves
     /// statements to emitted MLIL instruction identities — an
-    /// exceptional edge's payload can carry its exact throw site. The
-    /// default clones the metadata verbatim.
+    /// exceptional edge's payload can carry its exact throw site in the
+    /// MLIL identity domain. A dialect sharing one edge type across
+    /// both levels clones the metadata.
     #[must_use]
-    fn lift_edge(edge: &<Self as Dialect>::Edge, context: &EdgeContext<'_>) -> <Self as Dialect>::Edge {
-        let _ = context;
-        edge.clone()
-    }
+    fn lift_edge(
+        edge: &<Self as Dialect>::Edge,
+        context: &EdgeContext<'_>,
+    ) -> <Self as crate::ir::mlil::Dialect>::Edge;
 }
