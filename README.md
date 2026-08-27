@@ -339,13 +339,19 @@ SwitchSource              (switch table recovery — associated Target)
 
 | Crate | Description |
 |---|---|
-| **cfglib** | Generic graph, CFG, dialect-driven MLIL/HLIL, SSA, and dataflow framework |
+| **cfglib** | Generic graph, CFG, dialect-driven RTL/MLIL/HLIL, SSA, and dataflow framework |
 
 Adapters live with the language they adapt, next to their decoders and
-test corpora: the SM4/SM5 MLIL/HLIL decompiler — whose `cfg` module also
-exposes a raw CFG + component-granular SSA adapter — is in
+test corpora: the SM4/SM5 decompiler — whose `cfg` module also exposes a
+raw CFG + component-granular SSA adapter — is in
 [d3dasm](https://github.com/coconutbird/d3dasm); the Java/DEX decompiler
-is in cafe.
+is in cafe. A language picks its entry level: machine-shaped languages
+build `ir::rtl` functions (typed parallel transfers over raw storage,
+lifted into typed MLIL variables through per-lane SSA webs), while
+variable-shaped languages build MLIL directly. cfglib deliberately
+defines no generic LLIL — low-level IRs are language-owned, and the
+minimal traits they share (`FlowControl`, `InstrInfo`, `Cfg`, `SsaForm`)
+are their common surface.
 
 ## Adapting a language, IR, or existing graph
 

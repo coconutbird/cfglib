@@ -453,14 +453,10 @@ impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
                 instruction.id()
             )));
         }
-        if instruction.uses().is_empty() {
-            return Err(Error::UnsupportedLift(format!(
-                "branch {} has no condition operand",
-                instruction.id()
-            )));
-        }
         let value = if let Shape::BranchOperation(operation) = shape {
-            // The fused condition applies the operation to every use.
+            // The fused condition applies the operation to every use; an
+            // empty use list is legal when the operation embeds its whole
+            // condition (a constant or memory read).
             let operands = self.operands(position, instruction, state)?;
             self.builder.add_expression(
                 ExpressionKind::Operation {
@@ -470,6 +466,12 @@ impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
                 D::void_type(),
             )?
         } else {
+            if instruction.uses().is_empty() {
+                return Err(Error::UnsupportedLift(format!(
+                    "branch {} has no condition operand",
+                    instruction.id()
+                )));
+            }
             self.operand(position, 0, instruction, state)?
         };
         Ok(ListEnd {

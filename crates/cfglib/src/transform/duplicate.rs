@@ -55,53 +55,66 @@ pub fn duplicate_structuring_tails<I: Clone, E: Clone>(cfg: &mut Cfg<I, E>) -> u
         if targets.is_empty() {
             break;
         }
-        let dominators = DominatorTree::compute(cfg);
         let region_blocks = region_referenced_blocks(cfg);
-        let mut progressed = false;
-        for target in targets {
-            if duplicated >= BLOCK_BUDGET {
-                return duplicated;
-            }
-            if !eligible(cfg, &dominators, &region_blocks, target) {
-                continue;
-            }
-            let incoming = cfg.predecessor_edges(target).to_vec();
-            if incoming.len() < 2 {
-                continue;
-            }
-            // The first predecessor keeps the original block; every other
-            // one gets its own copy.
-            for &edge in incoming.iter().skip(1) {
-                if duplicated >= BLOCK_BUDGET {
-                    break;
-                }
-                let (source, kind, payload) = {
-                    let edge = cfg.edge(edge);
-                    (edge.source(), edge.kind(), edge.payload().clone())
-                };
-                let copy = cfg.new_block();
-                let instructions = cfg.block(target).instructions().to_vec();
-                for instruction in instructions {
-                    cfg.block_mut(copy).push(instruction);
-                }
-                for successor_edge in cfg.successor_edges(target).to_vec() {
-                    let (kind, target, payload) = {
-                        let edge = cfg.edge(successor_edge);
-                        (edge.kind(), edge.target(), edge.payload().clone())
-                    };
-                    cfg.add_edge_with_payload(copy, target, kind, payload);
-                }
-                cfg.remove_edge(edge);
-                cfg.add_edge_with_payload(source, copy, kind, payload);
-                duplicated += 1;
-                progressed = true;
-            }
-        }
+        let progressed = duplicate_targets(cfg, &targets, &region_blocks, &mut duplicated);
         if !progressed {
             break;
         }
     }
     duplicated
+}
+
+fn duplicate_targets<I: Clone, E: Clone>(
+    cfg: &mut Cfg<I, E>,
+    targets: &[BlockId],
+    region_blocks: &BTreeSet<BlockId>,
+    duplicated: &mut usize,
+) -> bool {
+    let mut progressed = false;
+    for &target in targets {
+        if *duplicated >= BLOCK_BUDGET {
+            break;
+        }
+        // Earlier candidates can add predecessors whose block identities did
+        // not exist in the previous tree. Recompute before every eligibility
+        // query so dominance always covers the current CFG.
+        let dominators = DominatorTree::compute(cfg);
+        if !eligible(cfg, &dominators, region_blocks, target) {
+            continue;
+        }
+        let incoming = cfg.predecessor_edges(target).to_vec();
+        if incoming.len() < 2 {
+            continue;
+        }
+        // The first predecessor keeps the original block; every other one
+        // gets its own copy.
+        for &edge in incoming.iter().skip(1) {
+            if *duplicated >= BLOCK_BUDGET {
+                break;
+            }
+            let (source, kind, payload) = {
+                let edge = cfg.edge(edge);
+                (edge.source(), edge.kind(), edge.payload().clone())
+            };
+            let copy = cfg.new_block();
+            let instructions = cfg.block(target).instructions().to_vec();
+            for instruction in instructions {
+                cfg.block_mut(copy).push(instruction);
+            }
+            for successor_edge in cfg.successor_edges(target).to_vec() {
+                let (kind, target, payload) = {
+                    let edge = cfg.edge(successor_edge);
+                    (edge.kind(), edge.target(), edge.payload().clone())
+                };
+                cfg.add_edge_with_payload(copy, target, kind, payload);
+            }
+            cfg.remove_edge(edge);
+            cfg.add_edge_with_payload(source, copy, kind, payload);
+            *duplicated += 1;
+            progressed = true;
+        }
+    }
+    progressed
 }
 
 /// Every block an exception region names: protected extents, handler
@@ -222,5 +235,35 @@ mod tests {
         let blocks = cfg.blocks().len();
         let _ = duplicate_structuring_tails(&mut cfg);
         assert_eq!(cfg.blocks().len(), blocks, "a loop header was copied");
+    }
+
+    #[test]
+    fn later_candidates_use_dominators_covering_earlier_copies() {
+        let mut cfg = Cfg::<DfInst>::new();
+        let left = cfg.new_block();
+        let right = cfg.new_block();
+        let first = cfg.new_block();
+        let second = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.block_mut(first).push(df_def("first", 0));
+        cfg.block_mut(second).push(df_def("second", 0));
+        cfg.add_edge(cfg.entry(), left, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), right, EdgeKind::ConditionalFalse);
+        cfg.add_edge(left, first, EdgeKind::Fallthrough);
+        cfg.add_edge(right, first, EdgeKind::Fallthrough);
+        cfg.add_edge(first, second, EdgeKind::Fallthrough);
+        cfg.add_edge(right, second, EdgeKind::Jump);
+        cfg.add_edge(second, exit, EdgeKind::Fallthrough);
+        let mut duplicated = 0;
+
+        let progressed = duplicate_targets(
+            &mut cfg,
+            &[first, second],
+            &BTreeSet::new(),
+            &mut duplicated,
+        );
+
+        assert!(progressed);
+        assert_eq!(duplicated, 3);
     }
 }
