@@ -86,6 +86,13 @@ impl<D: Dialect> Function<D> {
             .get(point.inst_idx)
     }
 
+    /// Returns the number of instructions — the exclusive upper bound of
+    /// the function's dense [`InstructionId`] space.
+    #[must_use]
+    pub fn instruction_count(&self) -> usize {
+        self.instruction_points.len()
+    }
+
     /// Returns the current graph location of one stable instruction.
     #[must_use]
     pub fn instruction_point(&self, id: InstructionId) -> Option<ProgramPoint> {

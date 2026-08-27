@@ -95,8 +95,11 @@ impl<D: Dialect> LiftedStatement<D> {
     pub fn mnemonic(&self) -> &str {
         match self {
             Self::Assign { value, .. } => value.mnemonic(),
-            Self::Effect { operation, .. } => D::effect_mnemonic(operation),
+            Self::Effect { operation, .. } | Self::Raise { operation, .. } => {
+                D::effect_mnemonic(operation)
+            }
             Self::Branch { .. } => "branch",
+            Self::Dispatch { .. } => "switch",
             Self::Return { .. } => "ret",
         }
     }
@@ -108,18 +111,22 @@ impl<D: Dialect> LiftedStatement<D> {
         match self {
             Self::Assign { .. } | Self::Effect { .. } => FlowEffect::Fallthrough,
             Self::Branch { .. } => FlowEffect::ConditionalJump,
+            Self::Dispatch { .. } => FlowEffect::IndirectJump,
             Self::Return { .. } => FlowEffect::Return,
+            Self::Raise { .. } => FlowEffect::Terminate,
         }
     }
 
     /// The HLIL translation of the statement, for a dialect's
     /// [`lift_operation`](hlil::LiftDialect::lift_operation): branches
-    /// carry their condition inside the operation, returns lift to the
-    /// structural return, and everything else stays an operation.
+    /// carry their condition inside the operation, dispatches lift to
+    /// the structural switch, returns lift to the structural return, and
+    /// everything else — raises included — stays an operation.
     #[must_use]
     pub fn lifted(&self) -> Lifted<Self> {
         match self {
             Self::Branch { .. } => Lifted::BranchOperation(self.clone()),
+            Self::Dispatch { .. } => Lifted::Switch,
             Self::Return { .. } => Lifted::Return,
             other => Lifted::Operation(other.clone()),
         }
@@ -128,30 +135,40 @@ impl<D: Dialect> LiftedStatement<D> {
 
 /// The webs recovered by one lift, resolvable by variable identity.
 ///
-/// Webs are declared in dense MLIL variable order, and the HLIL lift
-/// declares MLIL variables in that same order before appending any
-/// temporaries — so both levels' variable identities resolve here.
+/// Resolution keys on the variable's raw identity, and the HLIL lift
+/// preserves MLIL variable identities before appending any temporaries —
+/// so both levels' variables resolve here. A dialect temporary declared
+/// during emission, or an HLIL temporary, has no web.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Webs<D: Dialect> {
     webs: Vec<WebInfo<D>>,
+    by_variable: alloc::collections::BTreeMap<u32, usize>,
 }
 
 impl<D: Dialect> Webs<D> {
     pub(super) fn new(webs: Vec<WebInfo<D>>) -> Self {
-        Self { webs }
+        let by_variable = webs
+            .iter()
+            .enumerate()
+            .map(|(index, web)| (web.variable.raw(), index))
+            .collect();
+        Self { webs, by_variable }
     }
 
     /// The web behind one MLIL variable.
     #[must_use]
     pub fn of(&self, variable: VariableId) -> Option<&WebInfo<D>> {
-        self.webs.get(variable.index())
+        self.by_variable
+            .get(&variable.raw())
+            .map(|&index| &self.webs[index])
     }
 
-    /// The web behind one lifted (HLIL) variable. An HLIL temporary
-    /// declared past the lifted set has no web.
+    /// The web behind one lifted (HLIL) variable.
     #[must_use]
     pub fn of_lifted(&self, variable: hlil::VariableId) -> Option<&WebInfo<D>> {
-        self.webs.get(variable.index())
+        self.by_variable
+            .get(&variable.raw())
+            .map(|&index| &self.webs[index])
     }
 
     /// The webs in declared variable order.

@@ -5,18 +5,28 @@
 //! lifetimes on either side of it), lanes co-written by one assignment
 //! with each other — and every web becomes one typed MLIL variable. A
 //! register reused for a float and later a counter becomes two variables
-//! with honest types, so the consumer renders reinterpretations only
-//! where a web genuinely mixes representations. Parallel transfers
+//! with honest constraints, so the consumer renders reinterpretations
+//! only where a web genuinely mixes representations. Parallel transfers
 //! serialize safely because reads reference prior versions; when a
 //! target web is also read by a sibling assignment, the pre-state is
 //! copied into a synthetic temporary first.
 //!
+//! Emission is dialect-driven: each serialized statement reaches
+//! [`Lift::emit`] through an [`Emission`] context that can append one or
+//! more MLIL instructions — the storage-flavored one-operation form is
+//! [`Emission::single`], while semantic dialects expand or fuse freely
+//! under read-alignment and exceptional-placement validation. Edges lift
+//! *after* every instruction exists, so [`Lift::lift_edge`] can bake
+//! exact emitted throw-site identities into exceptional edge payloads,
+//! and [`LiftMaps`] returns the complete block, statement, instruction,
+//! and edge correspondences for regions, signatures, and diagnostics.
+//!
 //! The emitted operation templates are identity-free: a
-//! [`VarExpr::Read`] names positions and an interpretation, never a
-//! variable, and the instruction's positional `uses`/`defs` lists carry
-//! the web variables (one use per read in pre-order, the definition as
-//! the sole def). Generic MLIL transformations that rewrite instruction
-//! operands therefore stay sound over lifted functions.
+//! [`VarExpr::Read`] names positions and a constraint, never a variable,
+//! and the instruction's positional `uses`/`defs` lists carry the web
+//! variables (one use per read in pre-order, the definition as the sole
+//! def). Generic MLIL transformations that rewrite instruction operands
+//! therefore stay sound over lifted functions.
 
 extern crate alloc;
 
@@ -27,16 +37,18 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::ir::dialect::Vocabulary;
-use crate::ir::mlil::{FunctionBuilder as MlilBuilder, TypedVariable, VariableId};
-use crate::{BlockId, DominatorTree, PhiWebs, SsaForm, SsaValue};
+use crate::ir::mlil::{
+    FunctionBuilder as MlilBuilder, InstructionId, TypedVariable, VariableId,
+};
+use crate::{BlockId, DominatorTree, EdgeId, PhiWebs, SsaForm, SsaValue};
 
 use super::dialect::{Dialect, Lift};
 use super::error::{Error, Result};
 use super::expr::{Expr, Place};
 use super::function::Function;
 use super::render::Webs;
-use super::statement::{Lane, Statement};
-use super::types::{ScalarInference, ScalarType, ValueShape};
+use super::statement::{Lane, Statement, StatementId};
+use super::types::{Inference, Shape};
 
 /// One typed expression over lifted web variables.
 ///
@@ -48,22 +60,23 @@ use super::types::{ScalarInference, ScalarType, ValueShape};
 /// through [`ReadResolver`](super::ReadResolver).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VarExpr<D: Dialect> {
-    /// A read of one web variable's positions, with the interpretation
-    /// the consuming operation imposes. The variable read is the
-    /// matching pre-order entry of the instruction's `uses`.
+    /// A read of one web variable's positions, with the constraint the
+    /// consuming operation imposes. The variable read is the matching
+    /// pre-order entry of the instruction's `uses`.
     Read {
         /// Positions within the web variable, in consumption order.
         positions: Vec<u8>,
-        /// The interpretation the consumer imposes on each position.
-        scalar: ScalarType,
+        /// The constraint the consumer imposes on each position.
+        scalar: D::Constraint,
     },
     /// An immediate value, one bit pattern per lane.
     Const {
-        /// Raw lane bit patterns: [`ScalarType::words`] little-endian
+        /// Raw lane bit patterns:
+        /// [`Constraint::words`](super::Constraint::words) little-endian
         /// 64-bit words per lane, lanes in order.
         bits: Vec<u64>,
         /// The shape of the constant.
-        shape: ValueShape,
+        shape: Shape<D::Constraint>,
     },
     /// A pure operator application.
     Apply {
@@ -72,14 +85,14 @@ pub enum VarExpr<D: Dialect> {
         /// Operand values in operator order.
         operands: Vec<VarExpr<D>>,
         /// The result shape.
-        shape: ValueShape,
+        shape: Shape<D::Constraint>,
     },
     /// A bit reinterpretation to a same-width shape.
     Reinterpret {
         /// The reinterpreted value.
         operand: Box<VarExpr<D>>,
         /// The target shape.
-        shape: ValueShape,
+        shape: Shape<D::Constraint>,
     },
     /// A vector composed from reads of several webs — one storage read
     /// whose lanes resolved to different variables.
@@ -87,30 +100,30 @@ pub enum VarExpr<D: Dialect> {
         /// The composed parts in lane order.
         parts: Vec<VarExpr<D>>,
         /// The composed shape.
-        shape: ValueShape,
+        shape: Shape<D::Constraint>,
     },
 }
 
 impl<D: Dialect> VarExpr<D> {
     /// The shape of this expression's value.
     #[must_use]
-    pub fn shape(&self) -> ValueShape {
+    pub fn shape(&self) -> Shape<D::Constraint> {
         match self {
             Self::Read {
                 positions, scalar, ..
-            } => ValueShape {
-                scalar: *scalar,
+            } => Shape {
+                scalar: scalar.clone(),
                 lanes: u8::try_from(positions.len()).unwrap_or(u8::MAX),
             },
             Self::Const { shape, .. }
             | Self::Apply { shape, .. }
             | Self::Reinterpret { shape, .. }
-            | Self::Compose { shape, .. } => *shape,
+            | Self::Compose { shape, .. } => shape.clone(),
         }
     }
 }
 
-/// One lifted statement handed to the consumer's MLIL operation hook.
+/// One lifted statement handed to the consumer's [`Lift::emit`] hook.
 ///
 /// The statement is a template over the instruction's positional
 /// variable lists: reads align with `uses` in pre-order, and an
@@ -146,6 +159,11 @@ pub enum LiftedStatement<D: Dialect> {
         /// The scalar branch condition.
         condition: VarExpr<D>,
     },
+    /// A multi-way dispatch on one scalar scrutinee.
+    Dispatch {
+        /// The scalar dispatch scrutinee.
+        scrutinee: VarExpr<D>,
+    },
     /// A function return carrying result values.
     ///
     /// The lift materializes every non-trivial value into a temporary,
@@ -156,6 +174,15 @@ pub enum LiftedStatement<D: Dialect> {
     Return {
         /// Returned values in signature order.
         values: Vec<VarExpr<D>>,
+    },
+    /// A terminating exceptional raise.
+    Raise {
+        /// The dialect effect operation performing the raise.
+        operation: D::EffectOp,
+        /// Operand values in operation order.
+        operands: Vec<VarExpr<D>>,
+        /// Observable effects beyond the exceptional transfer itself.
+        effects: Vec<<D as Vocabulary>::Effect>,
     },
 }
 
@@ -170,18 +197,64 @@ pub struct WebInfo<D: Dialect> {
     /// Ascending storage lanes the web spans.
     pub lanes: Vec<u8>,
     /// The web's inferred shape.
-    pub shape: ValueShape,
+    pub shape: Shape<D::Constraint>,
     /// Whether the web contains the version-zero live-in value.
     pub live_in: bool,
 }
 
-/// The result of lifting: an MLIL builder ready for signature assignment
-/// and [`finish`](MlilBuilder::finish), plus the recovered webs.
+/// The stable correspondences one lift established.
+///
+/// Signatures, exception regions, native provenance, and diagnostics
+/// attach through these maps rather than through coincidentally equal
+/// dense identities.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiftMaps {
+    blocks: Vec<BlockId>,
+    instructions: Vec<Vec<InstructionId>>,
+    throw_sites: Vec<Option<InstructionId>>,
+    edges: Vec<EdgeId>,
+}
+
+impl LiftMaps {
+    /// The MLIL block one RTL block became.
+    #[must_use]
+    pub fn block(&self, block: BlockId) -> Option<BlockId> {
+        self.blocks.get(block.index()).copied()
+    }
+
+    /// The MLIL instructions one RTL statement emitted, in order.
+    #[must_use]
+    pub fn instructions(&self, statement: StatementId) -> &[InstructionId] {
+        self.instructions
+            .get(statement.index())
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// The emitted instruction designated as one statement's throw site.
+    #[must_use]
+    pub fn throw_site(&self, statement: StatementId) -> Option<InstructionId> {
+        self.throw_sites.get(statement.index()).copied().flatten()
+    }
+
+    /// The MLIL edge one RTL edge became.
+    #[must_use]
+    pub fn edge(&self, edge: EdgeId) -> Option<EdgeId> {
+        self.edges.get(edge.index()).copied()
+    }
+}
+
+/// The result of lifting: an MLIL builder ready for signature and region
+/// assignment and [`finish`](MlilBuilder::finish), the recovered webs,
+/// and the full provenance maps.
 pub struct Lifting<D: Lift> {
     /// The populated MLIL builder.
     pub builder: MlilBuilder<D>,
-    /// Recovered webs, resolvable by variable identity.
+    /// Recovered webs, resolvable by variable identity. Webs flagged
+    /// [`live_in`](WebInfo::live_in) are the function's parameters and
+    /// implicit input channels, in declaration order.
     pub webs: Webs<D>,
+    /// Block, statement, instruction, and edge correspondences.
+    pub maps: LiftMaps,
 }
 
 struct UnionFind {
@@ -210,7 +283,7 @@ impl UnionFind {
 struct WebFact<D: Dialect> {
     storage: <D as Vocabulary>::NativeVariable,
     lanes: BTreeSet<u8>,
-    scalar: ScalarInference,
+    scalar: Inference<D::Constraint>,
     live_in: bool,
 }
 
@@ -219,7 +292,8 @@ struct WebFact<D: Dialect> {
 /// # Errors
 ///
 /// Returns an error when SSA annotations disagree with statement
-/// structure or MLIL construction fails.
+/// structure, the dialect's emission violates read alignment or
+/// exceptional placement, or MLIL construction fails.
 #[expect(clippy::too_many_lines, reason = "one linear pass per phase")]
 pub fn lift<D: Lift>(function: &Function<D>) -> Result<Lifting<D>> {
     let cfg = &function.cfg;
@@ -308,14 +382,14 @@ pub fn lift<D: Lift>(function: &Function<D>) -> Result<Lifting<D>> {
         let fact = facts.entry(root).or_insert_with(|| WebFact {
             storage: lane.0.clone(),
             lanes: BTreeSet::new(),
-            scalar: ScalarInference::Unseen,
+            scalar: Inference::Unseen,
             live_in: false,
         });
         fact.lanes.insert(lane.1);
         fact.live_in |= *version == 0;
     }
 
-    // Phase 3: infer each web's scalar type from read wants and
+    // Phase 3: infer each web's constraint from read wants and
     // assignment value shapes.
     for block in cfg.blocks() {
         let annotations = ssa.block(block.id());
@@ -350,7 +424,7 @@ pub fn lift<D: Lift>(function: &Function<D>) -> Result<Lifting<D>> {
                     if let Some(&id) = ids.get(&key)
                         && let Some(fact) = facts.get_mut(&roots[id])
                     {
-                        fact.scalar.observe(value.shape().scalar);
+                        fact.scalar.observe(&value.shape().scalar);
                     }
                 }
             }
@@ -369,7 +443,7 @@ pub fn lift<D: Lift>(function: &Function<D>) -> Result<Lifting<D>> {
         }
         let fact = &facts[&root];
         let lanes: Vec<u8> = fact.lanes.iter().copied().collect();
-        let shape = ValueShape {
+        let shape = Shape {
             scalar: fact.scalar.resolve(),
             lanes: u8::try_from(lanes.len()).unwrap_or(u8::MAX),
         };
@@ -386,7 +460,8 @@ pub fn lift<D: Lift>(function: &Function<D>) -> Result<Lifting<D>> {
         });
     }
 
-    // Phase 5: mirror blocks and edges.
+    // Phase 5: mirror blocks. Edges wait until every instruction exists,
+    // so edge lifting can reference emitted instruction identities.
     let mut block_map: Vec<BlockId> = Vec::with_capacity(cfg.block_count());
     for block in cfg.blocks() {
         if block.id() == cfg.entry() {
@@ -396,27 +471,32 @@ pub fn lift<D: Lift>(function: &Function<D>) -> Result<Lifting<D>> {
             block_map.push(builder.new_block(label));
         }
     }
-    for edge in cfg.edges() {
-        builder
-            .add_edge(
-                block_map[edge.source().index()],
-                block_map[edge.target().index()],
-                edge.payload().clone(),
-                None,
-            )
-            .map_err(|error| Error::Lifting(error.to_string()))?;
-    }
 
-    // Phase 6: emit one MLIL instruction per serialized statement.
+    // Phase 6: emit MLIL instructions through the dialect's hook, one
+    // serialized statement at a time.
     let resolver = Resolver {
         ids: &ids,
         roots: &roots,
         web_of_root: &web_of_root,
     };
+    let statement_count = function.statement_count();
     let mut emitter = Emitter {
         builder,
+        web_index: webs
+            .iter()
+            .enumerate()
+            .map(|(index, web)| (web.variable, index))
+            .collect(),
         webs,
         resolver,
+        maps: LiftMaps {
+            blocks: block_map.clone(),
+            instructions: alloc::vec![Vec::new(); statement_count],
+            throw_sites: alloc::vec![None; statement_count],
+            edges: Vec::new(),
+        },
+        current: None,
+        native_defined: false,
     };
     for block in cfg.blocks() {
         let annotations = ssa.block(block.id());
@@ -424,6 +504,7 @@ pub fn lift<D: Lift>(function: &Function<D>) -> Result<Lifting<D>> {
             let annotation = &annotations.instructions[index];
             emitter.statement(
                 block_map[block.id().index()],
+                node.id(),
                 node.statement(),
                 node.span().cloned(),
                 annotation,
@@ -431,10 +512,79 @@ pub fn lift<D: Lift>(function: &Function<D>) -> Result<Lifting<D>> {
         }
     }
 
+    // Phase 7: lift edges with the finished statement-to-instruction
+    // mappings in hand.
+    for edge in cfg.edges() {
+        let source = cfg.block(edge.source());
+        let owner = if edge.kind().is_exceptional() {
+            source
+                .instructions()
+                .iter()
+                .find(|node| node.statement().may_throw())
+                .map(super::statement::StatementNode::id)
+        } else {
+            source
+                .instructions()
+                .last()
+                .filter(|node| node.statement().is_terminator())
+                .map(super::statement::StatementNode::id)
+        };
+        let context = EdgeContext {
+            maps: &emitter.maps,
+            owner,
+        };
+        let metadata = D::lift_edge(edge.payload(), &context);
+        let lifted = emitter
+            .builder
+            .add_edge(
+                block_map[edge.source().index()],
+                block_map[edge.target().index()],
+                metadata,
+                None,
+            )
+            .map_err(|error| Error::Lifting(error.to_string()))?;
+        emitter.maps.edges.push(lifted);
+    }
+
     Ok(Lifting {
         builder: emitter.builder,
         webs: Webs::new(emitter.webs),
+        maps: emitter.maps,
     })
+}
+
+/// The finished mappings available while lifting one edge.
+pub struct EdgeContext<'a> {
+    maps: &'a LiftMaps,
+    owner: Option<StatementId>,
+}
+
+impl EdgeContext<'_> {
+    /// The RTL statement owning the edge: the unique throwing statement
+    /// for an exceptional edge, the block's terminator otherwise, `None`
+    /// for a plain fallthrough out of an unterminated block.
+    #[must_use]
+    pub const fn owner(&self) -> Option<StatementId> {
+        self.owner
+    }
+
+    /// The MLIL instructions one statement emitted, in order.
+    #[must_use]
+    pub fn instructions(&self, statement: StatementId) -> &[InstructionId] {
+        self.maps.instructions(statement)
+    }
+
+    /// The emitted throw site of one statement.
+    #[must_use]
+    pub fn throw_site(&self, statement: StatementId) -> Option<InstructionId> {
+        self.maps.throw_site(statement)
+    }
+
+    /// The MLIL block one RTL block became.
+    #[must_use]
+    pub fn block(&self, block: BlockId) -> Option<BlockId> {
+        self.maps.block(block)
+    }
 }
 
 struct Resolver<'a, D: Dialect> {
@@ -461,7 +611,11 @@ impl<D: Dialect> Resolver<'_, D> {
 struct Emitter<'a, D: Lift> {
     builder: MlilBuilder<D>,
     webs: Vec<WebInfo<D>>,
+    web_index: BTreeMap<VariableId, usize>,
     resolver: Resolver<'a, D>,
+    maps: LiftMaps,
+    current: Option<StatementId>,
+    native_defined: bool,
 }
 
 /// One rebuilt assignment awaiting serialization.
@@ -470,6 +624,165 @@ struct PendingAssign<D: Dialect> {
     positions: Vec<u8>,
     value: VarExpr<D>,
     reads: Vec<usize>,
+}
+
+/// The context one [`Lift::emit`] call appends MLIL instructions
+/// through.
+///
+/// It validates the dialect's expansion: every use must be a variable
+/// the statement made available (its reads, its assignment target, a
+/// context temporary, or an earlier definition of the same statement),
+/// exactly one appended instruction may carry the statement's exceptional
+/// behavior, and no native web may be defined before that throw site.
+pub struct Emission<'a, 'b, D: Lift> {
+    emitter: &'a mut Emitter<'b, D>,
+    block: BlockId,
+    statement: StatementId,
+    reads: Vec<TypedVariable<D>>,
+    target: Option<TypedVariable<D>>,
+    merge: bool,
+    may_throw: bool,
+    span: Option<<D as Vocabulary>::SourceSpan>,
+    allowed: BTreeSet<VariableId>,
+    appended_throwing: bool,
+}
+
+impl<D: Lift> Emission<'_, '_, D> {
+    /// The RTL statement being emitted.
+    #[must_use]
+    pub const fn statement(&self) -> StatementId {
+        self.statement
+    }
+
+    /// The typed web variables the statement's reads consume, in
+    /// pre-order — the instruction `uses` of the one-operation form.
+    #[must_use]
+    pub fn reads(&self) -> &[TypedVariable<D>] {
+        &self.reads
+    }
+
+    /// The typed web variable an assignment defines.
+    #[must_use]
+    pub const fn target(&self) -> Option<&TypedVariable<D>> {
+        self.target.as_ref()
+    }
+
+    /// Whether the statement can transfer exceptionally — exactly one
+    /// appended instruction must then carry `may_throw`.
+    #[must_use]
+    pub const fn may_throw(&self) -> bool {
+        self.may_throw
+    }
+
+    /// Declares one dialect temporary for a multi-instruction expansion.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when MLIL declaration fails.
+    pub fn temporary(
+        &mut self,
+        role: <D as Vocabulary>::VariableRole,
+        value_type: <D as Vocabulary>::ValueType,
+    ) -> Result<TypedVariable<D>> {
+        let variable = self
+            .emitter
+            .builder
+            .declare_variable(role, None)
+            .map_err(|error| Error::Lifting(error.to_string()))?;
+        self.allowed.insert(variable);
+        Ok(TypedVariable::new(variable, value_type))
+    }
+
+    /// Appends one MLIL instruction for the statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a use references a variable the statement
+    /// did not make available, when a second instruction claims the
+    /// statement's throw site, or when a native web was already defined
+    /// before a throwing append.
+    pub fn append(
+        &mut self,
+        operation: <D as crate::ir::mlil::Dialect>::Operation,
+        uses: Vec<TypedVariable<D>>,
+        defs: Vec<TypedVariable<D>>,
+        may_throw: bool,
+    ) -> Result<InstructionId> {
+        for used in &uses {
+            if !self.allowed.contains(&used.variable) {
+                return Err(Error::Lifting(format!(
+                    "emission uses a variable outside statement {}'s reads",
+                    self.statement.raw()
+                )));
+            }
+        }
+        if may_throw {
+            if self.emitter.maps.throw_sites[self.statement.index()].is_some() {
+                return Err(Error::Lifting(format!(
+                    "statement {} designated two throw sites",
+                    self.statement.raw()
+                )));
+            }
+            if self.emitter.native_defined {
+                return Err(Error::Lifting(format!(
+                    "statement {} committed native state before its throw site",
+                    self.statement.raw()
+                )));
+            }
+        }
+        for defined in &defs {
+            self.allowed.insert(defined.variable);
+            if self
+                .emitter
+                .web_index
+                .get(&defined.variable)
+                .is_some_and(|&web| self.emitter.webs[web].storage.is_some())
+            {
+                self.emitter.native_defined = true;
+            }
+        }
+        let id = self
+            .emitter
+            .builder
+            .append_instruction(
+                self.block,
+                operation,
+                uses,
+                defs,
+                may_throw,
+                self.span.clone(),
+            )
+            .map_err(|error| Error::Lifting(error.to_string()))?;
+        self.emitter.maps.instructions[self.statement.index()].push(id);
+        if may_throw {
+            self.emitter.maps.throw_sites[self.statement.index()] = Some(id);
+            self.appended_throwing = true;
+        }
+        Ok(id)
+    }
+
+    /// Appends the one-operation form: uses are the statement's reads
+    /// (plus the merging assignment's trailing target), the definition
+    /// is the assignment target, and the statement's exceptional
+    /// behavior lands on this instruction.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when MLIL construction fails.
+    pub fn single(
+        &mut self,
+        operation: <D as crate::ir::mlil::Dialect>::Operation,
+    ) -> Result<InstructionId> {
+        let mut uses = self.reads.clone();
+        if self.merge
+            && let Some(target) = &self.target
+        {
+            uses.push(target.clone());
+        }
+        let defs: Vec<TypedVariable<D>> = self.target.iter().cloned().collect();
+        let may_throw = self.may_throw;
+        self.append(operation, uses, defs, may_throw)
+    }
 }
 
 impl<D: Lift> Emitter<'_, D> {
@@ -482,11 +795,14 @@ impl<D: Lift> Emitter<'_, D> {
     }
 
     fn typed(&self, web: usize) -> TypedVariable<D> {
-        TypedVariable::new(self.webs[web].variable, D::value_type(self.webs[web].shape))
+        TypedVariable::new(
+            self.webs[web].variable,
+            D::value_type(self.webs[web].shape.clone()),
+        )
     }
 
     /// Declares one synthetic temporary web of the given shape.
-    fn declare_temporary(&mut self, shape: ValueShape) -> Result<usize> {
+    fn declare_temporary(&mut self, shape: Shape<D::Constraint>) -> Result<usize> {
         let variable = self
             .builder
             .declare_variable(D::web_role(None), None)
@@ -499,6 +815,7 @@ impl<D: Lift> Emitter<'_, D> {
             shape,
             live_in: false,
         });
+        self.web_index.insert(variable, index);
         Ok(index)
     }
 
@@ -534,7 +851,7 @@ impl<D: Lift> Emitter<'_, D> {
                         _ => {
                             parts.push(VarExpr::Read {
                                 positions: alloc::vec![position],
-                                scalar: *scalar,
+                                scalar: scalar.clone(),
                             });
                             part_webs.push(web);
                         }
@@ -544,8 +861,8 @@ impl<D: Lift> Emitter<'_, D> {
                 if parts.len() == 1 {
                     Ok(parts.remove(0))
                 } else {
-                    let shape = ValueShape {
-                        scalar: *scalar,
+                    let shape = Shape {
+                        scalar: scalar.clone(),
                         lanes: u8::try_from(lanes.len()).unwrap_or(u8::MAX),
                     };
                     Ok(VarExpr::Compose { parts, shape })
@@ -553,7 +870,7 @@ impl<D: Lift> Emitter<'_, D> {
             }
             Expr::Const { bits, shape } => Ok(VarExpr::Const {
                 bits: bits.clone(),
-                shape: *shape,
+                shape: shape.clone(),
             }),
             Expr::Apply {
                 operator,
@@ -567,44 +884,59 @@ impl<D: Lift> Emitter<'_, D> {
                 Ok(VarExpr::Apply {
                     operator: operator.clone(),
                     operands,
-                    shape: *shape,
+                    shape: shape.clone(),
                 })
             }
             Expr::Reinterpret { operand, shape } => Ok(VarExpr::Reinterpret {
                 operand: Box::new(self.rebuild(operand, uses, cursor, reads)?),
-                shape: *shape,
+                shape: shape.clone(),
             }),
         }
     }
 
-    /// Emits one MLIL instruction for a lifted statement.
-    ///
-    /// `reads` are the webs the statement's [`VarExpr::Read`] nodes
-    /// consume in pre-order; `target` is the assigned web of an
-    /// [`Assign`](LiftedStatement::Assign) and `None` otherwise.
-    fn emit(
+    /// Hands one serialized statement to the dialect's emission hook.
+    #[expect(clippy::too_many_arguments, reason = "one slot per statement facet")]
+    fn hand_off(
         &mut self,
         block: BlockId,
+        id: StatementId,
         statement: LiftedStatement<D>,
         reads: &[usize],
         target: Option<usize>,
+        merge: bool,
         may_throw: bool,
         span: Option<<D as Vocabulary>::SourceSpan>,
     ) -> Result<()> {
-        let mut uses: Vec<TypedVariable<D>> = reads.iter().map(|&web| self.typed(web)).collect();
-        let mut defs: Vec<TypedVariable<D>> = Vec::new();
-        if let LiftedStatement::Assign { merges, .. } = &statement {
-            let target =
-                target.ok_or_else(|| Error::Lifting("assignment without a target web".into()))?;
-            if *merges {
-                uses.push(self.typed(target));
-            }
-            defs.push(self.typed(target));
+        if self.current != Some(id) {
+            self.current = Some(id);
+            self.native_defined = false;
         }
-        let operation = D::operation(statement);
-        self.builder
-            .append_instruction(block, operation, uses, defs, may_throw, span)
-            .map_err(|error| Error::Lifting(error.to_string()))?;
+        let reads: Vec<TypedVariable<D>> = reads.iter().map(|&web| self.typed(web)).collect();
+        let target = target.map(|web| self.typed(web));
+        let mut allowed: BTreeSet<VariableId> =
+            reads.iter().map(|typed| typed.variable).collect();
+        if let Some(target) = &target {
+            allowed.insert(target.variable);
+        }
+        let mut emission = Emission {
+            emitter: self,
+            block,
+            statement: id,
+            reads,
+            target,
+            merge,
+            may_throw,
+            span,
+            allowed,
+            appended_throwing: false,
+        };
+        D::emit(&mut emission, statement)?;
+        if may_throw && !emission.appended_throwing {
+            return Err(Error::Lifting(format!(
+                "the emission dropped statement {}'s exceptional behavior",
+                id.raw()
+            )));
+        }
         Ok(())
     }
 
@@ -614,6 +946,7 @@ impl<D: Lift> Emitter<'_, D> {
     fn returnable(
         &mut self,
         block: BlockId,
+        id: StatementId,
         value: VarExpr<D>,
         reads: &[usize],
         span: Option<<D as Vocabulary>::SourceSpan>,
@@ -627,15 +960,16 @@ impl<D: Lift> Emitter<'_, D> {
                     .iter()
                     .enumerate()
                     .all(|(index, &position)| usize::from(position) == index);
-            if whole && *scalar == info.shape.scalar {
+            if whole && scalar == &info.shape.scalar {
                 return Ok((value, *web));
             }
         }
         let shape = value.shape();
-        let temporary = self.declare_temporary(shape)?;
+        let temporary = self.declare_temporary(shape.clone())?;
         let all: Vec<u8> = (0..shape.lanes).collect();
-        self.emit(
+        self.hand_off(
             block,
+            id,
             LiftedStatement::Assign {
                 positions: all.clone(),
                 width: shape.lanes,
@@ -645,6 +979,7 @@ impl<D: Lift> Emitter<'_, D> {
             },
             reads,
             Some(temporary),
+            false,
             false,
             span,
         )?;
@@ -660,9 +995,11 @@ impl<D: Lift> Emitter<'_, D> {
     /// Serializes one parallel transfer: rebuild every assignment
     /// against pre-statement state, pre-copy hazarded targets, then
     /// emit one MLIL assignment per destination.
+    #[expect(clippy::too_many_arguments, reason = "one slot per statement facet")]
     fn transfer(
         &mut self,
         block: BlockId,
+        id: StatementId,
         assignments: &[(Place<D>, Expr<D>)],
         effects: &[<D as Vocabulary>::Effect],
         may_throw: bool,
@@ -705,11 +1042,12 @@ impl<D: Lift> Emitter<'_, D> {
                 }
             }
             for hazard in hazards {
-                let shape = self.webs[hazard].shape;
-                let temporary = self.declare_temporary(shape)?;
+                let shape = self.webs[hazard].shape.clone();
+                let temporary = self.declare_temporary(shape.clone())?;
                 let all: Vec<u8> = (0..shape.lanes).collect();
-                self.emit(
+                self.hand_off(
                     block,
+                    id,
                     LiftedStatement::Assign {
                         positions: all.clone(),
                         width: shape.lanes,
@@ -722,6 +1060,7 @@ impl<D: Lift> Emitter<'_, D> {
                     },
                     &[hazard],
                     Some(temporary),
+                    false,
                     false,
                     span.cloned(),
                 )?;
@@ -741,8 +1080,9 @@ impl<D: Lift> Emitter<'_, D> {
             let statement_effects = if first { effects.to_vec() } else { Vec::new() };
             let throws = first && may_throw;
             first = false;
-            self.emit(
+            self.hand_off(
                 block,
+                id,
                 LiftedStatement::Assign {
                     positions: pending.positions,
                     width,
@@ -752,6 +1092,7 @@ impl<D: Lift> Emitter<'_, D> {
                 },
                 &pending.reads,
                 Some(pending.target),
+                merges,
                 throws,
                 span.cloned(),
             )?;
@@ -759,9 +1100,11 @@ impl<D: Lift> Emitter<'_, D> {
         Ok(())
     }
 
+    #[expect(clippy::too_many_lines, reason = "one arm per statement form")]
     fn statement(
         &mut self,
         block: BlockId,
+        id: StatementId,
         statement: &Statement<D>,
         span: Option<<D as Vocabulary>::SourceSpan>,
         annotation: &crate::SsaInstruction<Lane<D>>,
@@ -771,7 +1114,15 @@ impl<D: Lift> Emitter<'_, D> {
                 assignments,
                 effects,
                 may_throw,
-            } => self.transfer(block, assignments, effects, *may_throw, span.as_ref(), annotation),
+            } => self.transfer(
+                block,
+                id,
+                assignments,
+                effects,
+                *may_throw,
+                span.as_ref(),
+                annotation,
+            ),
             Statement::Effect {
                 operation,
                 operands,
@@ -784,8 +1135,9 @@ impl<D: Lift> Emitter<'_, D> {
                     .iter()
                     .map(|operand| self.rebuild(operand, &annotation.uses, &mut cursor, &mut reads))
                     .collect::<Result<Vec<_>>>()?;
-                self.emit(
+                self.hand_off(
                     block,
+                    id,
                     LiftedStatement::Effect {
                         operation: operation.clone(),
                         operands,
@@ -793,6 +1145,7 @@ impl<D: Lift> Emitter<'_, D> {
                     },
                     &reads,
                     None,
+                    false,
                     *may_throw,
                     span,
                 )
@@ -802,11 +1155,29 @@ impl<D: Lift> Emitter<'_, D> {
                 let mut reads = Vec::new();
                 let condition =
                     self.rebuild(condition, &annotation.uses, &mut cursor, &mut reads)?;
-                self.emit(
+                self.hand_off(
                     block,
+                    id,
                     LiftedStatement::Branch { condition },
                     &reads,
                     None,
+                    false,
+                    false,
+                    span,
+                )
+            }
+            Statement::Dispatch { scrutinee } => {
+                let mut cursor = 0usize;
+                let mut reads = Vec::new();
+                let scrutinee =
+                    self.rebuild(scrutinee, &annotation.uses, &mut cursor, &mut reads)?;
+                self.hand_off(
+                    block,
+                    id,
+                    LiftedStatement::Dispatch { scrutinee },
+                    &reads,
+                    None,
+                    false,
                     false,
                     span,
                 )
@@ -819,16 +1190,45 @@ impl<D: Lift> Emitter<'_, D> {
                     let mut reads = Vec::new();
                     let rebuilt =
                         self.rebuild(value, &annotation.uses, &mut cursor, &mut reads)?;
-                    let (value, web) = self.returnable(block, rebuilt, &reads, span.clone())?;
+                    let (value, web) =
+                        self.returnable(block, id, rebuilt, &reads, span.clone())?;
                     lowered.push(value);
                     return_reads.push(web);
                 }
-                self.emit(
+                self.hand_off(
                     block,
+                    id,
                     LiftedStatement::Return { values: lowered },
                     &return_reads,
                     None,
                     false,
+                    false,
+                    span,
+                )
+            }
+            Statement::Raise {
+                operation,
+                operands,
+                effects,
+            } => {
+                let mut cursor = 0usize;
+                let mut reads = Vec::new();
+                let operands = operands
+                    .iter()
+                    .map(|operand| self.rebuild(operand, &annotation.uses, &mut cursor, &mut reads))
+                    .collect::<Result<Vec<_>>>()?;
+                self.hand_off(
+                    block,
+                    id,
+                    LiftedStatement::Raise {
+                        operation: operation.clone(),
+                        operands,
+                        effects: effects.clone(),
+                    },
+                    &reads,
+                    None,
+                    false,
+                    true,
                     span,
                 )
             }

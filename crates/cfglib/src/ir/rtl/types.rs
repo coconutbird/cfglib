@@ -1,20 +1,58 @@
-//! Scalar type classes and value shapes carried by RTL expressions.
+//! Lane constraints and value shapes carried by RTL expressions.
 //!
-//! The scalar vocabulary is deliberately a closed, library-owned set: RTL
-//! describes machine storage, and machine lane interpretations are a
-//! finite alphabet shared by every ISA. Consumer-owned typing enters one
-//! level up, where [`Lift::value_type`](super::Lift::value_type) maps each
-//! web's [`ValueShape`] into the dialect's own MLIL type domain.
+//! The constraint domain is dialect-owned: numeric machine lanes use the
+//! provided [`ScalarType`], while managed-language dialects supply richer
+//! domains — exact and unknown reference types, null, verifier-polymorphic
+//! zero, uninitialized objects, hierarchy-dependent merges — by
+//! implementing [`Constraint`] on their own type. cfglib owns the folding
+//! inference ([`Inference`]) and the web mechanics; the dialect owns what
+//! the constraints mean and how they merge. Consumer-facing typing enters
+//! at MLIL through [`Lift::value_type`](super::Lift::value_type).
 
-/// The interpretation of one storage lane.
+use core::fmt::Debug;
+
+/// One dialect-owned lane constraint domain.
+///
+/// Web typing folds every observation of a web (read interpretations and
+/// assigned value shapes) through [`Inference`], which relies on this
+/// contract. `merge` must be commutative, and merging equal constraints
+/// must yield that constraint back.
+pub trait Constraint: Clone + Debug + Eq {
+    /// The unconstrained element: observing it imposes nothing.
+    fn free() -> Self;
+
+    /// The constraint a genuinely conflicted web resolves to.
+    fn conflicted() -> Self;
+
+    /// The merge of two observations, or `None` for a genuine conflict.
+    fn merge(&self, other: &Self) -> Option<Self>;
+
+    /// The lane width in bits, when the constraint fixes one.
+    ///
+    /// Reinterpretation validation treats an unknown width as compatible
+    /// with anything, and constants carry [`words`](Self::words) 64-bit
+    /// words per lane.
+    fn width(&self) -> Option<u32> {
+        None
+    }
+
+    /// The number of 64-bit words one lane's bit pattern occupies in a
+    /// constant — the width rounded up to whole words, one word when the
+    /// constraint fixes no width.
+    fn words(&self) -> usize {
+        self.width().map_or(1, |width| width.div_ceil(64) as usize)
+    }
+}
+
+/// The interpretation of one numeric storage lane.
 ///
 /// `Bits` is the unknown interpretation: raw storage whose meaning no
 /// operation has constrained yet. Reads that impose `Bits` (transports,
 /// bitwise moves) leave type inference untouched; a web whose reads
 /// genuinely conflict (float against integer) also resolves to `Bits`,
 /// and the consumer then renders explicit reinterpretations at each
-/// access. Inference itself runs on [`ScalarInference`], which keeps
-/// "unconstrained" and "conflicted" distinct while observations fold.
+/// access. This is the provided [`Constraint`] domain for machine-numeric
+/// dialects; managed dialects define their own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ScalarType {
     /// 16-bit IEEE-754 float.
@@ -112,37 +150,57 @@ impl ScalarType {
     }
 }
 
-/// Folding scalar-type inference over one web's observations.
+impl Constraint for ScalarType {
+    fn free() -> Self {
+        Self::Bits
+    }
+
+    fn conflicted() -> Self {
+        Self::Bits
+    }
+
+    fn merge(&self, other: &Self) -> Option<Self> {
+        if self == other {
+            return Some(*self);
+        }
+        self.integer_merge(*other)
+    }
+
+    fn width(&self) -> Option<u32> {
+        Self::width(*self)
+    }
+}
+
+/// Folding constraint inference over one web's observations.
 ///
-/// A three-point lattice — unconstrained, one known interpretation, and
+/// A three-point lattice — unconstrained, one known constraint, and
 /// conflict — so a genuine conflict is never forgotten: unlike a pairwise
 /// merge whose "unknown" and "conflict" share one value, `F32` then `U32`
-/// then `F32` resolves to `Bits` here no matter the observation order.
+/// then `F32` resolves to [`Constraint::conflicted`] here no matter the
+/// observation order.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum ScalarInference {
-    /// No observation has constrained the interpretation yet.
+pub enum Inference<C> {
+    /// No observation has constrained the lane yet.
     #[default]
     Unseen,
-    /// Every observation so far agrees on one interpretation.
-    Known(ScalarType),
-    /// Observations imposed incompatible interpretations.
+    /// Every observation so far merged into one constraint.
+    Known(C),
+    /// Observations imposed unmergeable constraints.
     Conflict,
 }
 
-impl ScalarInference {
-    /// Folds one observed interpretation into the inference.
+impl<C: Constraint> Inference<C> {
+    /// Folds one observed constraint into the inference.
     ///
-    /// `Bits` observations impose nothing and leave the state untouched.
-    /// Same-width signed/unsigned integers merge to the signed form; any
-    /// other disagreement is a conflict, and conflicts are permanent.
-    pub fn observe(&mut self, scalar: ScalarType) {
-        if scalar == ScalarType::Bits {
+    /// [`Constraint::free`] observations impose nothing and leave the
+    /// state untouched; unmergeable observations conflict permanently.
+    pub fn observe(&mut self, constraint: &C) {
+        if *constraint == C::free() {
             return;
         }
-        *self = match *self {
-            Self::Unseen => Self::Known(scalar),
-            Self::Known(known) if known == scalar => Self::Known(known),
-            Self::Known(known) => match known.integer_merge(scalar) {
+        *self = match &*self {
+            Self::Unseen => Self::Known(constraint.clone()),
+            Self::Known(known) => match known.merge(constraint) {
                 Some(merged) => Self::Known(merged),
                 None => Self::Conflict,
             },
@@ -150,40 +208,48 @@ impl ScalarInference {
         };
     }
 
-    /// The inferred interpretation: unconstrained and conflicted webs
-    /// both resolve to raw [`Bits`](ScalarType::Bits).
+    /// The inferred constraint: unconstrained webs resolve to
+    /// [`Constraint::free`] and conflicted webs to
+    /// [`Constraint::conflicted`].
     #[must_use]
-    pub const fn resolve(self) -> ScalarType {
+    pub fn resolve(&self) -> C {
         match self {
-            Self::Known(scalar) => scalar,
-            Self::Unseen | Self::Conflict => ScalarType::Bits,
+            Self::Known(constraint) => constraint.clone(),
+            Self::Unseen => C::free(),
+            Self::Conflict => C::conflicted(),
         }
     }
 }
 
-/// The shape of one value: a scalar interpretation across `lanes` lanes.
+/// Scalar-type inference — [`Inference`] over the numeric domain.
+pub type ScalarInference = Inference<ScalarType>;
+
+/// The shape of one value: a lane constraint across `lanes` lanes.
 ///
-/// A lane's bit pattern travels as [`ScalarType::words`] little-endian
-/// 64-bit words in constants, so interpretations up to 512 bits stay one
-/// scalar lane.
+/// A lane's bit pattern travels as [`Constraint::words`] little-endian
+/// 64-bit words in constants, so constraints up to 512 bits stay one
+/// lane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ValueShape {
-    /// Lane interpretation.
-    pub scalar: ScalarType,
+pub struct Shape<C> {
+    /// Lane constraint.
+    pub scalar: C,
     /// Number of lanes (1 for scalars).
     pub lanes: u8,
 }
 
-impl ValueShape {
+impl<C> Shape<C> {
     /// A one-lane shape.
     #[must_use]
-    pub const fn scalar(scalar: ScalarType) -> Self {
+    pub const fn scalar(scalar: C) -> Self {
         Self { scalar, lanes: 1 }
     }
 
     /// A multi-lane shape.
     #[must_use]
-    pub const fn vector(scalar: ScalarType, lanes: u8) -> Self {
+    pub const fn vector(scalar: C, lanes: u8) -> Self {
         Self { scalar, lanes }
     }
 }
+
+/// A numeric value shape — [`Shape`] over [`ScalarType`].
+pub type ValueShape = Shape<ScalarType>;

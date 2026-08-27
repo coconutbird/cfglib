@@ -302,13 +302,17 @@ pub use ir::mlil::{
 };
 pub use ir::provenance::{ProvenanceEntry, ProvenanceError, ProvenanceMap};
 pub use ir::rtl::{
-    Dialect as RtlDialect, Edge as RtlEdge, Error as RtlError, Expr as RtlExpr,
-    Function as RtlFunction, FunctionBuilder as RtlFunctionBuilder, Lane as RtlLane,
-    Lift as RtlLift, LiftedStatement as RtlLiftedStatement, Lifting as RtlLifting,
-    Place as RtlPlace, ReadResolver as RtlReadResolver, ResolvedRead as RtlResolvedRead,
-    Result as RtlResult, ScalarInference, ScalarType, Statement as RtlStatement,
-    StatementNode as RtlStatementNode, ValueShape, VarExpr as RtlVarExpr, WebInfo as RtlWebInfo,
-    Webs as RtlWebs, lift as lift_rtl_function, referenced_webs as rtl_referenced_webs,
+    Constraint as RtlConstraint, Dialect as RtlDialect, Edge as RtlEdge,
+    EdgeContext as RtlEdgeContext, Emission as RtlEmission, Error as RtlError, Expr as RtlExpr,
+    Function as RtlFunction, FunctionBuilder as RtlFunctionBuilder, Inference as RtlInference,
+    Lane as RtlLane, Lift as RtlLift, LiftMaps as RtlLiftMaps,
+    LiftedStatement as RtlLiftedStatement, Lifting as RtlLifting, Lower as RtlLower,
+    LowerContext as RtlLowerContext, Lowered as RtlLowered, Place as RtlPlace,
+    ReadResolver as RtlReadResolver, ResolvedRead as RtlResolvedRead, Result as RtlResult,
+    ScalarInference, ScalarType, Shape as RtlShape, Statement as RtlStatement,
+    StatementId as RtlStatementId, StatementNode as RtlStatementNode, ValueShape,
+    VarExpr as RtlVarExpr, WebInfo as RtlWebInfo, Webs as RtlWebs, lift as lift_rtl_function,
+    lower as lower_rtl_function, referenced_webs as rtl_referenced_webs,
 };
 pub use ir::signature::Signature;
 pub use region::{

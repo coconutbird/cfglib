@@ -15,6 +15,9 @@ pub enum Error {
     /// A read/operand alignment broke while resolving a lifted
     /// expression against its HLIL operands.
     Resolution(String),
+    /// The lowering from MLIL could not represent the semantics — a
+    /// typed refusal, never a silent approximation.
+    Lowering(String),
 }
 
 impl fmt::Display for Error {
@@ -25,6 +28,7 @@ impl fmt::Display for Error {
             }
             Self::Lifting(message) => write!(formatter, "RTL lift: {message}"),
             Self::Resolution(message) => write!(formatter, "RTL read resolution: {message}"),
+            Self::Lowering(message) => write!(formatter, "RTL lowering: {message}"),
         }
     }
 }

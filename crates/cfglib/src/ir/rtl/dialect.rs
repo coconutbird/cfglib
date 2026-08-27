@@ -5,8 +5,9 @@ use core::fmt::Debug;
 use crate::EdgeKind;
 use crate::ir::dialect::Vocabulary;
 
-use super::lift::LiftedStatement;
-use super::types::ValueShape;
+use super::error::Result;
+use super::lift::{EdgeContext, Emission, LiftedStatement};
+use super::types::{Constraint, Shape};
 
 /// The canonical edge vocabulary for dialects with plain two-way
 /// branching.
@@ -16,7 +17,8 @@ use super::types::ValueShape;
 /// as its [`Dialect::Edge`] (and its
 /// [`mlil::Dialect::Edge`](crate::ir::mlil::Dialect::Edge)) and delegate
 /// the trait's edge hooks to [`kind`](Self::kind) and
-/// [`is_entry`](Self::is_entry).
+/// [`is_entry`](Self::is_entry). Dialects with switches, exceptions, or
+/// legacy continuations define their own edge type instead.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Edge {
     /// The synthetic root's unique entry edge.
@@ -53,13 +55,24 @@ impl Edge {
 /// coordinates, variable roles, native storage — come from the
 /// [`Vocabulary`] supertrait shared with the MLIL and HLIL dialects.
 /// Storage locations are the vocabulary's `NativeVariable`: RTL operates
-/// on raw language storage, before any variable recovery.
+/// on raw language storage — shader registers, JVM locals and stack
+/// slots, machine registers and flags, wasm value slots — before any
+/// variable recovery.
 pub trait Dialect: Vocabulary {
+    /// The lane constraint domain web typing folds over.
+    ///
+    /// Numeric machine dialects use the provided
+    /// [`ScalarType`](super::ScalarType); managed dialects supply their
+    /// own domain covering references, null, uninitialized objects, and
+    /// hierarchy-dependent merges.
+    type Constraint: Constraint;
     /// Pure typed operator applied by expressions.
     type Operator: Clone + Debug + Eq;
     /// Effect-bearing operation retained as a statement.
     type EffectOp: Clone + Debug + Eq;
-    /// Exact caller-owned metadata stored on control-flow edges.
+    /// Exact caller-owned metadata stored on control-flow edges — branch
+    /// polarity, switch case values, handler catch types and order,
+    /// legacy continuations.
     type Edge: Clone + Debug + Eq;
 
     /// Returns a compact stable mnemonic for an operator.
@@ -82,7 +95,7 @@ pub trait Dialect: Vocabulary {
 /// and one edge type by construction.
 pub trait Lift: Dialect + crate::ir::mlil::Dialect<Edge = <Self as Dialect>::Edge> {
     /// The MLIL value type of one lifted web shape.
-    fn value_type(shape: ValueShape) -> <Self as Vocabulary>::ValueType;
+    fn value_type(shape: Shape<Self::Constraint>) -> <Self as Vocabulary>::ValueType;
 
     /// The variable role of one lifted web.
     ///
@@ -92,7 +105,30 @@ pub trait Lift: Dialect + crate::ir::mlil::Dialect<Edge = <Self as Dialect>::Edg
         storage: Option<&<Self as Vocabulary>::NativeVariable>,
     ) -> <Self as Vocabulary>::VariableRole;
 
-    /// Builds the MLIL operation of one lifted statement.
-    fn operation(statement: LiftedStatement<Self>)
-    -> <Self as crate::ir::mlil::Dialect>::Operation;
+    /// Translates one lifted statement into MLIL instructions.
+    ///
+    /// The simple, storage-flavored form is one line —
+    /// [`Emission::single`] appends one instruction whose uses,
+    /// definitions, throw site, and span all derive from the statement.
+    /// Semantic dialects instead call [`Emission::append`] one or more
+    /// times, staging through [`Emission::temporary`] where an expansion
+    /// needs intermediate values, and the context validates read
+    /// alignment and exceptional placement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the statement has no legal translation.
+    fn emit(context: &mut Emission<'_, '_, Self>, statement: LiftedStatement<Self>) -> Result<()>;
+
+    /// Rewrites one RTL edge's metadata for the lifted function.
+    ///
+    /// Runs after every instruction is emitted, so the context resolves
+    /// statements to emitted MLIL instruction identities — an
+    /// exceptional edge's payload can carry its exact throw site. The
+    /// default clones the metadata verbatim.
+    #[must_use]
+    fn lift_edge(edge: &<Self as Dialect>::Edge, context: &EdgeContext<'_>) -> <Self as Dialect>::Edge {
+        let _ = context;
+        edge.clone()
+    }
 }

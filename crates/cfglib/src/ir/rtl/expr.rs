@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use crate::ir::dialect::Vocabulary;
 
 use super::dialect::Dialect;
-use super::types::{ScalarType, ValueShape};
+use super::types::Shape;
 
 /// One pure typed value expression.
 ///
@@ -17,23 +17,24 @@ use super::types::{ScalarType, ValueShape};
 /// matter how many transfers the statement performs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr<D: Dialect> {
-    /// A swizzled read of storage lanes, with the interpretation the
+    /// A swizzled read of storage lanes, with the constraint the
     /// consuming operation imposes on the bits.
     Read {
         /// The storage location read.
         storage: <D as Vocabulary>::NativeVariable,
         /// Storage lanes selected, in consumption order; repeats allowed.
         lanes: Vec<u8>,
-        /// The interpretation the consumer imposes on each lane.
-        scalar: ScalarType,
+        /// The constraint the consumer imposes on each lane.
+        scalar: D::Constraint,
     },
     /// An immediate value, one bit pattern per lane.
     Const {
-        /// Raw lane bit patterns: [`ScalarType::words`] little-endian
+        /// Raw lane bit patterns:
+        /// [`Constraint::words`](super::Constraint::words) little-endian
         /// 64-bit words per lane, lanes in order.
         bits: Vec<u64>,
         /// The shape of the constant.
-        shape: ValueShape,
+        shape: Shape<D::Constraint>,
     },
     /// A pure operator application.
     Apply {
@@ -42,29 +43,29 @@ pub enum Expr<D: Dialect> {
         /// Operand values in operator order.
         operands: Vec<Expr<D>>,
         /// The result shape.
-        shape: ValueShape,
+        shape: Shape<D::Constraint>,
     },
     /// A bit reinterpretation to a same-width shape.
     Reinterpret {
         /// The reinterpreted value.
         operand: Box<Expr<D>>,
         /// The target shape.
-        shape: ValueShape,
+        shape: Shape<D::Constraint>,
     },
 }
 
 impl<D: Dialect> Expr<D> {
     /// The shape of this expression's value.
     #[must_use]
-    pub fn shape(&self) -> ValueShape {
+    pub fn shape(&self) -> Shape<D::Constraint> {
         match self {
-            Self::Read { lanes, scalar, .. } => ValueShape {
-                scalar: *scalar,
+            Self::Read { lanes, scalar, .. } => Shape {
+                scalar: scalar.clone(),
                 lanes: lane_count(lanes),
             },
             Self::Const { shape, .. }
             | Self::Apply { shape, .. }
-            | Self::Reinterpret { shape, .. } => *shape,
+            | Self::Reinterpret { shape, .. } => shape.clone(),
         }
     }
 
@@ -75,14 +76,14 @@ impl<D: Dialect> Expr<D> {
     /// read nodes.
     pub fn for_each_read(
         &self,
-        visit: &mut impl FnMut(&<D as Vocabulary>::NativeVariable, &[u8], ScalarType),
+        visit: &mut impl FnMut(&<D as Vocabulary>::NativeVariable, &[u8], &D::Constraint),
     ) {
         match self {
             Self::Read {
                 storage,
                 lanes,
                 scalar,
-            } => visit(storage, lanes, *scalar),
+            } => visit(storage, lanes, scalar),
             Self::Const { .. } => {}
             Self::Apply { operands, .. } => {
                 for operand in operands {

@@ -15,6 +15,10 @@ use super::{
     ResolvedRead, ScalarType, Statement, ValueShape, VarExpr, lift, referenced_webs,
 };
 
+/// Managed-language dialect tests: constraint domains, exceptional
+/// ownership, dispatch, expansion, and lowering.
+mod managed;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Effect {
     Emit,
@@ -62,6 +66,7 @@ impl Vocabulary for TestDialect {
 }
 
 impl Dialect for TestDialect {
+    type Constraint = ScalarType;
     type Operator = Operator;
     type EffectOp = EffectOp;
     type Edge = Edge;
@@ -100,10 +105,12 @@ impl mlil::Dialect for TestDialect {
         may_throw: bool,
     ) -> InstructionMetadata<Self::Effect> {
         let effects = match operation {
-            LiftedStatement::Assign { effects, .. } | LiftedStatement::Effect { effects, .. } => {
-                effects.clone()
-            }
-            LiftedStatement::Branch { .. } | LiftedStatement::Return { .. } => Vec::new(),
+            LiftedStatement::Assign { effects, .. }
+            | LiftedStatement::Effect { effects, .. }
+            | LiftedStatement::Raise { effects, .. } => effects.clone(),
+            LiftedStatement::Branch { .. }
+            | LiftedStatement::Dispatch { .. }
+            | LiftedStatement::Return { .. } => Vec::new(),
         };
         InstructionMetadata::new(effects, operation.flow_effect(), may_throw)
     }
@@ -194,8 +201,12 @@ impl Lift for TestDialect {
         u8::from(storage.is_none())
     }
 
-    fn operation(statement: LiftedStatement<Self>) -> LiftedStatement<Self> {
-        statement
+    fn emit(
+        context: &mut super::Emission<'_, '_, Self>,
+        statement: LiftedStatement<Self>,
+    ) -> super::Result<()> {
+        context.single(statement)?;
+        Ok(())
     }
 }
 

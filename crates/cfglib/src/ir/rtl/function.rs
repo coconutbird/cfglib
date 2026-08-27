@@ -14,14 +14,16 @@ use crate::{BlockId, Cfg, EdgeId};
 use super::dialect::Dialect;
 use super::error::{Error, Result};
 use super::expr::Expr;
-use super::statement::{Statement, StatementNode};
-use super::types::ValueShape;
+use super::statement::{Statement, StatementId, StatementNode};
+use super::types::Constraint as _;
+use super::types::Shape;
 
 /// One RTL function backed by a cfglib control-flow graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function<D: Dialect> {
     pub(super) cfg: Cfg<StatementNode<D>, D::Edge>,
     pub(super) source: D::Source,
+    pub(super) statements: u32,
 }
 
 impl<D: Dialect> Function<D> {
@@ -36,12 +38,20 @@ impl<D: Dialect> Function<D> {
     pub const fn source(&self) -> &D::Source {
         &self.source
     }
+
+    /// Returns the number of statements — the exclusive upper bound of
+    /// the function's dense [`StatementId`] space.
+    #[must_use]
+    pub const fn statement_count(&self) -> usize {
+        self.statements as usize
+    }
 }
 
 /// Incremental checked builder of one RTL function.
 pub struct FunctionBuilder<D: Dialect> {
     cfg: Cfg<StatementNode<D>, D::Edge>,
     source: D::Source,
+    statements: u32,
 }
 
 impl<D: Dialect> FunctionBuilder<D> {
@@ -50,7 +60,11 @@ impl<D: Dialect> FunctionBuilder<D> {
     pub fn new(source: D::Source) -> Self {
         let mut cfg = Cfg::with_edge_payload();
         cfg.block_mut(cfg.entry()).set_label("root");
-        Self { cfg, source }
+        Self {
+            cfg,
+            source,
+            statements: 0,
+        }
     }
 
     /// Returns the synthetic root block.
@@ -85,46 +99,50 @@ impl<D: Dialect> FunctionBuilder<D> {
             .add_edge_with_payload(source, target, kind, metadata))
     }
 
-    /// Appends one statement to a block, validating its shapes.
+    /// Appends one statement to a block, validating its shapes, and
+    /// returns the statement's stable identity.
     ///
     /// # Errors
     ///
     /// Returns an error for an invalid block, an assignment-free
     /// transfer, a width mismatch between a place and its value, a
     /// destination lane written twice anywhere in one transfer, a
-    /// zero-lane value, a non-scalar branch condition, or a
-    /// width-changing reinterpretation.
+    /// zero-lane value, a non-scalar branch condition or dispatch
+    /// scrutinee, or a width-changing reinterpretation.
     pub fn append(
         &mut self,
         block: BlockId,
         statement: Statement<D>,
         span: Option<D::SourceSpan>,
-    ) -> Result<()> {
+    ) -> Result<StatementId> {
         self.require_block(block)?;
         validate_statement(&statement)?;
+        let id = StatementId::from_raw(self.statements);
+        self.statements = self
+            .statements
+            .checked_add(1)
+            .ok_or_else(|| Error::InvalidConstruction("statement count exceeds u32::MAX".into()))?;
         self.cfg
             .block_mut(block)
-            .push(StatementNode::new(statement, span));
-        Ok(())
+            .push(StatementNode::new(id, statement, span));
+        Ok(id)
     }
 
     /// Completes the function, validating its control-flow structure.
     ///
     /// # Errors
     ///
-    /// Returns an error when a control-flow statement sits before the
-    /// end of its block, a branch block carries fewer than two outgoing
-    /// edges, a return block carries any, or a block is unreachable
-    /// from the entry.
+    /// Returns an error when a terminating statement sits before the end
+    /// of its block, a branch block carries fewer than two outgoing
+    /// normal edges, a dispatch block carries none, a return block
+    /// carries any edge, a raise block carries a non-exceptional edge, a
+    /// block with exceptional edges lacks exactly one throwing statement
+    /// to own them, or a block is unreachable from the entry.
     pub fn finish(self) -> Result<Function<D>> {
         for block in self.cfg.blocks() {
             let statements = block.instructions();
             for (index, node) in statements.iter().enumerate() {
-                let terminator = matches!(
-                    node.statement(),
-                    Statement::Branch { .. } | Statement::Return { .. }
-                );
-                if terminator && index + 1 != statements.len() {
+                if node.statement().is_terminator() && index + 1 != statements.len() {
                     return Err(Error::InvalidConstruction(format!(
                         "control-flow statement is not last in block {}",
                         block.id()
@@ -133,26 +151,62 @@ impl<D: Dialect> FunctionBuilder<D> {
             }
         }
 
+        let mut normal: Vec<usize> = vec![0; self.cfg.block_count()];
+        let mut exceptional: Vec<usize> = vec![0; self.cfg.block_count()];
         let mut successors: Vec<Vec<usize>> = vec![Vec::new(); self.cfg.block_count()];
         for edge in self.cfg.edges() {
-            successors[edge.source().index()].push(edge.target().index());
+            let source = edge.source().index();
+            successors[source].push(edge.target().index());
+            if edge.kind().is_exceptional() {
+                exceptional[source] += 1;
+            } else {
+                normal[source] += 1;
+            }
         }
         for block in self.cfg.blocks() {
-            let outgoing = successors[block.id().index()].len();
+            let index = block.id().index();
             match block.instructions().last().map(StatementNode::statement) {
-                Some(Statement::Return { .. }) if outgoing != 0 => {
+                Some(Statement::Return { .. }) if normal[index] + exceptional[index] != 0 => {
                     return Err(Error::InvalidConstruction(format!(
-                        "return block {} has {outgoing} outgoing edges",
+                        "return block {} has outgoing edges",
                         block.id()
                     )));
                 }
-                Some(Statement::Branch { .. }) if outgoing < 2 => {
+                Some(Statement::Branch { .. }) if normal[index] < 2 => {
                     return Err(Error::InvalidConstruction(format!(
-                        "branch block {} decides between {outgoing} outgoing edges",
+                        "branch block {} decides between {} outgoing edges",
+                        block.id(),
+                        normal[index]
+                    )));
+                }
+                Some(Statement::Dispatch { .. }) if normal[index] == 0 => {
+                    return Err(Error::InvalidConstruction(format!(
+                        "dispatch block {} has no outgoing edges",
+                        block.id()
+                    )));
+                }
+                Some(Statement::Raise { .. }) if normal[index] != 0 => {
+                    return Err(Error::InvalidConstruction(format!(
+                        "raise block {} has a normal outgoing edge",
                         block.id()
                     )));
                 }
                 _ => {}
+            }
+            // Exceptional edges need exactly one owning statement, so a
+            // handler observes an unambiguous pre-state.
+            if exceptional[index] != 0 {
+                let throwing = block
+                    .instructions()
+                    .iter()
+                    .filter(|node| node.statement().may_throw())
+                    .count();
+                if throwing != 1 {
+                    return Err(Error::InvalidConstruction(format!(
+                        "block {} has exceptional edges but {throwing} throwing statements",
+                        block.id()
+                    )));
+                }
             }
         }
 
@@ -175,6 +229,7 @@ impl<D: Dialect> FunctionBuilder<D> {
         Ok(Function {
             cfg: self.cfg,
             source: self.source,
+            statements: self.statements,
         })
     }
 
@@ -228,7 +283,7 @@ fn validate_statement<D: Dialect>(statement: &Statement<D>) -> Result<()> {
             }
             Ok(())
         }
-        Statement::Effect { operands, .. } => {
+        Statement::Effect { operands, .. } | Statement::Raise { operands, .. } => {
             for operand in operands {
                 validate_expr(operand)?;
             }
@@ -241,6 +296,14 @@ fn validate_statement<D: Dialect>(statement: &Statement<D>) -> Result<()> {
                 ));
             }
             validate_expr(condition)
+        }
+        Statement::Dispatch { scrutinee } => {
+            if scrutinee.shape().lanes != 1 {
+                return Err(Error::InvalidConstruction(
+                    "dispatch scrutinee is not scalar".into(),
+                ));
+            }
+            validate_expr(scrutinee)
         }
         Statement::Return { values } => {
             for value in values {
@@ -287,7 +350,7 @@ fn validate_expr<D: Dialect>(expr: &Expr<D>) -> Result<()> {
             Ok(())
         }
         Expr::Reinterpret { operand, shape } => {
-            let ValueShape { scalar, lanes } = operand.shape();
+            let Shape { scalar, lanes } = operand.shape();
             if lanes != shape.lanes {
                 return Err(Error::InvalidConstruction(format!(
                     "reinterpretation changes width {lanes} to {}",
