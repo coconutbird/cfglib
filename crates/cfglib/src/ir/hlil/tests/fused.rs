@@ -175,6 +175,68 @@ fn fused_compare_branch_becomes_the_loop_condition() {
 }
 
 #[test]
+fn zero_use_fused_branch_embeds_its_whole_condition() {
+    // head: compare_branch with no operands — legal when the operation
+    // embeds its whole condition (a constant or memory read).
+    let mut builder = mlil::FunctionBuilder::<Toy>::new("toy::fused".into());
+    let head = builder.new_block("head");
+    let then = builder.new_block("then");
+    let exit = builder.new_block("exit");
+    let value = builder.declare_variable(0, None).unwrap();
+    builder
+        .append_instruction(
+            head,
+            MediumOperation::CompareBranch,
+            Vec::new(),
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            then,
+            MediumOperation::Constant(1),
+            Vec::new(),
+            vec![typed(value)],
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            then,
+            MediumOperation::Call,
+            vec![typed(value)],
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .append_instruction(
+            exit,
+            MediumOperation::Return,
+            Vec::new(),
+            Vec::new(),
+            false,
+            None,
+        )
+        .unwrap();
+    builder
+        .add_edge(builder.entry(), head, Edge::Entry, None)
+        .unwrap();
+    builder.add_edge(head, then, Edge::True, None).unwrap();
+    builder.add_edge(head, exit, Edge::False, None).unwrap();
+    builder.add_edge(then, exit, Edge::Fall, None).unwrap();
+
+    let lifted = lift_function(&builder.finish().unwrap()).unwrap();
+    assert!(lifted.report.is_fully_structured(), "{:?}", lifted.report);
+    let pseudo = lifted.function.to_pseudocode();
+    assert!(pseudo.contains("if (below()"), "{pseudo}");
+}
+
+#[test]
 fn single_pair_parallel_copy_inlines_as_a_copy() {
     // A parallel move of one pair is a plain copy (type-refinement pairs,
     // lone phi-copy commits), so it takes part in expression inlining

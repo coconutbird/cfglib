@@ -29,7 +29,8 @@ pub enum Expr<D: Dialect> {
     },
     /// An immediate value, one bit pattern per lane.
     Const {
-        /// Raw lane bit patterns.
+        /// Raw lane bit patterns: [`ScalarType::words`] little-endian
+        /// 64-bit words per lane, lanes in order.
         bits: Vec<u64>,
         /// The shape of the constant.
         shape: ValueShape,

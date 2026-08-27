@@ -22,6 +22,11 @@
 //! [`ir::mlil`] layers stable semantic identities, point-specific types,
 //! many-to-many source provenance, checked construction (including
 //! exception regions and signatures), and reusable analyses over that CFG.
+//! [`ir::rtl`] sits below MLIL for machine-shaped languages: each native
+//! instruction becomes one parallel typed transfer over raw storage
+//! lanes, and [`lift_rtl_function`] recovers typed variables (def-use
+//! webs over per-lane SSA) while emitting straight into an MLIL builder;
+//! variable-shaped languages skip it and build MLIL directly.
 //! [`ir::hlil`] is the structured, expression-oriented level above it:
 //! statement trees with nested typed expression trees, built either
 //! bottom-up by a source frontend ([`HlilFunctionBuilder`]) or lifted from
@@ -296,6 +301,15 @@ pub use ir::mlil::{
     VerifyDialect as MlilVerifyDialect,
 };
 pub use ir::provenance::{ProvenanceEntry, ProvenanceError, ProvenanceMap};
+pub use ir::rtl::{
+    Dialect as RtlDialect, Edge as RtlEdge, Error as RtlError, Expr as RtlExpr,
+    Function as RtlFunction, FunctionBuilder as RtlFunctionBuilder, Lane as RtlLane,
+    Lift as RtlLift, LiftedStatement as RtlLiftedStatement, Lifting as RtlLifting,
+    Place as RtlPlace, ReadResolver as RtlReadResolver, ResolvedRead as RtlResolvedRead,
+    Result as RtlResult, ScalarInference, ScalarType, Statement as RtlStatement,
+    StatementNode as RtlStatementNode, ValueShape, VarExpr as RtlVarExpr, WebInfo as RtlWebInfo,
+    Webs as RtlWebs, lift as lift_rtl_function, referenced_webs as rtl_referenced_webs,
+};
 pub use ir::signature::Signature;
 pub use region::{
     Cleanup, CompletionReason, Continuation, Handler, HandlerBody, HandlerFilters, HandlerKind,

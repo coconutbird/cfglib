@@ -16,9 +16,7 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 
 use crate::FlowEffect;
-use crate::ir::hlil::{
-    self, ExpressionId, ExpressionKind, Function as HlilFunction, Lifted, StatementKind,
-};
+use crate::ir::hlil::{self, ExpressionId, ExpressionKind, Function as HlilFunction, Lifted};
 use crate::ir::mlil::VariableId;
 
 use super::dialect::Dialect;
@@ -31,7 +29,11 @@ impl<D: Dialect> VarExpr<D> {
     #[must_use]
     pub fn read_count(&self) -> usize {
         let mut count = 0usize;
-        self.for_each_read(&mut |_| count += 1);
+        self.for_each_expression(&mut |expression| {
+            if matches!(expression, Self::Read { .. }) {
+                count += 1;
+            }
+        });
         count
     }
 
@@ -323,10 +325,12 @@ where
 }
 
 /// The variables a structured function still references: every variable
-/// occurrence, plus every statement-level assignment target.
+/// occurrence, including statement-level assignment targets (which are
+/// variable expressions themselves).
 ///
 /// An inlined producer's target is deliberately absent — its definition
-/// was absorbed into its consumer, so the variable never renders.
+/// was absorbed into its consumer, no occurrence of the variable exists,
+/// and it never renders.
 #[must_use]
 pub fn referenced_webs<D>(function: &HlilFunction<D>) -> BTreeSet<VariableId>
 where
@@ -336,17 +340,6 @@ where
     for expression in function.expressions() {
         if let ExpressionKind::Variable(variable) = expression.kind() {
             referenced.insert(VariableId::from_raw(variable.raw()));
-        }
-    }
-    for statement in function.statements() {
-        if let StatementKind::Assign { value, .. } = statement.kind()
-            && let Some(expression) = function.expression(*value)
-            && let ExpressionKind::Operation {
-                operation: LiftedStatement::Assign { target, .. },
-                ..
-            } = expression.kind()
-        {
-            referenced.insert(*target);
         }
     }
     referenced

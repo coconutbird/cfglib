@@ -240,6 +240,25 @@ fn assign(storage: u8, lanes: &[u8], value: Expr<TestDialect>) -> Statement<Test
     }
 }
 
+fn vector_const(bits: &[u64], scalar: ScalarType) -> Expr<TestDialect> {
+    Expr::Const {
+        bits: bits.to_vec(),
+        shape: ValueShape::vector(scalar, u8::try_from(bits.len()).unwrap()),
+    }
+}
+
+/// Every MLIL instruction of a lifted function, in block order.
+fn instructions(
+    function: &mlil::Function<TestDialect>,
+) -> Vec<&mlil::Instruction<TestDialect>> {
+    function
+        .cfg()
+        .blocks()
+        .iter()
+        .flat_map(|block| block.instructions().iter())
+        .collect()
+}
+
 /// Register reuse with different interpretations splits into typed webs.
 #[test]
 fn storage_reuse_splits_into_typed_webs() {
@@ -464,17 +483,121 @@ fn join_unites_definitions_into_one_web() {
     lifting.builder.finish().unwrap();
 }
 
-/// Reads that resolve across webs compose, and partial writes merge.
+/// A dead loop-header φ — the loop overwrites the register before any
+/// read — must not fuse the pre-loop and in-loop lifetimes: each keeps
+/// its own web and its own honest type.
 #[test]
-fn partial_writes_merge_and_cross_web_reads_compose() {
+fn dead_header_phi_keeps_lifetimes_apart() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let pre = builder.new_block("pre");
+    let header = builder.new_block("header");
+    let body = builder.new_block("body");
+    let exit = builder.new_block("exit");
+    builder.add_edge(entry, pre, Edge::Entry).unwrap();
+    builder.add_edge(pre, header, Edge::Fall).unwrap();
+    builder.add_edge(header, body, Edge::True).unwrap();
+    builder.add_edge(header, exit, Edge::False).unwrap();
+    builder.add_edge(body, header, Edge::Fall).unwrap();
+    // Pre-loop: r0.x holds a float, read as one.
+    builder
+        .append(
+            pre,
+            assign(0, &[0], constant(0x3f80_0000, ScalarType::F32)),
+            None,
+        )
+        .unwrap();
+    builder
+        .append(pre, assign(1, &[0], read(0, &[0], ScalarType::F32)), None)
+        .unwrap();
+    builder
+        .append(
+            header,
+            Statement::Branch {
+                condition: read(9, &[0], ScalarType::U32),
+            },
+            None,
+        )
+        .unwrap();
+    // In-loop: r0.x is overwritten before any read — the header φ is
+    // dead — and holds an integer.
+    builder
+        .append(body, assign(0, &[0], constant(7, ScalarType::U32)), None)
+        .unwrap();
+    builder
+        .append(body, assign(2, &[0], read(0, &[0], ScalarType::U32)), None)
+        .unwrap();
+    builder
+        .append(exit, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let lifting = lift(&function).unwrap();
+    let r0_webs: Vec<_> = lifting
+        .webs
+        .iter()
+        .filter(|web| web.storage == Some(0))
+        .collect();
+    assert_eq!(r0_webs.len(), 2, "the dead φ must not merge the lifetimes");
+    let scalars: Vec<ScalarType> = r0_webs.iter().map(|web| web.shape.scalar).collect();
+    assert!(scalars.contains(&ScalarType::F32));
+    assert!(scalars.contains(&ScalarType::U32));
+    assert!(r0_webs.iter().all(|web| !web.live_in));
+    lifting.builder.finish().unwrap();
+}
+
+/// Genuinely conflicting interpretations resolve to `Bits` no matter
+/// the observation order — a later agreement never launders an earlier
+/// conflict.
+#[test]
+fn conflicting_interpretations_resolve_to_bits() {
     let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
     let entry = builder.entry();
     let body = builder.new_block("body");
     builder.add_edge(entry, body, Edge::Entry).unwrap();
-    // r0.xy ← f32 vector; r0.x ← f32 scalar (partial rewrite of the same
-    // web via a second co-written def is a fresh version — force a merge
-    // by reading r0.xy afterwards so the versions unite through use of
-    // both lanes written at different times.
+    builder
+        .append(
+            body,
+            assign(0, &[0], constant(0x3f80_0000, ScalarType::F32)),
+            None,
+        )
+        .unwrap();
+    builder
+        .append(body, assign(1, &[0], read(0, &[0], ScalarType::F32)), None)
+        .unwrap();
+    builder
+        .append(body, assign(2, &[0], read(0, &[0], ScalarType::U32)), None)
+        .unwrap();
+    builder
+        .append(body, assign(3, &[0], read(0, &[0], ScalarType::F32)), None)
+        .unwrap();
+    builder
+        .append(body, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let lifting = lift(&function).unwrap();
+    let r0_web = lifting
+        .webs
+        .iter()
+        .find(|web| web.storage == Some(0))
+        .unwrap();
+    assert_eq!(
+        r0_web.shape.scalar,
+        ScalarType::Bits,
+        "float and integer reads of one web are a conflict"
+    );
+    lifting.builder.finish().unwrap();
+}
+
+/// A straight-line partial rewrite is a fresh lifetime: the web splits,
+/// a later full-width read composes both webs, and no merge arises.
+#[test]
+fn partial_rewrite_splits_the_web_and_reads_compose() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
     builder
         .append(
             body,
@@ -484,18 +607,19 @@ fn partial_writes_merge_and_cross_web_reads_compose() {
                 apply(
                     Operator::Add,
                     vec![
-                        Expr::Const {
-                            bits: vec![1, 2],
-                            shape: ValueShape::vector(ScalarType::F32, 2),
-                        },
-                        Expr::Const {
-                            bits: vec![3, 4],
-                            shape: ValueShape::vector(ScalarType::F32, 2),
-                        },
+                        vector_const(&[1, 2], ScalarType::F32),
+                        vector_const(&[3, 4], ScalarType::F32),
                     ],
                     ValueShape::vector(ScalarType::F32, 2),
                 ),
             ),
+            None,
+        )
+        .unwrap();
+    builder
+        .append(
+            body,
+            assign(0, &[0], constant(0x3f80_0000, ScalarType::F32)),
             None,
         )
         .unwrap();
@@ -512,36 +636,135 @@ fn partial_writes_merge_and_cross_web_reads_compose() {
     let function = builder.finish().unwrap();
 
     let lifting = lift(&function).unwrap();
-    let r0_web = lifting
+    let r0_webs: Vec<_> = lifting
         .webs
         .iter()
-        .find(|web| web.storage == Some(0))
+        .filter(|web| web.storage == Some(0))
+        .collect();
+    assert_eq!(r0_webs.len(), 2, "the rewritten lane is a fresh lifetime");
+    let function = lifting.builder.finish().unwrap();
+    let composed = instructions(&function)
+        .into_iter()
+        .find_map(|instruction| match instruction.operation() {
+            LiftedStatement::Assign {
+                value: VarExpr::Compose { parts, .. },
+                merges,
+                ..
+            } => Some((parts.len(), *merges, instruction.uses().len())),
+            _ => None,
+        })
+        .expect("the full-width read composes two webs");
+    assert_eq!(composed, (2, false, 2), "two parts, no merge, two uses");
+}
+
+/// A partial overwrite whose target web is genuinely wider — the other
+/// lanes stay live through a join — merges with the prior state: the
+/// instruction reads its target as the trailing operand.
+#[test]
+fn partial_overwrite_after_join_merges_prior_state() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let pre = builder.new_block("pre");
+    let then = builder.new_block("then");
+    let join = builder.new_block("join");
+    builder.add_edge(entry, pre, Edge::Entry).unwrap();
+    builder.add_edge(pre, then, Edge::True).unwrap();
+    builder.add_edge(pre, join, Edge::False).unwrap();
+    builder.add_edge(then, join, Edge::Fall).unwrap();
+    builder
+        .append(
+            pre,
+            assign(
+                0,
+                &[0, 1],
+                apply(
+                    Operator::Add,
+                    vec![
+                        vector_const(&[1, 2], ScalarType::F32),
+                        vector_const(&[3, 4], ScalarType::F32),
+                    ],
+                    ValueShape::vector(ScalarType::F32, 2),
+                ),
+            ),
+            None,
+        )
         .unwrap();
-    assert_eq!(r0_web.lanes, vec![0, 1]);
-    assert_eq!(r0_web.shape, ValueShape::vector(ScalarType::F32, 2));
-    let r1_web = lifting
+    builder
+        .append(
+            pre,
+            Statement::Branch {
+                condition: read(9, &[0], ScalarType::U32),
+            },
+            None,
+        )
+        .unwrap();
+    builder
+        .append(
+            then,
+            assign(0, &[0], constant(0x3f80_0000, ScalarType::F32)),
+            None,
+        )
+        .unwrap();
+    builder
+        .append(
+            join,
+            assign(1, &[0, 1], read(0, &[0, 1], ScalarType::F32)),
+            None,
+        )
+        .unwrap();
+    builder
+        .append(join, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let lifting = lift(&function).unwrap();
+    let r0_webs: Vec<_> = lifting
         .webs
         .iter()
-        .find(|web| web.storage == Some(1))
-        .unwrap();
-    assert_eq!(r1_web.shape, ValueShape::vector(ScalarType::F32, 2));
-    lifting.builder.finish().unwrap();
+        .filter(|web| web.storage == Some(0))
+        .collect();
+    assert_eq!(r0_webs.len(), 1, "the live join φ unites the versions");
+    assert_eq!(r0_webs[0].lanes, vec![0, 1]);
+    let function = lifting.builder.finish().unwrap();
+    let merge = instructions(&function)
+        .into_iter()
+        .find_map(|instruction| match instruction.operation() {
+            LiftedStatement::Assign {
+                positions,
+                width,
+                merges: true,
+                ..
+            } => Some((
+                positions.clone(),
+                *width,
+                instruction.uses().to_vec(),
+                instruction.defs().to_vec(),
+            )),
+            _ => None,
+        })
+        .expect("the partial overwrite merges");
+    let (positions, width, uses, defs) = merge;
+    assert_eq!(positions, vec![0]);
+    assert_eq!(width, 2);
+    assert_eq!(defs.len(), 1);
+    assert_eq!(
+        uses.as_slice(),
+        &[defs[0]],
+        "the trailing use reads the target's prior state"
+    );
 }
 
 /// A merging assignment's previous-value slot trails every value read.
 #[test]
 fn merge_operand_trails_the_value_reads() {
-    let variable = mlil::VariableId::from_raw(0);
     let value: VarExpr<TestDialect> = VarExpr::Apply {
         operator: Operator::Add,
         operands: vec![
             VarExpr::Read {
-                variable,
                 positions: vec![0],
                 scalar: ScalarType::F32,
             },
             VarExpr::Read {
-                variable,
                 positions: vec![1],
                 scalar: ScalarType::F32,
             },
@@ -554,7 +777,6 @@ fn merge_operand_trails_the_value_reads() {
     };
     assert_eq!(value.read_count(), 2);
     let merging = LiftedStatement::<TestDialect>::Assign {
-        target: variable,
         positions: vec![0],
         width: 2,
         merges: true,
@@ -563,7 +785,6 @@ fn merge_operand_trails_the_value_reads() {
     };
     assert_eq!(merging.merge_operand(), Some(2));
     let full = LiftedStatement::<TestDialect>::Assign {
-        target: variable,
         positions: vec![0, 1],
         width: 2,
         merges: false,
@@ -588,7 +809,6 @@ fn for_each_expression_visits_pre_order() {
             },
             VarExpr::Compose {
                 parts: vec![VarExpr::Read {
-                    variable: mlil::VariableId::from_raw(0),
                     positions: vec![0],
                     scalar: ScalarType::F32,
                 }],
@@ -600,6 +820,327 @@ fn for_each_expression_visits_pre_order() {
     let mut mnemonics: Vec<String> = Vec::new();
     value.for_each_expression(&mut |expression| mnemonics.push(expression.mnemonic().into()));
     assert_eq!(mnemonics, vec!["add", "bitcast", "const", "compose", "mov"]);
+}
+
+/// A transfer with no assignments is rejected: it would silently drop
+/// its effects and exceptional behavior in lowering.
+#[test]
+fn empty_transfer_is_rejected() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    let error = builder.append(
+        body,
+        Statement::Transfer {
+            assignments: Vec::new(),
+            effects: vec![Effect::Emit],
+            may_throw: true,
+        },
+        None,
+    );
+    assert!(error.is_err(), "an empty transfer must not validate");
+}
+
+/// One lane written by two places of one transfer is rejected: the
+/// parallel semantics leave no defined result.
+#[test]
+fn duplicate_lane_across_assignments_is_rejected() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    let error = builder.append(
+        body,
+        Statement::Transfer {
+            assignments: vec![
+                (
+                    Place {
+                        storage: 0,
+                        lanes: vec![0],
+                    },
+                    constant(1, ScalarType::U32),
+                ),
+                (
+                    Place {
+                        storage: 0,
+                        lanes: vec![0],
+                    },
+                    constant(2, ScalarType::U32),
+                ),
+            ],
+            effects: Vec::new(),
+            may_throw: false,
+        },
+        None,
+    );
+    assert!(error.is_err(), "two writes of one lane must not validate");
+}
+
+/// Reinterpretation preserves lane width, not just lane count.
+#[test]
+fn cross_width_reinterpret_is_rejected() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    let error = builder.append(
+        body,
+        assign(
+            1,
+            &[0],
+            Expr::Reinterpret {
+                operand: alloc::boxed::Box::new(constant(1, ScalarType::F32)),
+                shape: ValueShape::scalar(ScalarType::F64),
+            },
+        ),
+        None,
+    );
+    assert!(error.is_err(), "a 32-to-64-bit reinterpretation must fail");
+    builder
+        .append(
+            body,
+            assign(
+                1,
+                &[0],
+                Expr::Reinterpret {
+                    operand: alloc::boxed::Box::new(constant(1, ScalarType::F32)),
+                    shape: ValueShape::scalar(ScalarType::U32),
+                },
+            ),
+            None,
+        )
+        .expect("a same-width reinterpretation validates");
+}
+
+/// A wide scalar lane carries multiple constant words.
+#[test]
+fn wide_lane_constants_validate_by_words() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    builder
+        .append(
+            body,
+            assign(
+                0,
+                &[0],
+                Expr::Const {
+                    bits: vec![1, 2, 3, 4],
+                    shape: ValueShape::scalar(ScalarType::U256),
+                },
+            ),
+            None,
+        )
+        .expect("a 256-bit lane carries four words");
+    let error = builder.append(
+        body,
+        assign(
+            0,
+            &[0],
+            Expr::Const {
+                bits: vec![1, 2],
+                shape: ValueShape::scalar(ScalarType::U256),
+            },
+        ),
+        None,
+    );
+    assert!(error.is_err(), "a short word count must not validate");
+}
+
+/// A block ending in a return must not continue anywhere.
+#[test]
+fn return_block_with_successor_is_rejected() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    let extra = builder.new_block("extra");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    builder.add_edge(body, extra, Edge::Fall).unwrap();
+    builder
+        .append(body, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    builder
+        .append(extra, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    assert!(builder.finish().is_err());
+}
+
+/// A branch decides between at least two outgoing edges.
+#[test]
+fn branch_with_single_successor_is_rejected() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    let exit = builder.new_block("exit");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    builder.add_edge(body, exit, Edge::True).unwrap();
+    builder
+        .append(
+            body,
+            Statement::Branch {
+                condition: read(9, &[0], ScalarType::U32),
+            },
+            None,
+        )
+        .unwrap();
+    builder
+        .append(exit, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    assert!(builder.finish().is_err());
+}
+
+/// Every block participates in the function.
+#[test]
+fn unreachable_block_is_rejected() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.new_block("orphan");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    builder
+        .append(body, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    assert!(builder.finish().is_err());
+}
+
+/// A returned expression materializes into a temporary, so the return's
+/// MLIL uses pair one-to-one with its values and HLIL sees exactly one
+/// returned value.
+#[test]
+fn return_expression_materializes_a_temporary() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    builder
+        .append(
+            body,
+            Statement::Return {
+                values: vec![apply(
+                    Operator::Add,
+                    vec![
+                        constant(0x3f80_0000, ScalarType::F32),
+                        constant(0x4000_0000, ScalarType::F32),
+                    ],
+                    ValueShape::scalar(ScalarType::F32),
+                )],
+            },
+            None,
+        )
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let lifting = lift(&function).unwrap();
+    assert_eq!(
+        lifting
+            .webs
+            .iter()
+            .filter(|web| web.storage.is_none())
+            .count(),
+        1,
+        "the returned expression lives in a temporary"
+    );
+    let function = lifting.builder.finish().unwrap();
+    let return_uses = instructions(&function)
+        .into_iter()
+        .find_map(|instruction| {
+            matches!(instruction.operation(), LiftedStatement::Return { .. })
+                .then(|| instruction.uses().len())
+        })
+        .expect("one return instruction");
+    assert_eq!(return_uses, 1, "one use per returned value");
+
+    let lifted = lift_hlil(&function).unwrap();
+    assert!(lifted.report.is_fully_structured());
+    let mut returns = 0usize;
+    for statement in lifted.function.statements() {
+        if let StatementKind::Return { values } = statement.kind() {
+            returns += 1;
+            assert_eq!(values.len(), 1, "one returned value survives to HLIL");
+            let value = lifted.function.expression(values[0]).unwrap();
+            assert!(
+                matches!(
+                    value.kind(),
+                    ExpressionKind::Operation {
+                        operation: LiftedStatement::Assign {
+                            value: VarExpr::Apply { .. },
+                            ..
+                        },
+                        ..
+                    }
+                ),
+                "the temporary inlines back into the return"
+            );
+        }
+    }
+    assert_eq!(returns, 1);
+}
+
+/// A returned constant is still one returned value, never a void return.
+#[test]
+fn returned_constant_stays_a_returned_value() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    builder
+        .append(
+            body,
+            Statement::Return {
+                values: vec![constant(42, ScalarType::U32)],
+            },
+            None,
+        )
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let lifting = lift(&function).unwrap();
+    let function = lifting.builder.finish().unwrap();
+    let lifted = lift_hlil(&function).unwrap();
+    let mut returns = 0usize;
+    for statement in lifted.function.statements() {
+        if let StatementKind::Return { values } = statement.kind() {
+            returns += 1;
+            assert_eq!(values.len(), 1, "a constant return is not void");
+        }
+    }
+    assert_eq!(returns, 1);
+}
+
+/// A whole identity read of one web returns as-is, without a temporary.
+#[test]
+fn whole_web_return_passes_through() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    builder
+        .append(
+            body,
+            Statement::Return {
+                values: vec![read(0, &[0, 1], ScalarType::F32)],
+            },
+            None,
+        )
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let lifting = lift(&function).unwrap();
+    assert!(
+        lifting.webs.iter().all(|web| web.storage.is_some()),
+        "no temporary for a whole-web read"
+    );
+    let function = lifting.builder.finish().unwrap();
+    let return_uses = instructions(&function)
+        .into_iter()
+        .find_map(|instruction| {
+            matches!(instruction.operation(), LiftedStatement::Return { .. })
+                .then(|| instruction.uses().len())
+        })
+        .expect("one return instruction");
+    assert_eq!(return_uses, 1);
 }
 
 /// Lifts a single-block RTL body through MLIL into HLIL.
@@ -646,14 +1187,8 @@ fn read_resolver_remaps_through_an_inlined_producer() {
             apply(
                 Operator::Add,
                 vec![
-                    Expr::Const {
-                        bits: vec![1, 2],
-                        shape: ValueShape::vector(ScalarType::F32, 2),
-                    },
-                    Expr::Const {
-                        bits: vec![3, 4],
-                        shape: ValueShape::vector(ScalarType::F32, 2),
-                    },
+                    vector_const(&[1, 2], ScalarType::F32),
+                    vector_const(&[3, 4], ScalarType::F32),
                 ],
                 ValueShape::vector(ScalarType::F32, 2),
             ),

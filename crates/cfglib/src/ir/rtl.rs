@@ -16,12 +16,23 @@
 //! surface. RTL is where those language forms converge.
 //!
 //! [`lift`] converts an RTL function into an MLIL builder by computing
-//! per-lane SSA, uniting versions into def-use *webs* (φ operands with
-//! results, co-written lanes with each other), inferring one scalar type
-//! per web, and emitting one MLIL instruction per serialized transfer.
-//! Webs make storage reuse harmless: one register reused for a float and
-//! then a counter becomes two typed variables, and a parallel transfer's
-//! reads never see its own writes because they reference prior versions.
+//! per-lane SSA, uniting versions into def-use *webs* (**live** φ
+//! families and co-written lanes — a dead header φ never fuses the
+//! lifetimes on either side of a full overwrite), inferring one scalar
+//! type per web, and emitting one MLIL instruction per serialized
+//! transfer. Webs make storage reuse harmless: one register reused for a
+//! float and then a counter becomes two typed variables, and a parallel
+//! transfer's reads never see its own writes because they reference
+//! prior versions.
+//!
+//! The MLIL operations the lift emits are identity-free templates: web
+//! variables live only in each instruction's positional `uses`/`defs`
+//! lists (reads pair with uses in pre-order), so generic MLIL
+//! transformations that rewrite operands stay sound over lifted
+//! functions. The scalar vocabulary ([`ScalarType`]) is deliberately
+//! library-owned — machine lane interpretations are a finite alphabet —
+//! while consumer-owned typing enters at MLIL through
+//! [`Lift::value_type`].
 
 mod dialect;
 mod error;
@@ -39,7 +50,7 @@ pub use function::{Function, FunctionBuilder};
 pub use lift::{LiftedStatement, Lifting, VarExpr, WebInfo, lift};
 pub use render::{ReadResolver, ResolvedRead, Webs, referenced_webs};
 pub use statement::{Lane, Statement, StatementNode};
-pub use types::{ScalarType, ValueShape};
+pub use types::{ScalarInference, ScalarType, ValueShape};
 
 #[cfg(test)]
 mod tests;

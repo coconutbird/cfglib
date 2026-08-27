@@ -2,9 +2,13 @@
 
 extern crate alloc;
 
+use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
+use alloc::vec;
+use alloc::vec::Vec;
 
+use crate::ir::dialect::Vocabulary;
 use crate::{BlockId, Cfg, EdgeId};
 
 use super::dialect::Dialect;
@@ -85,9 +89,11 @@ impl<D: Dialect> FunctionBuilder<D> {
     ///
     /// # Errors
     ///
-    /// Returns an error for an invalid block, a width mismatch between a
-    /// place and its value, repeated destination lanes, a non-scalar
-    /// branch condition, or a width-changing reinterpretation.
+    /// Returns an error for an invalid block, an assignment-free
+    /// transfer, a width mismatch between a place and its value, a
+    /// destination lane written twice anywhere in one transfer, a
+    /// zero-lane value, a non-scalar branch condition, or a
+    /// width-changing reinterpretation.
     pub fn append(
         &mut self,
         block: BlockId,
@@ -102,12 +108,14 @@ impl<D: Dialect> FunctionBuilder<D> {
         Ok(())
     }
 
-    /// Completes the function.
+    /// Completes the function, validating its control-flow structure.
     ///
     /// # Errors
     ///
     /// Returns an error when a control-flow statement sits before the
-    /// end of its block.
+    /// end of its block, a branch block carries fewer than two outgoing
+    /// edges, a return block carries any, or a block is unreachable
+    /// from the entry.
     pub fn finish(self) -> Result<Function<D>> {
         for block in self.cfg.blocks() {
             let statements = block.instructions();
@@ -124,6 +132,46 @@ impl<D: Dialect> FunctionBuilder<D> {
                 }
             }
         }
+
+        let mut successors: Vec<Vec<usize>> = vec![Vec::new(); self.cfg.block_count()];
+        for edge in self.cfg.edges() {
+            successors[edge.source().index()].push(edge.target().index());
+        }
+        for block in self.cfg.blocks() {
+            let outgoing = successors[block.id().index()].len();
+            match block.instructions().last().map(StatementNode::statement) {
+                Some(Statement::Return { .. }) if outgoing != 0 => {
+                    return Err(Error::InvalidConstruction(format!(
+                        "return block {} has {outgoing} outgoing edges",
+                        block.id()
+                    )));
+                }
+                Some(Statement::Branch { .. }) if outgoing < 2 => {
+                    return Err(Error::InvalidConstruction(format!(
+                        "branch block {} decides between {outgoing} outgoing edges",
+                        block.id()
+                    )));
+                }
+                _ => {}
+            }
+        }
+
+        let mut reached = vec![false; self.cfg.block_count()];
+        let mut stack = vec![self.cfg.entry().index()];
+        reached[self.cfg.entry().index()] = true;
+        while let Some(block) = stack.pop() {
+            for &target in &successors[block] {
+                if !core::mem::replace(&mut reached[target], true) {
+                    stack.push(target);
+                }
+            }
+        }
+        if let Some(unreachable) = reached.iter().position(|&reached| !reached) {
+            return Err(Error::InvalidConstruction(format!(
+                "block {unreachable} is unreachable from the entry"
+            )));
+        }
+
         Ok(Function {
             cfg: self.cfg,
             source: self.source,
@@ -145,17 +193,27 @@ impl<D: Dialect> FunctionBuilder<D> {
 fn validate_statement<D: Dialect>(statement: &Statement<D>) -> Result<()> {
     match statement {
         Statement::Transfer { assignments, .. } => {
+            if assignments.is_empty() {
+                return Err(Error::InvalidConstruction(
+                    "transfer carries no assignments; an effect-only \
+                     instruction is a Statement::Effect"
+                        .into(),
+                ));
+            }
+            // A lane written twice anywhere in one parallel transfer has
+            // no defined result, whether the writes share a place or not.
+            let mut written: BTreeSet<(&<D as Vocabulary>::NativeVariable, u8)> = BTreeSet::new();
             for (place, value) in assignments {
                 if place.lanes.is_empty() {
                     return Err(Error::InvalidConstruction(
                         "assignment writes no lanes".into(),
                     ));
                 }
-                let mut seen = [false; 256];
                 for &lane in &place.lanes {
-                    if core::mem::replace(&mut seen[usize::from(lane)], true) {
+                    if !written.insert((&place.storage, lane)) {
                         return Err(Error::InvalidConstruction(format!(
-                            "destination repeats lane {lane}"
+                            "transfer writes lane {lane} of {:?} twice",
+                            place.storage
                         )));
                     }
                 }
@@ -186,6 +244,11 @@ fn validate_statement<D: Dialect>(statement: &Statement<D>) -> Result<()> {
         }
         Statement::Return { values } => {
             for value in values {
+                if value.shape().lanes == 0 {
+                    return Err(Error::InvalidConstruction(
+                        "return value carries no lanes".into(),
+                    ));
+                }
                 validate_expr(value)?;
             }
             Ok(())
@@ -202,9 +265,15 @@ fn validate_expr<D: Dialect>(expr: &Expr<D>) -> Result<()> {
             Ok(())
         }
         Expr::Const { bits, shape } => {
-            if bits.len() != usize::from(shape.lanes) {
+            if bits.is_empty() {
+                return Err(Error::InvalidConstruction(
+                    "constant carries no lanes".into(),
+                ));
+            }
+            let words = shape.scalar.words();
+            if bits.len() != usize::from(shape.lanes) * words {
                 return Err(Error::InvalidConstruction(format!(
-                    "constant carries {} lanes for a {}-lane shape",
+                    "constant carries {} words for a {}-lane shape of {words}-word lanes",
                     bits.len(),
                     shape.lanes
                 )));
@@ -218,11 +287,18 @@ fn validate_expr<D: Dialect>(expr: &Expr<D>) -> Result<()> {
             Ok(())
         }
         Expr::Reinterpret { operand, shape } => {
-            let ValueShape { lanes, .. } = operand.shape();
+            let ValueShape { scalar, lanes } = operand.shape();
             if lanes != shape.lanes {
                 return Err(Error::InvalidConstruction(format!(
                     "reinterpretation changes width {lanes} to {}",
                     shape.lanes
+                )));
+            }
+            if let (Some(from), Some(to)) = (scalar.width(), shape.scalar.width())
+                && from != to
+            {
+                return Err(Error::InvalidConstruction(format!(
+                    "reinterpretation changes lane width {from} to {to}"
                 )));
             }
             validate_expr(operand)
