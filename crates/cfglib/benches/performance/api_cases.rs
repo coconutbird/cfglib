@@ -8,6 +8,7 @@ mod transform;
 
 pub(super) const PUBLIC_API_FUNCTIONS: &[&str] = &[
     "abstract_interpret",
+    "alias_propagation",
     "block_nesting_depths",
     "block_purities",
     "block_purity",

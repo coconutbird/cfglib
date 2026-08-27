@@ -9,8 +9,8 @@ use alloc::vec::Vec;
 use core::fmt;
 
 use crate::{
-    CallInfo, ConstantFolder, CopySource, DisplayInstr, EffectInfo, ExprInstr, FlowControl,
-    FlowEffect, InstrInfo,
+    AliasPairs, CallInfo, ConstantFolder, CopySource, DisplayInstr, EffectInfo, ExprInstr,
+    FlowControl, FlowEffect, InstrInfo,
 };
 
 use super::{AnalysisDialect, Dialect, InstructionId, TypedVariable, VariableId};
@@ -154,6 +154,15 @@ impl<D: AnalysisDialect> CopySource for Instruction<D> {
             && self.defs.len() == 1
             && self.uses.len() == 1)
             .then(|| (self.defs[0], self.uses[0]))
+    }
+
+    fn as_aliases(&self) -> Option<AliasPairs<'_, Self::Variable>> {
+        (D::is_value_alias(&self.operation)
+            && self.effects.is_empty()
+            && !self.may_throw
+            && !self.defs.is_empty()
+            && self.defs.len() == self.uses.len())
+        .then_some((&self.defs, &self.uses))
     }
 
     fn rewrite_use(&mut self, old: &Self::Variable, new: &Self::Variable) {

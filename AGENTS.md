@@ -136,15 +136,16 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
   no more restrictive than necessary.
 - Preserve this workspace's `no_std` plus `alloc` compatibility unless the task
   explicitly changes that contract.
-- Keep `ir::mlil` and `ir::hlil` language-neutral. The library owns generic
-  function, instruction, statement, expression, variable, provenance,
+- Keep `ir::rtl`, `ir::mlil`, and `ir::hlil` language-neutral. The library owns
+  generic function, instruction, statement, expression, variable, provenance,
   checked-construction, structuring, and analysis integration, while a
   consumer-defined dialect owns operations, constants, value types, effects,
   edge payloads, source coordinates, native-variable provenance, constant
   folding, call targets, and semantic verification. The level-independent
-  vocabulary lives once in `ir::dialect::Vocabulary`; `ir::hlil::LiftDialect`
-  is the only MLIL-to-HLIL bridge. Do not add language-, VM-, ABI-, or
-  ISA-specific variants to any generic layer.
+  vocabulary lives once in `ir::dialect::Vocabulary`; `ir::rtl::MlilBridge`
+  relates distinct storage and semantic dialects, while
+  `ir::hlil::LiftDialect` relates MLIL and HLIL. Do not add language-, VM-, ABI-,
+  or ISA-specific variants to any generic layer.
 - Avoid unnecessary cloning, allocation, collection, dynamic dispatch, and generic
   indirection. Optimize for a clear ownership story before micro-optimizing.
 - Return structured errors for recoverable failures. Do not panic in public APIs
@@ -181,8 +182,9 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
 - Test behavior and invariants rather than implementation details.
 - Cover meaningful edge cases, failure paths, and interactions with exceptional
   control flow where relevant.
-- Exercise generic MLIL with a non-production toy dialect so its storage and
-  analyses cannot accidentally depend on one consumer's semantic vocabulary.
+- Exercise generic RTL/MLIL with distinct non-production toy dialects so bridge
+  storage, edge translation, provenance, and analyses cannot accidentally
+  depend on one consumer's semantic vocabulary or native-location type.
 - Keep tests deterministic, focused, and readable. Use table-driven tests only when
   the cases share the same semantics and setup.
 - Do not remove or weaken a test merely to make a change pass.

@@ -11,8 +11,8 @@ use crate::ir::hlil::{self, Lifted};
 use crate::ir::mlil::{self, InstructionMetadata, VerificationIssue};
 
 use super::{
-    Dialect, Edge, Expr, Function, FunctionBuilder, Lift, LiftedStatement, Place, ScalarType,
-    Statement, ValueShape, VarExpr, lift,
+    Dialect, Edge, Expr, Function, FunctionBuilder, Lift, LiftedStatement, MlilBridge, Place,
+    ScalarType, Statement, ValueShape, VarExpr, lift,
 };
 
 /// Managed-language dialect tests: constraint domains, exceptional
@@ -55,6 +55,14 @@ struct Span {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TestDialect;
 
+/// A distinct semantic marker proving one RTL dialect need not also be
+/// the MLIL dialect it raises into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SemanticDialect;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+struct SemanticStorage(u8);
+
 impl Vocabulary for TestDialect {
     type ValueType = ValueShape;
     type Effect = Effect;
@@ -63,6 +71,24 @@ impl Vocabulary for TestDialect {
     type SourcePoint = u32;
     type VariableRole = u8;
     type NativeVariable = u8;
+
+    fn span_is_empty(span: &Self::SourceSpan) -> bool {
+        span.start >= span.end
+    }
+
+    fn span_contains(span: &Self::SourceSpan, point: &Self::SourcePoint) -> bool {
+        span.start <= *point && *point < span.end
+    }
+}
+
+impl Vocabulary for SemanticDialect {
+    type ValueType = ValueShape;
+    type Effect = Effect;
+    type Source = String;
+    type SourceSpan = Span;
+    type SourcePoint = u32;
+    type VariableRole = u8;
+    type NativeVariable = SemanticStorage;
 
     fn span_is_empty(span: &Self::SourceSpan) -> bool {
         span.start >= span.end
@@ -104,7 +130,7 @@ impl Dialect for TestDialect {
     }
 }
 
-impl mlil::Dialect for TestDialect {
+impl mlil::Dialect for SemanticDialect {
     type Operation = LiftedStatement<TestDialect>;
     type Edge = Edge;
 
@@ -136,7 +162,11 @@ impl mlil::Dialect for TestDialect {
     }
 }
 
-impl mlil::AnalysisDialect for TestDialect {
+impl MlilBridge for TestDialect {
+    type Mlil = SemanticDialect;
+}
+
+impl mlil::AnalysisDialect for SemanticDialect {
     type Constant = Vec<u64>;
     type ExpressionOperator = Operator;
     type Callee = u32;
@@ -165,7 +195,7 @@ impl mlil::AnalysisDialect for TestDialect {
     }
 }
 
-impl hlil::Dialect for TestDialect {
+impl hlil::Dialect for SemanticDialect {
     type Operation = LiftedStatement<TestDialect>;
     type Constant = Vec<u64>;
 
@@ -174,12 +204,14 @@ impl hlil::Dialect for TestDialect {
     }
 }
 
-impl hlil::VerifyDialect for TestDialect {
+impl hlil::VerifyDialect for SemanticDialect {
     fn verify(_function: &hlil::Function<Self>, _issues: &mut Vec<hlil::VerificationIssue>) {}
 }
 
-impl hlil::LiftDialect for TestDialect {
-    fn lift_operation(operation: &LiftedStatement<Self>) -> Lifted<LiftedStatement<Self>> {
+impl hlil::LiftDialect for SemanticDialect {
+    fn lift_operation(
+        operation: &LiftedStatement<TestDialect>,
+    ) -> Lifted<LiftedStatement<TestDialect>> {
         operation.lifted()
     }
 
@@ -191,12 +223,12 @@ impl hlil::LiftDialect for TestDialect {
         ValueShape::vector(ScalarType::Bits, 0)
     }
 
-    fn previous_value_operand(operation: &LiftedStatement<Self>) -> Option<usize> {
+    fn previous_value_operand(operation: &LiftedStatement<TestDialect>) -> Option<usize> {
         operation.merge_operand()
     }
 }
 
-impl mlil::VerifyDialect for TestDialect {
+impl mlil::VerifyDialect for SemanticDialect {
     fn verify(_function: &mlil::Function<Self>, _issues: &mut Vec<VerificationIssue>) {}
 }
 
@@ -209,6 +241,10 @@ impl Lift for TestDialect {
         u8::from(storage.is_none())
     }
 
+    fn native_variable(storage: &u8, _source: &String) -> Option<SemanticStorage> {
+        Some(SemanticStorage(*storage))
+    }
+
     fn emit(
         context: &mut super::Emission<'_, '_, Self>,
         statement: LiftedStatement<Self>,
@@ -217,8 +253,8 @@ impl Lift for TestDialect {
         Ok(())
     }
 
-    fn lift_edge(edge: &Edge, _context: &super::EdgeContext<'_>) -> Edge {
-        *edge
+    fn lift_edge(edge: &Edge, _context: &super::EdgeContext<'_>) -> super::Result<Edge> {
+        Ok(*edge)
     }
 }
 
@@ -271,7 +307,9 @@ fn vector_const(bits: &[u64], scalar: ScalarType) -> Expr<TestDialect> {
 }
 
 /// Every MLIL instruction of a lifted function, in block order.
-fn instructions(function: &mlil::Function<TestDialect>) -> Vec<&mlil::Instruction<TestDialect>> {
+fn instructions(
+    function: &mlil::Function<SemanticDialect>,
+) -> Vec<&mlil::Instruction<SemanticDialect>> {
     function
         .cfg()
         .blocks()

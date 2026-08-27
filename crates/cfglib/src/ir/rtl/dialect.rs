@@ -89,17 +89,32 @@ pub trait Dialect: Vocabulary {
     fn is_entry_edge(edge: &Self::Edge) -> bool;
 }
 
+/// Associates one storage-level dialect with its semantic MLIL dialect.
+///
+/// The markers remain distinct so several source or target machines can
+/// converge on one semantic dialect. Value types, effects, source
+/// coordinates, and variable roles are shared by construction. Native
+/// storage is deliberately not: a stack machine, register machine, and
+/// semantic variable model can each use a different location type.
+pub trait MlilBridge: Dialect {
+    /// The semantic MLIL dialect this RTL raises into and lowers from.
+    type Mlil: crate::ir::mlil::Dialect<
+            ValueType = Self::ValueType,
+            Effect = Self::Effect,
+            Source = Self::Source,
+            SourceSpan = Self::SourceSpan,
+            SourcePoint = Self::SourcePoint,
+            VariableRole = Self::VariableRole,
+        >;
+}
+
 /// The lifting contract from RTL into a dialect's MLIL.
 ///
-/// A consumer implements this on the same type that implements
-/// [`crate::ir::mlil::Dialect`], so the two levels share one vocabulary
-/// by construction. The edge types stay independent: each level keeps
-/// self-contained metadata — an RTL exceptional edge can name a
-/// [`StatementId`](super::StatementId) while its MLIL counterpart names
-/// an emitted instruction — and [`lift_edge`](Self::lift_edge)
-/// translates between them. A dialect using one edge type for both
-/// levels translates by cloning.
-pub trait Lift: Dialect + crate::ir::mlil::Dialect {
+/// A consumer implements this on its RTL marker and selects the semantic
+/// destination through [`MlilBridge::Mlil`]. Multiple RTL dialects can
+/// therefore converge on one MLIL dialect while retaining independent
+/// edge identity domains.
+pub trait Lift: MlilBridge {
     /// The MLIL value type of one lifted web shape.
     fn value_type(shape: Shape<Self::Constraint>) -> <Self as Vocabulary>::ValueType;
 
@@ -110,6 +125,29 @@ pub trait Lift: Dialect + crate::ir::mlil::Dialect {
     fn web_role(
         storage: Option<&<Self as Vocabulary>::NativeVariable>,
     ) -> <Self as Vocabulary>::VariableRole;
+
+    /// Returns the role of one ordered parameter web.
+    ///
+    /// The default preserves dialects that do not distinguish parameter
+    /// roles from other native storage. Dialects with ordinal parameter
+    /// roles override it.
+    fn parameter_role(
+        _ordinal: u16,
+        storage: &<Self as Vocabulary>::NativeVariable,
+    ) -> <Self as Vocabulary>::VariableRole {
+        Self::web_role(Some(storage))
+    }
+
+    /// Chooses the native provenance retained on one semantic variable.
+    ///
+    /// This is an explicit translation because native RTL storage and
+    /// semantic provenance need not share a type. Target-only allocation
+    /// and synthetic temporaries normally return `None`; source-native
+    /// locations return the semantic dialect's corresponding identity.
+    fn native_variable(
+        storage: &<Self as Vocabulary>::NativeVariable,
+        _source: &<Self as Vocabulary>::Source,
+    ) -> Option<<<Self as MlilBridge>::Mlil as Vocabulary>::NativeVariable>;
 
     /// Translates one lifted statement into MLIL instructions.
     ///
@@ -134,9 +172,13 @@ pub trait Lift: Dialect + crate::ir::mlil::Dialect {
     /// exceptional edge's payload can carry its exact throw site in the
     /// MLIL identity domain. A dialect sharing one edge type across
     /// both levels clones the metadata.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when edge metadata names an entity that was not
+    /// emitted or otherwise has no exact MLIL representation.
     fn lift_edge(
         edge: &<Self as Dialect>::Edge,
         context: &EdgeContext<'_>,
-    ) -> <Self as crate::ir::mlil::Dialect>::Edge;
+    ) -> Result<<<Self as MlilBridge>::Mlil as crate::ir::mlil::Dialect>::Edge>;
 }

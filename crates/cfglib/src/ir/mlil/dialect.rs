@@ -77,6 +77,17 @@ pub trait AnalysisDialect: Dialect {
     /// Returns whether an operation is a pure one-use, one-definition copy.
     fn is_copy(operation: &Self::Operation) -> bool;
 
+    /// Returns whether an operation pairwise aliases definitions to uses.
+    ///
+    /// Each definition must retain the corresponding use's exact runtime
+    /// value, though its value type or other analysis metadata may change.
+    /// Reads are simultaneous and precede writes. The default admits ordinary
+    /// copies; dialects may additionally admit type refinements or parallel
+    /// alias commits for explicit alias propagation.
+    fn is_value_alias(operation: &Self::Operation) -> bool {
+        Self::is_copy(operation)
+    }
+
     /// Returns the pure expression operator represented by an operation.
     fn expression_operator(operation: &Self::Operation) -> Option<Self::ExpressionOperator>;
 

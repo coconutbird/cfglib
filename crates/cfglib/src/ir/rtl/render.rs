@@ -200,9 +200,10 @@ impl<'a, D: Dialect> IntoIterator for &'a Webs<D> {
 
 /// One resolved [`VarExpr::Read`]: what its HLIL operand turned out to be.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResolvedRead<'a, D>
+pub enum ResolvedRead<'a, R, M>
 where
-    D: Dialect + hlil::Dialect<Operation = LiftedStatement<D>>,
+    R: Dialect,
+    M: hlil::Dialect<Operation = LiftedStatement<R>>,
 {
     /// The read is an occurrence of a declared variable; the read's
     /// positions select within that variable's web.
@@ -210,7 +211,7 @@ where
     /// The read consumed a single-use producer the HLIL lift inlined.
     Inlined {
         /// The producer's assigned value.
-        value: &'a VarExpr<D>,
+        value: &'a VarExpr<R>,
         /// The producer's own operand list, for a nested resolver.
         operands: &'a [ExpressionId],
         /// How the read's positions select from the producer's value
@@ -221,7 +222,7 @@ where
     /// The read consumed a producer the HLIL lift folded to a dialect
     /// constant via
     /// [`AnalysisDialect::constant`](crate::ir::mlil::AnalysisDialect::constant).
-    Constant(&'a <D as hlil::Dialect>::Constant),
+    Constant(&'a M::Constant),
 }
 
 /// Pairs the [`VarExpr::Read`] nodes of one lifted operation with the
@@ -232,18 +233,20 @@ where
 /// The resolver is cheap to clone: probe a speculative resolution on a
 /// clone and commit by assignment when it matches.
 #[derive(Debug)]
-pub struct ReadResolver<'a, D>
+pub struct ReadResolver<'a, R, M>
 where
-    D: Dialect + hlil::Dialect<Operation = LiftedStatement<D>>,
+    R: Dialect,
+    M: hlil::Dialect<Operation = LiftedStatement<R>>,
 {
-    function: &'a HlilFunction<D>,
+    function: &'a HlilFunction<M>,
     operands: &'a [ExpressionId],
     cursor: usize,
 }
 
-impl<D> Clone for ReadResolver<'_, D>
+impl<R, M> Clone for ReadResolver<'_, R, M>
 where
-    D: Dialect + hlil::Dialect<Operation = LiftedStatement<D>>,
+    R: Dialect,
+    M: hlil::Dialect<Operation = LiftedStatement<R>>,
 {
     fn clone(&self) -> Self {
         Self {
@@ -254,13 +257,14 @@ where
     }
 }
 
-impl<'a, D> ReadResolver<'a, D>
+impl<'a, R, M> ReadResolver<'a, R, M>
 where
-    D: Dialect + hlil::Dialect<Operation = LiftedStatement<D>>,
+    R: Dialect,
+    M: hlil::Dialect<Operation = LiftedStatement<R>>,
 {
     /// Creates a resolver over one operation's operand list.
     #[must_use]
-    pub const fn new(function: &'a HlilFunction<D>, operands: &'a [ExpressionId]) -> Self {
+    pub const fn new(function: &'a HlilFunction<M>, operands: &'a [ExpressionId]) -> Self {
         Self {
             function,
             operands,
@@ -287,7 +291,7 @@ where
     /// the operand has no producer form a read can consume, or a read
     /// position falls outside an inlined producer's written positions —
     /// each a broken read/operand alignment.
-    pub fn resolve(&mut self, positions: &[u8]) -> Result<ResolvedRead<'a, D>> {
+    pub fn resolve(&mut self, positions: &[u8]) -> Result<ResolvedRead<'a, R, M>> {
         let id = *self
             .operands
             .get(self.cursor)
@@ -351,7 +355,7 @@ where
 #[must_use]
 pub fn referenced_webs<D>(function: &HlilFunction<D>) -> BTreeSet<VariableId>
 where
-    D: Dialect + hlil::Dialect<Operation = LiftedStatement<D>>,
+    D: hlil::Dialect,
 {
     let mut referenced = BTreeSet::new();
     for expression in function.expressions() {

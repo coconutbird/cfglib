@@ -24,10 +24,11 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::ir::dialect::Vocabulary;
-use crate::ir::mlil::FunctionBuilder as MlilBuilder;
+use crate::ir::mlil::{FunctionBuilder as MlilBuilder, Signature as MlilSignature};
+use crate::region::{Handler, HandlerBody, HandlerKind, Region};
 use crate::{BlockId, DominatorTree, PhiWebs, SsaForm, SsaValue};
 
-use super::dialect::{Dialect, Lift};
+use super::dialect::{Dialect, Lift, MlilBridge};
 use super::emission::{EdgeContext, Emitter, LiftMaps, Lifting, Resolver};
 use super::error::{Error, Result};
 use super::function::Function;
@@ -140,6 +141,15 @@ pub fn lift<D: Lift>(
         }
     }
 
+    // An unused source parameter still needs a live-in web so the
+    // semantic signature remains complete.
+    for place in &function.signature().parameters {
+        for &lane in &place.lanes {
+            let value = SsaValue::live_in((place.storage.clone(), lane));
+            id_of(&value, &mut union);
+        }
+    }
+
     // The version-zero values of one storage are all the same live-in
     // value: unite them so an input register read lane-by-lane stays one
     // variable.
@@ -219,7 +229,7 @@ pub fn lift<D: Lift>(
 
     // Phase 4: declare one typed MLIL variable per web, in deterministic
     // first-appearance order over sorted SSA values.
-    let mut builder = MlilBuilder::<D>::new(function.source.clone());
+    let mut builder = MlilBuilder::<<D as MlilBridge>::Mlil>::new(function.source.clone());
     let mut web_of_root: BTreeMap<usize, usize> = BTreeMap::new();
     let mut webs: Vec<WebInfo<D>> = Vec::new();
     for &id in ids.values() {
@@ -233,8 +243,17 @@ pub fn lift<D: Lift>(
             scalar: fact.scalar.resolve(),
             lanes: u8::try_from(lanes.len()).unwrap_or(u8::MAX),
         };
+        let parameter = function
+            .signature()
+            .parameters
+            .iter()
+            .position(|place| place.storage == fact.storage && place.lanes == lanes);
+        let role = parameter.map_or_else(
+            || D::web_role(Some(&fact.storage)),
+            |ordinal| D::parameter_role(u16::try_from(ordinal).unwrap_or(u16::MAX), &fact.storage),
+        );
         let variable = builder
-            .declare_variable(D::web_role(Some(&fact.storage)), Some(fact.storage.clone()))
+            .declare_variable(role, D::native_variable(&fact.storage, function.source()))
             .map_err(|error| Error::Lifting(error.to_string()))?;
         web_of_root.insert(root, webs.len());
         webs.push(WebInfo {
@@ -245,6 +264,27 @@ pub fn lift<D: Lift>(
             live_in: fact.live_in,
         });
     }
+    let parameters = function
+        .signature()
+        .parameters
+        .iter()
+        .map(|place| {
+            webs.iter()
+                .find(|web| {
+                    web.live_in
+                        && web.storage.as_ref() == Some(&place.storage)
+                        && web.lanes == place.lanes
+                })
+                .map(|web| web.variable)
+                .ok_or_else(|| Error::Lifting("signature parameter lost its live-in web".into()))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    builder
+        .set_signature(MlilSignature::<<D as MlilBridge>::Mlil>::new(
+            parameters,
+            function.signature().returns.clone(),
+        ))
+        .map_err(|error| Error::Lifting(error.to_string()))?;
 
     // Phase 5: mirror blocks. Edges wait until every instruction exists,
     // so edge lifting can reference emitted instruction identities.
@@ -277,6 +317,11 @@ pub fn lift<D: Lift>(
         resolver,
         maps: LiftMaps {
             blocks: block_map.clone(),
+            block_expansions: block_map
+                .iter()
+                .copied()
+                .map(|block| alloc::vec![block])
+                .collect(),
             instructions: alloc::vec![Vec::new(); statement_count],
             throw_sites: alloc::vec![None; statement_count],
             edges: Vec::new(),
@@ -287,14 +332,25 @@ pub fn lift<D: Lift>(
         native_defined: false,
     };
     for block in cfg.blocks() {
+        let has_exceptional_successor = cfg
+            .successor_edges(block.id())
+            .iter()
+            .copied()
+            .any(|edge| cfg.edge(edge).kind().is_exceptional());
         let annotations = ssa.block(block.id());
         for (index, node) in block.instructions().iter().enumerate() {
             let annotation = &annotations.instructions[index];
+            let spans = function
+                .provenance()
+                .mappings_to(node.id())
+                .map(|entry| entry.source.clone())
+                .collect();
             emitter.statement(
                 block.id().index(),
                 node.id(),
                 node.statement(),
-                node.span().cloned(),
+                has_exceptional_successor && node.statement().may_throw(),
+                spans,
                 annotation,
             )?;
         }
@@ -325,7 +381,7 @@ pub fn lift<D: Lift>(
             maps: &emitter.maps,
             owner,
         };
-        let metadata = D::lift_edge(edge.payload(), &context);
+        let metadata = D::lift_edge(edge.payload(), &context)?;
         let mlil_source = if exceptional {
             owner
                 .and_then(|statement| emitter.throw_blocks[statement.index()])
@@ -345,9 +401,57 @@ pub fn lift<D: Lift>(
         emitter.maps.edges.push(lifted);
     }
 
+    for region in cfg.regions() {
+        emitter
+            .builder
+            .add_region(map_region(region, &emitter.maps)?)
+            .map_err(|error| Error::Lifting(error.to_string()))?;
+    }
+
     Ok(Lifting {
         builder: emitter.builder,
         webs: Webs::new(emitter.webs),
         maps: emitter.maps,
+    })
+}
+
+fn map_region(region: &Region, maps: &LiftMaps) -> Result<Region> {
+    let protected_blocks = region
+        .protected_blocks
+        .iter()
+        .flat_map(|&block| maps.blocks(block).iter().copied())
+        .collect();
+    let handlers = region
+        .handlers
+        .iter()
+        .map(|handler| {
+            let entry = maps
+                .block(handler.entry)
+                .ok_or_else(|| Error::Lifting("handler entry lost during block lifting".into()))?;
+            let body = match &handler.body {
+                HandlerBody::Unknown => HandlerBody::Unknown,
+                HandlerBody::Known(blocks) => HandlerBody::Known(
+                    blocks
+                        .iter()
+                        .flat_map(|&block| maps.blocks(block).iter().copied())
+                        .collect(),
+                ),
+            };
+            let kind = match handler.kind {
+                HandlerKind::Filter { filter_block } => HandlerKind::Filter {
+                    filter_block: maps.block(filter_block).ok_or_else(|| {
+                        Error::Lifting("handler filter lost during block lifting".into())
+                    })?,
+                },
+                other => other,
+            };
+            Ok(Handler { entry, body, kind })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Region {
+        id: region.id,
+        protected_blocks,
+        handlers,
+        parent: region.parent,
     })
 }

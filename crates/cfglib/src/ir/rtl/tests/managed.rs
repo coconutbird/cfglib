@@ -5,7 +5,7 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -14,11 +14,12 @@ use crate::EdgeKind;
 use crate::ir::dialect::Vocabulary;
 use crate::ir::hlil::{self, Lifted, StatementKind, lift_function as lift_hlil};
 use crate::ir::mlil::{self, InstructionId, InstructionMetadata, TypedVariable};
+use crate::region::{Handler, HandlerBody, HandlerKind, Region, RegionId};
 
 use super::super::{
     Constraint, Dialect, EdgeContext, Emission, Expr, FunctionBuilder, Lift, LiftedStatement,
-    Lower, LowerContext, LowerEdgeContext, Place, Placement, Result, ScalarType, Shape, Statement,
-    StatementId, VarExpr, lift, lower,
+    Lower, LowerContext, LowerEdgeContext, MlilBridge, Place, Placement, Result, ScalarType, Shape,
+    Signature, Statement, StatementId, VarExpr, lift, lower,
 };
 
 /// Exceptional-flow tests: throw-site ownership, continuation splits,
@@ -260,6 +261,10 @@ impl mlil::Dialect for Managed {
     }
 }
 
+impl MlilBridge for Managed {
+    type Mlil = Self;
+}
+
 impl mlil::AnalysisDialect for Managed {
     type Constant = Vec<u64>;
     type ExpressionOperator = Operator;
@@ -337,6 +342,10 @@ impl Lift for Managed {
         u8::from(storage.is_none())
     }
 
+    fn native_variable(storage: &u8, _source: &String) -> Option<u8> {
+        Some(*storage)
+    }
+
     fn emit(context: &mut Emission<'_, '_, Self>, statement: LiftedStatement<Self>) -> Result<()> {
         match &statement {
             // Deliberate misbehavior markers for validation tests.
@@ -360,10 +369,11 @@ impl Lift for Managed {
                 Ok(())
             }
             // Semantic expansion: an addition computes into a dialect
-            // temporary, then commits to the native target in a fresh
-            // continuation block — two MLIL instructions from one
-            // statement, the throw site terminal in its block, native
-            // state committed only on the normal path.
+            // temporary, then commits to the native target. A locally handled
+            // throw uses a fresh continuation block so native state commits
+            // only on the normal path. An unhandled throw can define the
+            // target directly because no in-function handler observes its
+            // pre-state.
             LiftedStatement::Assign {
                 positions,
                 width,
@@ -374,6 +384,10 @@ impl Lift for Managed {
                     },
                 ..
             } => {
+                if context.may_throw() && !context.has_exceptional_successors() {
+                    context.single(statement)?;
+                    return Ok(());
+                }
                 let target = context
                     .target()
                     .expect("assignments define a target")
@@ -404,8 +418,8 @@ impl Lift for Managed {
         }
     }
 
-    fn lift_edge(edge: &JvmRtlEdge, context: &EdgeContext<'_>) -> JvmMlilEdge {
-        match edge {
+    fn lift_edge(edge: &JvmRtlEdge, context: &EdgeContext<'_>) -> Result<JvmMlilEdge> {
+        Ok(match edge {
             JvmRtlEdge::Entry => JvmMlilEdge::Entry,
             JvmRtlEdge::Fall => JvmMlilEdge::Fall,
             JvmRtlEdge::True => JvmMlilEdge::True,
@@ -413,12 +427,19 @@ impl Lift for Managed {
             JvmRtlEdge::Case(value) => JvmMlilEdge::Case(*value),
             // The exceptional payload crosses into the MLIL identity
             // domain: the owning statement's emitted throw site.
-            JvmRtlEdge::Except { .. } => JvmMlilEdge::Except {
-                site: context
-                    .owner()
-                    .and_then(|statement| context.throw_site(statement)),
+            JvmRtlEdge::Except { site } => JvmMlilEdge::Except {
+                site: site
+                    .or_else(|| context.owner())
+                    .map(|statement| {
+                        context.throw_site(statement).ok_or_else(|| {
+                            super::super::Error::Lifting(
+                                "exception edge names a statement without a throw site".into(),
+                            )
+                        })
+                    })
+                    .transpose()?,
             },
-        }
+        })
     }
 }
 
@@ -520,8 +541,8 @@ impl Lower for Managed {
         }
     }
 
-    fn lower_edge(edge: &JvmMlilEdge, context: &LowerEdgeContext<'_>) -> JvmRtlEdge {
-        match edge {
+    fn lower_edge(edge: &JvmMlilEdge, context: &LowerEdgeContext<'_>) -> Result<JvmRtlEdge> {
+        Ok(match edge {
             JvmMlilEdge::Entry => JvmRtlEdge::Entry,
             JvmMlilEdge::Fall => JvmRtlEdge::Fall,
             JvmMlilEdge::True => JvmRtlEdge::True,
@@ -529,12 +550,24 @@ impl Lower for Managed {
             JvmMlilEdge::Case(value) => JvmRtlEdge::Case(*value),
             // The exceptional payload crosses back into the RTL identity
             // domain: the owning instruction's lowered statement.
-            JvmMlilEdge::Except { .. } => JvmRtlEdge::Except {
-                site: context
-                    .owner()
-                    .and_then(|instruction| context.statements(instruction).first().copied()),
+            JvmMlilEdge::Except { site } => JvmRtlEdge::Except {
+                site: site
+                    .or_else(|| context.owner())
+                    .map(|instruction| {
+                        context
+                            .statements(instruction)
+                            .first()
+                            .copied()
+                            .ok_or_else(|| {
+                                super::super::Error::Lowering(
+                                    "exception edge names an instruction without a statement"
+                                        .into(),
+                                )
+                            })
+                    })
+                    .transpose()?,
             },
-        }
+        })
     }
 }
 
@@ -721,6 +754,34 @@ fn dispatch_lifts_to_a_structured_switch() {
 
 /// Lowering walks an MLIL function back onto target RTL with complete
 /// rewrite maps and the retained storage plan.
+fn configure_signature_and_region(
+    builder: &mut FunctionBuilder<Managed>,
+    protected: crate::BlockId,
+    handler: crate::BlockId,
+) {
+    builder
+        .set_signature(Signature::new(
+            vec![Place {
+                storage: 9,
+                lanes: vec![0],
+            }],
+            vec![JvmShape::scalar(JvmConstraint::Word(ScalarType::I32))],
+        ))
+        .unwrap();
+    builder
+        .add_region(Region {
+            id: RegionId::from_raw(0),
+            protected_blocks: BTreeSet::from([protected]),
+            handlers: vec![Handler {
+                entry: handler,
+                body: HandlerBody::Known(BTreeSet::from([handler])),
+                kind: HandlerKind::Catch,
+            }],
+            parent: None,
+        })
+        .unwrap();
+}
+
 #[test]
 fn lowering_round_trips_with_rewrite_maps() {
     // Build RTL, lift it, then lower the MLIL back down.
@@ -735,6 +796,7 @@ fn lowering_round_trips_with_rewrite_maps() {
     builder.add_edge(head, other, JvmRtlEdge::False).unwrap();
     builder.add_edge(then, join, JvmRtlEdge::Fall).unwrap();
     builder.add_edge(other, join, JvmRtlEdge::Fall).unwrap();
+    configure_signature_and_region(&mut builder, then, other);
     builder
         .append(
             head,
@@ -763,7 +825,7 @@ fn lowering_round_trips_with_rewrite_maps() {
     let lifting = lift(&function, &hierarchy()).unwrap();
     let mlil_function = lifting.builder.finish().unwrap();
 
-    let lowered = lower(&mlil_function).unwrap();
+    let lowered = lower::<Managed>(&mlil_function).unwrap();
     assert_eq!(
         lowered.function.cfg().block_count(),
         mlil_function.cfg().block_count(),
@@ -792,4 +854,66 @@ fn lowering_round_trips_with_rewrite_maps() {
     for edge in mlil_function.cfg().edges() {
         assert!(lowered.edge(edge.id()).is_some(), "every edge maps");
     }
+    assert_eq!(lowered.function.signature().parameters.len(), 1);
+    assert_eq!(lowered.function.signature().returns.len(), 1);
+    assert_eq!(lowered.function.cfg().regions().len(), 1);
+
+    let relifted = lift(&lowered.function, &hierarchy())
+        .unwrap()
+        .builder
+        .finish()
+        .unwrap();
+    assert_eq!(relifted.signature().parameters.len(), 1);
+    assert_eq!(
+        relifted.signature().returns,
+        mlil_function.signature().returns
+    );
+    assert_eq!(relifted.cfg().regions().len(), 1);
+}
+
+/// Fused source spans survive RTL → MLIL → RTL without selecting only
+/// one "primary" location.
+#[test]
+fn lowering_round_trip_preserves_many_to_one_provenance() {
+    let mut builder = FunctionBuilder::<Managed>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, JvmRtlEdge::Entry).unwrap();
+    let statement = builder
+        .append(
+            body,
+            slot_write(0, word_const(7)),
+            Some(Span { start: 4, end: 5 }),
+        )
+        .unwrap();
+    builder
+        .map_statement(Span { start: 8, end: 10 }, statement)
+        .unwrap();
+    builder
+        .append(body, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let lifting = lift(&function, &hierarchy()).unwrap();
+    let instruction = lifting.maps.instructions(statement)[0];
+    let mlil_function = lifting.builder.finish().unwrap();
+    let mlil_spans: Vec<_> = mlil_function
+        .provenance()
+        .mappings_to(mlil::EntityId::Instruction(instruction))
+        .map(|entry| entry.source)
+        .collect();
+    assert_eq!(
+        mlil_spans,
+        vec![Span { start: 4, end: 5 }, Span { start: 8, end: 10 }]
+    );
+
+    let lowered = lower::<Managed>(&mlil_function).unwrap();
+    let lowered_statement = lowered.statements(instruction)[0];
+    let rtl_spans: Vec<_> = lowered
+        .function
+        .provenance()
+        .mappings_to(lowered_statement)
+        .map(|entry| entry.source)
+        .collect();
+    assert_eq!(rtl_spans, mlil_spans);
 }

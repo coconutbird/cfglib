@@ -2,7 +2,7 @@
 
 Generic, `no_std` graph and dataflow framework for code intelligence, program analysis, decompilation, and compiler infrastructure.
 
-`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Its generic MLIL layer combines a CFG with stable semantic identities, typed variables, checked construction, many-to-many source provenance, and reusable analyses while leaving every language vocabulary in a consumer-defined dialect. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
+`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Its generic RTL and MLIL layers combine CFGs with checked construction, exact edge payloads, signatures, exception regions, and many-to-many source provenance; RTL/MLIL bridges recover typed semantic variables from native storage or lower them back while allowing the two levels to use distinct dialect and native-location types. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
 
 Everything is `no_std + alloc` and the core graph structure uses `SmallVec` adjacency lists with tombstone-based edge removal for cache-friendly, arena-stable IDs.
 
@@ -97,6 +97,24 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Subgraph extraction | `subgraph()` or `subgraph_mapped()` with dense O(1) block-id remapping and payload cloning |
 | Block splitting | `split_block()`, mapped payload-aware variants, and validated multi-point splitting with automatic stable edge transfer |
 | `serde` feature | Optional serialization support |
+
+### Generic register-transfer IR (`ir::rtl`)
+
+`ir::rtl::Function<D>` stores typed expression reads and parallel transfers over
+consumer-defined native locations. Its checked builder retains stable statement
+identities, ordered parameters and returns, exception regions, exact caller edge
+payloads, and deterministic many-to-many source provenance.
+
+`MlilBridge` associates an RTL dialect with a semantic MLIL dialect without
+requiring the dialect markers or native-location types to match. `lift()` uses
+lane SSA and live phi webs to recover typed semantic variables, then performs
+fallible edge translation only after every statement-to-instruction mapping is
+known. `lower()` applies consumer placement and instruction selection in the
+opposite direction. Both return rewrite maps, translate signatures and regions,
+preserve instruction expansion/fusion provenance, and keep exceptional throw
+sites exact. The consumer explicitly maps native RTL storage into optional MLIL
+provenance, so target allocation and synthetic temporaries are not mistaken for
+source locations.
 
 ### Generic medium-level IR (`ir::mlil`)
 
@@ -243,13 +261,13 @@ inverted — before falling back to a wrapping `logical_not`.
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
 | Liveness | `Liveness::compute` | Live-in / live-out at each block |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |
-| SSA construction | `SsaForm::compute` | IDF phi placement plus full dominator-tree renaming |
+| SSA construction | `SsaForm::compute` | IDF phi placement plus full dominator-forest renaming, including disconnected handler/dead-code components |
 | Phi placement | `PhiPlacements::compute` | Structural IDF phase for consumers that only need placement |
 | SSA deconstruction | `eliminate_phis`, `copies_by_predecessor` | φ-to-copy lowering |
 | Phi webs | `PhiWebs::compute` | Congruence classes for register coalescing |
 | Constant propagation | `constant_propagation`, `ConstantFolder` (associated `Const`) | Top/Const/Bottom lattice over a consumer constant domain — machine words, strings, bools, float bits |
 | Sparse conditional constant propagation | `SccpAnalysis::compute` | SSA-based, marks unreachable edges |
-| Copy propagation | `copy_propagation`, `CopySource` trait | Chain resolution + dead copy removal |
+| Copy and value-alias propagation | `copy_propagation`, `alias_propagation`, `CopySource` trait | Guarded chain resolution and dead transfer removal; pairwise aliases may refine types or metadata without changing runtime values |
 | Memory SSA | `MemorySSA::compute`, `MemoryEffect` trait | Memory versioning with φ-nodes |
 | Abstract interpretation | `abstract_interpret`, `AbstractDomain` trait | Generic abstract domain framework |
 

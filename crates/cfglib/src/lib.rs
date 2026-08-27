@@ -25,16 +25,20 @@
 //! [`ir::rtl`] sits below MLIL for machine-shaped languages: each native
 //! instruction becomes one parallel typed transfer over raw storage
 //! lanes, and [`lift_rtl_function`] recovers typed variables (def-use
-//! webs over per-lane SSA) while emitting straight into an MLIL builder;
-//! variable-shaped languages skip it and build MLIL directly.
+//! webs over per-lane SSA) while emitting into an associated, potentially
+//! distinct MLIL dialect. [`lower_rtl_function`] maps that MLIL back through
+//! target placement. Both directions retain signatures, exception regions,
+//! fallibly translated edges, and many-to-many provenance; variable-shaped
+//! languages can skip RTL and build MLIL directly.
 //! [`ir::hlil`] is the structured, expression-oriented level above it:
 //! statement trees with nested typed expression trees, built either
 //! bottom-up by a source frontend ([`HlilFunctionBuilder`]) or lifted from
 //! MLIL ([`lift_hlil_function`]) with effect-ordered single-use inlining,
 //! and lowered back to flat MLIL ([`lower_hlil_function`]) so both
 //! directions of the pipeline meet at either level.
-//! Every level's dialect ([`Vocabulary`], [`ir::mlil::Dialect`],
-//! [`ir::hlil::Dialect`]) keeps operations, types, effects, edge meaning,
+//! Every level's dialect ([`Vocabulary`], [`ir::rtl::Dialect`],
+//! [`ir::mlil::Dialect`], [`ir::hlil::Dialect`]) keeps operations, types,
+//! effects, edge meaning,
 //! and source coordinates entirely consumer-defined, so one dialect type
 //! serves source lowering and binary lifting alike.
 //!
@@ -109,7 +113,9 @@
 //! # Contracts
 //!
 //! - Blocks may be empty, may lack explicit terminator instructions, and
-//!   unreachable blocks are legal (dead code after a return/goto).
+//!   unreachable blocks are legal (dead code after a return/goto). SSA treats
+//!   disconnected source components as independent dominator-forest roots, so
+//!   their internal def-use flow remains intact without inheriting entry state.
 //! - [`Cfg::blocks`] iterates in allocation order and [`Cfg::edges`] in
 //!   insertion order; both orders are stable and part of the API.
 //! - [`ProgramPoint`] instruction indices are positions, not identities:
@@ -177,7 +183,10 @@ pub use dataflow::abstract_interpretation::{
 pub use dataflow::constant_propagation::{
     ConstFact, ConstPropProblem, ConstValue, ConstantFolder, constant_propagation,
 };
-pub use dataflow::copy_propagation::{CopyPropagationStats, CopySource, copy_propagation};
+pub use dataflow::copy_propagation::{
+    AliasPairs, AliasPropagationStats, CopyPropagationStats, CopySource, alias_propagation,
+    copy_propagation,
+};
 pub use dataflow::def_use::DefUseChains;
 pub use dataflow::edge_fixpoint::{
     EdgeFacts, EdgeProblem, TryEdgeProblem, solve_edge_problem, solve_edge_problem_from,
@@ -308,9 +317,10 @@ pub use ir::rtl::{
     Lane as RtlLane, Lift as RtlLift, LiftMaps as RtlLiftMaps,
     LiftedStatement as RtlLiftedStatement, Lifting as RtlLifting, Lower as RtlLower,
     LowerContext as RtlLowerContext, LowerEdgeContext as RtlLowerEdgeContext,
-    Lowered as RtlLowered, Place as RtlPlace, Placement as RtlPlacement,
-    ReadResolver as RtlReadResolver, ResolvedRead as RtlResolvedRead, Result as RtlResult,
-    ScalarInference, ScalarType, Shape as RtlShape, Statement as RtlStatement,
+    Lowered as RtlLowered, MlilBridge as RtlMlilBridge, Place as RtlPlace,
+    Placement as RtlPlacement, ProvenanceMap as RtlProvenanceMap, ReadResolver as RtlReadResolver,
+    ResolvedRead as RtlResolvedRead, Result as RtlResult, ScalarInference, ScalarType,
+    Shape as RtlShape, Signature as RtlSignature, Statement as RtlStatement,
     StatementId as RtlStatementId, StatementNode as RtlStatementNode, ValueShape,
     VarExpr as RtlVarExpr, WebInfo as RtlWebInfo, Webs as RtlWebs, lift as lift_rtl_function,
     lower as lower_rtl_function, referenced_webs as rtl_referenced_webs,

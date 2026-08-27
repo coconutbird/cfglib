@@ -31,12 +31,13 @@ use alloc::vec::Vec;
 use crate::ir::mlil::{
     Function as MlilFunction, Instruction as MlilInstruction, InstructionId, VariableId,
 };
+use crate::region::{Handler, HandlerBody, HandlerKind, Region};
 use crate::{BlockId, EdgeId};
 
-use super::dialect::Dialect;
+use super::dialect::{Dialect, MlilBridge};
 use super::error::{Error, Result};
 use super::expr::{Expr, Place};
-use super::function::{Function, FunctionBuilder};
+use super::function::{Function, FunctionBuilder, Signature};
 use super::statement::{Statement, StatementId};
 
 /// One whole-function storage assignment: every MLIL variable's target
@@ -69,12 +70,13 @@ impl<D: Dialect> Placement<D> {
 
 /// The lowering contract from a dialect's MLIL onto target RTL.
 ///
-/// Implemented on the same type as the MLIL dialect, so both levels
-/// share one vocabulary; the edge types stay independent, translated by
+/// Implemented on the target RTL marker, whose [`MlilBridge::Mlil`]
+/// selects the semantic source. Both levels share one vocabulary while
+/// their edge types stay independent and are translated by
 /// [`lower_edge`](Self::lower_edge). Storage-assignment and legalization
 /// policy live entirely in the implementation; cfglib supplies the walk,
-/// the checked construction, and the rewrite maps.
-pub trait Lower: Dialect + crate::ir::mlil::Dialect {
+/// checked construction, and rewrite maps.
+pub trait Lower: MlilBridge {
     /// Plans target storage for the whole function at once — coordinated
     /// allocation (JVM local numbering, Dalvik register pressure, wide
     /// pairs) rather than one-variable-at-a-time choices. Every variable
@@ -85,7 +87,7 @@ pub trait Lower: Dialect + crate::ir::mlil::Dialect {
     ///
     /// Returns [`Error::Lowering`](super::Error::Lowering) when some
     /// variable has no legal storage assignment.
-    fn plan(function: &MlilFunction<Self>) -> Result<Placement<Self>>;
+    fn plan(function: &MlilFunction<Self::Mlil>) -> Result<Placement<Self>>;
 
     /// Translates one MLIL instruction into RTL statements through the
     /// context.
@@ -96,7 +98,7 @@ pub trait Lower: Dialect + crate::ir::mlil::Dialect {
     /// instruction's semantics have no target representation.
     fn lower_instruction(
         context: &mut LowerContext<'_, Self>,
-        instruction: &MlilInstruction<Self>,
+        instruction: &MlilInstruction<Self::Mlil>,
     ) -> Result<()>;
 
     /// Translates one MLIL edge into the lowered function's RTL edge
@@ -107,11 +109,15 @@ pub trait Lower: Dialect + crate::ir::mlil::Dialect {
     /// throw site remaps from the MLIL instruction identity into the RTL
     /// statement domain. A dialect sharing one edge type across both
     /// levels clones the metadata.
-    #[must_use]
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when edge metadata names an entity that was not
+    /// lowered or otherwise has no exact target representation.
     fn lower_edge(
-        edge: &<Self as crate::ir::mlil::Dialect>::Edge,
+        edge: &<Self::Mlil as crate::ir::mlil::Dialect>::Edge,
         context: &LowerEdgeContext<'_>,
-    ) -> <Self as Dialect>::Edge;
+    ) -> Result<<Self as Dialect>::Edge>;
 }
 
 /// The context one [`Lower::lower_instruction`] call appends RTL
@@ -120,7 +126,7 @@ pub struct LowerContext<'a, D: Lower> {
     builder: &'a mut FunctionBuilder<D>,
     block: BlockId,
     placement: &'a Placement<D>,
-    span: Option<<D as crate::ir::dialect::Vocabulary>::SourceSpan>,
+    spans: Vec<<D as crate::ir::dialect::Vocabulary>::SourceSpan>,
     statements: Vec<StatementId>,
 }
 
@@ -159,7 +165,10 @@ impl<D: Lower> LowerContext<'_, D> {
     pub fn emit(&mut self, statement: Statement<D>) -> Result<StatementId> {
         let id = self
             .builder
-            .append(self.block, statement, self.span.clone())?;
+            .append(self.block, statement, self.spans.first().cloned())?;
+        for span in self.spans.iter().skip(1) {
+            self.builder.map_statement(span.clone(), id)?;
+        }
         self.statements.push(id);
         Ok(id)
     }
@@ -242,11 +251,25 @@ impl<D: Lower> Lowered<D> {
 /// Returns [`Error::Lowering`](super::Error::Lowering) when a variable
 /// has no legal storage or an instruction no target representation, and
 /// construction errors when the emitted RTL is structurally invalid.
-pub fn lower<D: Lower>(function: &MlilFunction<D>) -> Result<Lowered<D>> {
+pub fn lower<D: Lower>(function: &MlilFunction<D::Mlil>) -> Result<Lowered<D>> {
     let cfg = function.cfg();
     let placement = D::plan(function)?;
 
     let mut builder = FunctionBuilder::<D>::new(function.source().clone());
+    let parameters = function
+        .signature()
+        .parameters
+        .iter()
+        .map(|&variable| {
+            placement.place(variable).cloned().ok_or_else(|| {
+                Error::Lowering(format!("parameter {variable:?} has no target place"))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    builder.set_signature(Signature::new(
+        parameters,
+        function.signature().returns.clone(),
+    ))?;
     let mut blocks: Vec<BlockId> = Vec::with_capacity(cfg.block_count());
     for block in cfg.blocks() {
         if block.id() == cfg.entry() {
@@ -260,16 +283,16 @@ pub fn lower<D: Lower>(function: &MlilFunction<D>) -> Result<Lowered<D>> {
     let mut statements: Vec<Vec<StatementId>> = vec![Vec::new(); function.instruction_count()];
     for block in cfg.blocks() {
         for instruction in block.instructions() {
-            let span = function
+            let spans = function
                 .provenance()
                 .mappings_to(crate::ir::mlil::EntityId::Instruction(instruction.id()))
-                .next()
-                .map(|entry| entry.source.clone());
+                .map(|entry| entry.source.clone())
+                .collect();
             let mut context = LowerContext {
                 builder: &mut builder,
                 block: blocks[block.id().index()],
                 placement: &placement,
-                span,
+                spans,
                 statements: Vec::new(),
             };
             D::lower_instruction(&mut context, instruction)?;
@@ -297,9 +320,13 @@ pub fn lower<D: Lower>(function: &MlilFunction<D>) -> Result<Lowered<D>> {
         let lowered = builder.add_edge(
             blocks[edge.source().index()],
             blocks[edge.target().index()],
-            D::lower_edge(edge.payload(), &context),
+            D::lower_edge(edge.payload(), &context)?,
         )?;
         edges.push(lowered);
+    }
+
+    for region in cfg.regions() {
+        builder.add_region(map_region(region, &blocks)?)?;
     }
 
     Ok(Lowered {
@@ -308,5 +335,51 @@ pub fn lower<D: Lower>(function: &MlilFunction<D>) -> Result<Lowered<D>> {
         blocks,
         statements,
         edges,
+    })
+}
+
+fn map_region(region: &Region, blocks: &[BlockId]) -> Result<Region> {
+    let block = |source: BlockId| {
+        blocks
+            .get(source.index())
+            .copied()
+            .ok_or_else(|| Error::Lowering("region block lost during lowering".into()))
+    };
+    let protected_blocks = region
+        .protected_blocks
+        .iter()
+        .map(|&source| block(source))
+        .collect::<Result<_>>()?;
+    let handlers = region
+        .handlers
+        .iter()
+        .map(|handler| {
+            let body = match &handler.body {
+                HandlerBody::Unknown => HandlerBody::Unknown,
+                HandlerBody::Known(sources) => HandlerBody::Known(
+                    sources
+                        .iter()
+                        .map(|&source| block(source))
+                        .collect::<Result<_>>()?,
+                ),
+            };
+            let kind = match handler.kind {
+                HandlerKind::Filter { filter_block } => HandlerKind::Filter {
+                    filter_block: block(filter_block)?,
+                },
+                other => other,
+            };
+            Ok(Handler {
+                entry: block(handler.entry)?,
+                body,
+                kind,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Region {
+        id: region.id,
+        protected_blocks,
+        handlers,
+        parent: region.parent,
     })
 }

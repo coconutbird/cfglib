@@ -7,6 +7,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::ir::mlil;
+use crate::region::{Handler, HandlerBody, HandlerKind, Region, RegionId};
 
 use super::super::super::{
     Expr, Function, FunctionBuilder, Place, Statement, StatementId, lift, lower,
@@ -28,6 +29,18 @@ fn throwing_function() -> (Function<Managed>, StatementId) {
     builder.add_edge(body, exit, JvmRtlEdge::Fall).unwrap();
     builder
         .add_edge(body, handler, JvmRtlEdge::Except { site: None })
+        .unwrap();
+    builder
+        .add_region(Region {
+            id: RegionId::from_raw(0),
+            protected_blocks: [body].into_iter().collect(),
+            handlers: vec![Handler {
+                entry: handler,
+                body: HandlerBody::Unknown,
+                kind: HandlerKind::Catch,
+            }],
+            parent: None,
+        })
         .unwrap();
     // An invoke-shaped throwing assignment whose Add value triggers the
     // dialect's continuation-splitting two-instruction expansion.
@@ -132,6 +145,12 @@ fn exceptional_edge_carries_the_emitted_throw_site() {
         exceptional.source(),
         "native state commits outside the throw block"
     );
+    let region = &function.cfg().regions()[0];
+    assert!(region.protected_blocks.contains(&exceptional.source()));
+    assert!(
+        region.protected_blocks.contains(&commit_block),
+        "a continuation split remains inside the protected region"
+    );
     assert!(
         function
             .cfg()
@@ -143,6 +162,53 @@ fn exceptional_edge_carries_the_emitted_throw_site() {
     );
 }
 
+/// Throw capability and local exceptional flow are separate facts: an
+/// unhandled throw still marks the emitted instruction, but does not require
+/// the native assignment to be staged behind a continuation.
+#[test]
+fn unhandled_throw_exposes_no_exceptional_successor() {
+    let mut builder = FunctionBuilder::<Managed>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    let exit = builder.new_block("exit");
+    builder.add_edge(entry, body, JvmRtlEdge::Entry).unwrap();
+    builder.add_edge(body, exit, JvmRtlEdge::Fall).unwrap();
+    let invoke = builder
+        .append(
+            body,
+            Statement::Transfer {
+                assignments: vec![(
+                    Place {
+                        storage: 0,
+                        lanes: vec![0],
+                    },
+                    Expr::Apply {
+                        operator: Operator::Add,
+                        operands: vec![word_const(1), word_const(2)],
+                        shape: JvmShape::scalar(JvmConstraint::Word(ScalarType::I32)),
+                    },
+                )],
+                effects: vec![Effect::Call],
+                may_throw: true,
+            },
+            None,
+        )
+        .unwrap();
+    builder
+        .append(exit, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+
+    let lifting = lift(&builder.finish().unwrap(), &hierarchy()).unwrap();
+    let emitted = lifting.maps.instructions(invoke);
+    assert_eq!(emitted.len(), 1, "no local handler requires no staging");
+    let function = lifting.builder.finish().unwrap();
+    let instruction = function
+        .instruction(emitted[0])
+        .expect("the throwing assignment was emitted");
+    assert!(instruction.may_throw());
+    assert_eq!(instruction.defs().len(), 1, "the native target is direct");
+}
+
 /// Lowering translates the exceptional edge back into the RTL identity
 /// domain: the payload names a lowered statement, not an MLIL
 /// instruction.
@@ -152,7 +218,7 @@ fn lowering_remaps_the_throw_site_edge() {
     let lifting = lift(&function, &hierarchy()).unwrap();
     let mlil_function = lifting.builder.finish().unwrap();
 
-    let lowered = lower(&mlil_function).unwrap();
+    let lowered = lower::<Managed>(&mlil_function).unwrap();
     let remapped = lowered
         .function
         .cfg()

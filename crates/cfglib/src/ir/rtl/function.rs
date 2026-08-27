@@ -4,25 +4,36 @@ extern crate alloc;
 
 use alloc::collections::BTreeSet;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::ir::dialect::Vocabulary;
+use crate::region::{HandlerKind, Region, RegionId};
 use crate::{BlockId, Cfg, EdgeId};
 
 use super::dialect::Dialect;
 use super::error::{Error, Result};
-use super::expr::Expr;
+use super::expr::{Expr, Place};
 use super::statement::{Statement, StatementId, StatementNode};
 use super::types::Constraint as _;
 use super::types::Shape;
+
+/// Deterministic many-to-many source provenance for RTL statements.
+pub type ProvenanceMap<D> = crate::ir::provenance::ProvenanceMap<D, StatementId>;
+
+/// Ordered native parameter places and semantic return types of an RTL
+/// function.
+pub type Signature<D> =
+    crate::ir::signature::Signature<Place<D>, <D as crate::ir::dialect::Vocabulary>::ValueType>;
 
 /// One RTL function backed by a cfglib control-flow graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Function<D: Dialect> {
     pub(super) cfg: Cfg<StatementNode<D>, D::Edge>,
     pub(super) source: D::Source,
+    pub(super) signature: Signature<D>,
+    pub(super) provenance: ProvenanceMap<D>,
     pub(super) statements: u32,
 }
 
@@ -39,6 +50,22 @@ impl<D: Dialect> Function<D> {
         &self.source
     }
 
+    /// Returns the native parameter places and semantic return types.
+    #[must_use]
+    pub const fn signature(&self) -> &Signature<D> {
+        &self.signature
+    }
+
+    /// Returns every source span mapped to an RTL statement.
+    ///
+    /// Multiple spans may identify one statement when source operations
+    /// fuse, and one span may identify several statements when an
+    /// operation expands.
+    #[must_use]
+    pub const fn provenance(&self) -> &ProvenanceMap<D> {
+        &self.provenance
+    }
+
     /// Returns the number of statements — the exclusive upper bound of
     /// the function's dense [`StatementId`] space.
     #[must_use]
@@ -51,6 +78,8 @@ impl<D: Dialect> Function<D> {
 pub struct FunctionBuilder<D: Dialect> {
     cfg: Cfg<StatementNode<D>, D::Edge>,
     source: D::Source,
+    signature: Signature<D>,
+    provenance: ProvenanceMap<D>,
     statements: u32,
 }
 
@@ -62,9 +91,46 @@ impl<D: Dialect> FunctionBuilder<D> {
         cfg.block_mut(cfg.entry()).set_label("root");
         Self {
             cfg,
+            provenance: ProvenanceMap::new(source.clone()),
             source,
+            signature: Signature::<D>::default(),
             statements: 0,
         }
+    }
+
+    /// Declares the ordered native parameter places and semantic return
+    /// types.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a parameter place is empty, repeats a lane,
+    /// or overlaps another parameter place.
+    pub fn set_signature(&mut self, signature: Signature<D>) -> Result<()> {
+        let mut occupied = BTreeSet::new();
+        for place in &signature.parameters {
+            if place.lanes.is_empty() {
+                return Err(Error::InvalidConstruction(
+                    "signature parameter occupies no lanes".into(),
+                ));
+            }
+            let mut local = BTreeSet::new();
+            for &lane in &place.lanes {
+                if !local.insert(lane) {
+                    return Err(Error::InvalidConstruction(format!(
+                        "signature parameter repeats lane {lane} of {:?}",
+                        place.storage
+                    )));
+                }
+                if !occupied.insert((place.storage.clone(), lane)) {
+                    return Err(Error::InvalidConstruction(format!(
+                        "signature parameters overlap lane {lane} of {:?}",
+                        place.storage
+                    )));
+                }
+            }
+        }
+        self.signature = signature;
+        Ok(())
     }
 
     /// Returns the synthetic root block.
@@ -99,6 +165,52 @@ impl<D: Dialect> FunctionBuilder<D> {
             .add_edge_with_payload(source, target, kind, metadata))
     }
 
+    /// Attaches one exception region and its handlers.
+    ///
+    /// The region identity is assigned by the function; the value in
+    /// `region.id` is ignored.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for empty protection, invalid or root blocks, a
+    /// known handler body omitting its entry, or a parent that has not
+    /// already been added.
+    pub fn add_region(&mut self, region: Region) -> Result<RegionId> {
+        if region.protected_blocks.is_empty() {
+            return Err(Error::InvalidConstruction(
+                "region protects no blocks".into(),
+            ));
+        }
+        for &block in &region.protected_blocks {
+            self.require_region_block(block, "protected block")?;
+        }
+        for handler in &region.handlers {
+            self.require_region_block(handler.entry, "handler entry")?;
+            if let Some(blocks) = handler.body.blocks() {
+                for &block in blocks {
+                    self.require_region_block(block, "handler body block")?;
+                }
+                if !blocks.contains(&handler.entry) {
+                    return Err(Error::InvalidConstruction(format!(
+                        "handler body omits its own entry {}",
+                        handler.entry
+                    )));
+                }
+            }
+            if let HandlerKind::Filter { filter_block } = handler.kind {
+                self.require_region_block(filter_block, "filter block")?;
+            }
+        }
+        if let Some(parent) = region.parent
+            && parent.index() >= self.cfg.regions().len()
+        {
+            return Err(Error::InvalidConstruction(format!(
+                "region parent {parent} has not been added"
+            )));
+        }
+        Ok(self.cfg.add_region(region))
+    }
+
     /// Appends one statement to a block, validating its shapes, and
     /// returns the statement's stable identity.
     ///
@@ -117,6 +229,11 @@ impl<D: Dialect> FunctionBuilder<D> {
     ) -> Result<StatementId> {
         self.require_block(block)?;
         validate_statement(&statement)?;
+        if span.as_ref().is_some_and(D::span_is_empty) {
+            return Err(Error::InvalidConstruction(
+                "source span is empty or reversed".into(),
+            ));
+        }
         let id = StatementId::from_raw(self.statements);
         self.statements = self
             .statements
@@ -124,8 +241,31 @@ impl<D: Dialect> FunctionBuilder<D> {
             .ok_or_else(|| Error::InvalidConstruction("statement count exceeds u32::MAX".into()))?;
         self.cfg
             .block_mut(block)
-            .push(StatementNode::new(id, statement, span));
+            .push(StatementNode::new(id, statement, span.clone()));
+        if let Some(span) = span {
+            self.provenance
+                .insert(span, id)
+                .map_err(|error| Error::InvalidConstruction(error.to_string()))?;
+        }
         Ok(id)
+    }
+
+    /// Records an additional source correspondence for one statement.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for an unknown statement or an empty/reversed
+    /// source span.
+    pub fn map_statement(&mut self, source: D::SourceSpan, statement: StatementId) -> Result<bool> {
+        if statement.index() >= self.statements as usize {
+            return Err(Error::InvalidConstruction(format!(
+                "statement {statement:?} is outside a {}-statement function",
+                self.statements
+            )));
+        }
+        self.provenance
+            .insert(source, statement)
+            .map_err(|error| Error::InvalidConstruction(error.to_string()))
     }
 
     /// Completes the function, validating its control-flow structure.
@@ -215,6 +355,8 @@ impl<D: Dialect> FunctionBuilder<D> {
         Ok(Function {
             cfg: self.cfg,
             source: self.source,
+            signature: self.signature,
+            provenance: self.provenance,
             statements: self.statements,
         })
     }
@@ -228,6 +370,16 @@ impl<D: Dialect> FunctionBuilder<D> {
                 self.cfg.block_count()
             )))
         }
+    }
+
+    fn require_region_block(&self, block: BlockId, role: &str) -> Result<()> {
+        self.require_block(block)?;
+        if block == self.cfg.entry() {
+            return Err(Error::InvalidConstruction(format!(
+                "{role} {block} is the synthetic root"
+            )));
+        }
+        Ok(())
     }
 }
 

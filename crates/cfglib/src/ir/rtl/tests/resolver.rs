@@ -10,14 +10,15 @@ use crate::ir::mlil;
 
 use super::super::{ReadResolver, ResolvedRead, Webs, referenced_webs};
 use super::{
-    Edge, Effect, EffectOp, FunctionBuilder, LiftedStatement, Operator, ScalarType, Statement,
-    TestDialect, ValueShape, VarExpr, apply, assign, constant, lift, read, vector_const,
+    Edge, Effect, EffectOp, FunctionBuilder, LiftedStatement, Operator, ScalarType,
+    SemanticDialect, Statement, TestDialect, ValueShape, VarExpr, apply, assign, constant, lift,
+    read, vector_const,
 };
 
 /// Lifts a single-block RTL body through MLIL into HLIL.
 fn structured(
     statements: Vec<Statement<TestDialect>>,
-) -> (hlil::LiftedFunction<TestDialect>, Webs<TestDialect>) {
+) -> (hlil::LiftedFunction<SemanticDialect>, Webs<TestDialect>) {
     let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
     let entry = builder.entry();
     let body = builder.new_block("body");

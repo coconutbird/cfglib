@@ -19,16 +19,20 @@ use alloc::string::ToString;
 use alloc::vec::Vec;
 
 use crate::ir::dialect::Vocabulary;
-use crate::ir::mlil::{FunctionBuilder as MlilBuilder, InstructionId, TypedVariable, VariableId};
+use crate::ir::mlil::{
+    EntityId, FunctionBuilder as MlilBuilder, InstructionId, TypedVariable, VariableId,
+};
 use crate::{BlockId, EdgeId, SsaValue};
 
-use super::dialect::{Dialect, Lift};
+use super::dialect::{Dialect, Lift, MlilBridge};
 use super::error::{Error, Result};
 use super::expr::{Expr, Place};
 use super::render::Webs;
 use super::statement::{Lane, Statement, StatementId};
 use super::template::{LiftedStatement, VarExpr, WebInfo};
 use super::types::Shape;
+
+type MlilOf<D> = <D as MlilBridge>::Mlil;
 
 /// The stable correspondences one lift established.
 ///
@@ -38,6 +42,7 @@ use super::types::Shape;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LiftMaps {
     pub(super) blocks: Vec<BlockId>,
+    pub(super) block_expansions: Vec<Vec<BlockId>>,
     pub(super) instructions: Vec<Vec<InstructionId>>,
     pub(super) throw_sites: Vec<Option<InstructionId>>,
     pub(super) edges: Vec<EdgeId>,
@@ -48,6 +53,15 @@ impl LiftMaps {
     #[must_use]
     pub fn block(&self, block: BlockId) -> Option<BlockId> {
         self.blocks.get(block.index()).copied()
+    }
+
+    /// Every MLIL block one RTL block expanded into, in control-flow
+    /// order. The first is the primary block returned by [`Self::block`].
+    #[must_use]
+    pub fn blocks(&self, block: BlockId) -> &[BlockId] {
+        self.block_expansions
+            .get(block.index())
+            .map_or(&[], Vec::as_slice)
     }
 
     /// The MLIL instructions one RTL statement emitted, in order.
@@ -76,7 +90,7 @@ impl LiftMaps {
 /// and the full provenance maps.
 pub struct Lifting<D: Lift> {
     /// The populated MLIL builder.
-    pub builder: MlilBuilder<D>,
+    pub builder: MlilBuilder<MlilOf<D>>,
     /// Recovered webs, resolvable by variable identity. Webs flagged
     /// [`live_in`](WebInfo::live_in) are the function's parameters and
     /// implicit input channels, in declaration order.
@@ -117,6 +131,12 @@ impl EdgeContext<'_> {
     pub fn block(&self, block: BlockId) -> Option<BlockId> {
         self.maps.block(block)
     }
+
+    /// Every MLIL block one RTL block expanded into.
+    #[must_use]
+    pub fn blocks(&self, block: BlockId) -> &[BlockId] {
+        self.maps.blocks(block)
+    }
 }
 
 pub(super) struct Resolver<'a, D: Dialect> {
@@ -141,7 +161,7 @@ impl<D: Dialect> Resolver<'_, D> {
 }
 
 pub(super) struct Emitter<'a, D: Lift> {
-    pub(super) builder: MlilBuilder<D>,
+    pub(super) builder: MlilBuilder<MlilOf<D>>,
     pub(super) webs: Vec<WebInfo<D>>,
     pub(super) web_index: BTreeMap<VariableId, usize>,
     pub(super) resolver: Resolver<'a, D>,
@@ -163,6 +183,34 @@ struct PendingAssign<D: Dialect> {
     reads: Vec<usize>,
 }
 
+/// Exceptional behavior visible while one RTL statement is emitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExceptionalFlow {
+    /// The statement cannot throw.
+    None,
+    /// Failure unwinds out of the function.
+    Unwind,
+    /// At least one exceptional edge reaches an in-function handler.
+    Local,
+}
+
+impl ExceptionalFlow {
+    fn from_flags(may_throw: bool, has_exceptional_successors: bool) -> Result<Self> {
+        match (may_throw, has_exceptional_successors) {
+            (false, false) => Ok(Self::None),
+            (true, false) => Ok(Self::Unwind),
+            (true, true) => Ok(Self::Local),
+            (false, true) => Err(Error::Lifting(
+                "a non-throwing statement cannot own exceptional successors".into(),
+            )),
+        }
+    }
+
+    const fn may_throw(self) -> bool {
+        !matches!(self, Self::None)
+    }
+}
+
 /// The context one [`Lift::emit`] call appends MLIL instructions
 /// through.
 ///
@@ -175,11 +223,11 @@ pub struct Emission<'a, 'b, D: Lift> {
     emitter: &'a mut Emitter<'b, D>,
     source: usize,
     statement: StatementId,
-    reads: Vec<TypedVariable<D>>,
-    target: Option<TypedVariable<D>>,
+    reads: Vec<TypedVariable<MlilOf<D>>>,
+    target: Option<TypedVariable<MlilOf<D>>>,
     merge: bool,
-    may_throw: bool,
-    span: Option<<D as Vocabulary>::SourceSpan>,
+    exceptional_flow: ExceptionalFlow,
+    spans: Vec<<D as Vocabulary>::SourceSpan>,
     allowed: BTreeSet<VariableId>,
     appended_throwing: bool,
 }
@@ -194,13 +242,13 @@ impl<D: Lift> Emission<'_, '_, D> {
     /// The typed web variables the statement's reads consume, in
     /// pre-order — the instruction `uses` of the one-operation form.
     #[must_use]
-    pub fn reads(&self) -> &[TypedVariable<D>] {
+    pub fn reads(&self) -> &[TypedVariable<MlilOf<D>>] {
         &self.reads
     }
 
     /// The typed web variable an assignment defines.
     #[must_use]
-    pub const fn target(&self) -> Option<&TypedVariable<D>> {
+    pub const fn target(&self) -> Option<&TypedVariable<MlilOf<D>>> {
         self.target.as_ref()
     }
 
@@ -208,7 +256,19 @@ impl<D: Lift> Emission<'_, '_, D> {
     /// appended instruction must then carry `may_throw`.
     #[must_use]
     pub const fn may_throw(&self) -> bool {
-        self.may_throw
+        self.exceptional_flow.may_throw()
+    }
+
+    /// Whether this statement owns at least one in-function exceptional
+    /// successor in the source RTL graph.
+    ///
+    /// A statement may throw without having such a successor when failure
+    /// unwinds out of the function. Dialects can use this distinction to
+    /// preserve pre-throw native state only when a local handler can observe
+    /// it.
+    #[must_use]
+    pub const fn has_exceptional_successors(&self) -> bool {
+        matches!(self.exceptional_flow, ExceptionalFlow::Local)
     }
 
     /// Continues emission in a fresh MLIL block, wired from the current
@@ -224,7 +284,7 @@ impl<D: Lift> Emission<'_, '_, D> {
     /// Returns an error when MLIL construction fails.
     pub fn continuation(
         &mut self,
-        metadata: <D as crate::ir::mlil::Dialect>::Edge,
+        metadata: <MlilOf<D> as crate::ir::mlil::Dialect>::Edge,
     ) -> Result<BlockId> {
         let current = self.emitter.tail[self.source];
         let block = self.emitter.builder.new_block("cont");
@@ -233,6 +293,7 @@ impl<D: Lift> Emission<'_, '_, D> {
             .add_edge(current, block, metadata, None)
             .map_err(|error| Error::Lifting(error.to_string()))?;
         self.emitter.tail[self.source] = block;
+        self.emitter.maps.block_expansions[self.source].push(block);
         Ok(block)
     }
 
@@ -245,7 +306,7 @@ impl<D: Lift> Emission<'_, '_, D> {
         &mut self,
         role: <D as Vocabulary>::VariableRole,
         value_type: <D as Vocabulary>::ValueType,
-    ) -> Result<TypedVariable<D>> {
+    ) -> Result<TypedVariable<MlilOf<D>>> {
         let variable = self
             .emitter
             .builder
@@ -265,9 +326,9 @@ impl<D: Lift> Emission<'_, '_, D> {
     /// before a throwing append.
     pub fn append(
         &mut self,
-        operation: <D as crate::ir::mlil::Dialect>::Operation,
-        uses: Vec<TypedVariable<D>>,
-        defs: Vec<TypedVariable<D>>,
+        operation: <MlilOf<D> as crate::ir::mlil::Dialect>::Operation,
+        uses: Vec<TypedVariable<MlilOf<D>>>,
+        defs: Vec<TypedVariable<MlilOf<D>>>,
         may_throw: bool,
     ) -> Result<InstructionId> {
         for used in &uses {
@@ -307,8 +368,21 @@ impl<D: Lift> Emission<'_, '_, D> {
         let id = self
             .emitter
             .builder
-            .append_instruction(block, operation, uses, defs, may_throw, self.span.clone())
+            .append_instruction(
+                block,
+                operation,
+                uses,
+                defs,
+                may_throw,
+                self.spans.first().cloned(),
+            )
             .map_err(|error| Error::Lifting(error.to_string()))?;
+        for span in self.spans.iter().skip(1) {
+            self.emitter
+                .builder
+                .map_entity(span.clone(), EntityId::Instruction(id))
+                .map_err(|error| Error::Lifting(error.to_string()))?;
+        }
         self.emitter.maps.instructions[self.statement.index()].push(id);
         if may_throw {
             self.emitter.maps.throw_sites[self.statement.index()] = Some(id);
@@ -328,7 +402,7 @@ impl<D: Lift> Emission<'_, '_, D> {
     /// Returns an error when MLIL construction fails.
     pub fn single(
         &mut self,
-        operation: <D as crate::ir::mlil::Dialect>::Operation,
+        operation: <MlilOf<D> as crate::ir::mlil::Dialect>::Operation,
     ) -> Result<InstructionId> {
         let mut uses = self.reads.clone();
         if self.merge
@@ -336,8 +410,8 @@ impl<D: Lift> Emission<'_, '_, D> {
         {
             uses.push(target.clone());
         }
-        let defs: Vec<TypedVariable<D>> = self.target.iter().cloned().collect();
-        let may_throw = self.may_throw;
+        let defs: Vec<TypedVariable<MlilOf<D>>> = self.target.iter().cloned().collect();
+        let may_throw = self.may_throw();
         self.append(operation, uses, defs, may_throw)
     }
 }
@@ -351,7 +425,7 @@ impl<D: Lift> Emitter<'_, D> {
         Ok(u8::try_from(index).unwrap_or(u8::MAX))
     }
 
-    fn typed(&self, web: usize) -> TypedVariable<D> {
+    fn typed(&self, web: usize) -> TypedVariable<MlilOf<D>> {
         TypedVariable::new(
             self.webs[web].variable,
             D::value_type(self.webs[web].shape.clone()),
@@ -462,18 +536,21 @@ impl<D: Lift> Emitter<'_, D> {
         target: Option<usize>,
         merge: bool,
         may_throw: bool,
-        span: Option<<D as Vocabulary>::SourceSpan>,
+        has_exceptional_successors: bool,
+        spans: Vec<<D as Vocabulary>::SourceSpan>,
     ) -> Result<()> {
         if self.current != Some(id) {
             self.current = Some(id);
             self.native_defined = false;
         }
-        let reads: Vec<TypedVariable<D>> = reads.iter().map(|&web| self.typed(web)).collect();
+        let reads: Vec<TypedVariable<MlilOf<D>>> =
+            reads.iter().map(|&web| self.typed(web)).collect();
         let target = target.map(|web| self.typed(web));
         let mut allowed: BTreeSet<VariableId> = reads.iter().map(|typed| typed.variable).collect();
         if let Some(target) = &target {
             allowed.insert(target.variable);
         }
+        let exceptional_flow = ExceptionalFlow::from_flags(may_throw, has_exceptional_successors)?;
         let mut emission = Emission {
             emitter: self,
             source,
@@ -481,13 +558,13 @@ impl<D: Lift> Emitter<'_, D> {
             reads,
             target,
             merge,
-            may_throw,
-            span,
+            exceptional_flow,
+            spans,
             allowed,
             appended_throwing: false,
         };
         D::emit(&mut emission, statement)?;
-        if may_throw && !emission.appended_throwing {
+        if emission.may_throw() && !emission.appended_throwing {
             return Err(Error::Lifting(format!(
                 "the emission dropped statement {}'s exceptional behavior",
                 id.raw()
@@ -505,7 +582,7 @@ impl<D: Lift> Emitter<'_, D> {
         id: StatementId,
         value: VarExpr<D>,
         reads: &[usize],
-        span: Option<<D as Vocabulary>::SourceSpan>,
+        spans: &[<D as Vocabulary>::SourceSpan],
     ) -> Result<(VarExpr<D>, usize)> {
         if let VarExpr::Read { positions, scalar } = &value
             && let [web] = reads
@@ -537,7 +614,8 @@ impl<D: Lift> Emitter<'_, D> {
             Some(temporary),
             false,
             false,
-            span,
+            false,
+            spans.to_vec(),
         )?;
         Ok((
             VarExpr::Read {
@@ -559,7 +637,8 @@ impl<D: Lift> Emitter<'_, D> {
         assignments: &[(Place<D>, Expr<D>)],
         effects: &[<D as Vocabulary>::Effect],
         may_throw: bool,
-        span: Option<&<D as Vocabulary>::SourceSpan>,
+        has_exceptional_successors: bool,
+        spans: &[<D as Vocabulary>::SourceSpan],
         annotation: &crate::SsaInstruction<Lane<D>>,
     ) -> Result<()> {
         let mut use_cursor = 0usize;
@@ -618,7 +697,8 @@ impl<D: Lift> Emitter<'_, D> {
                     Some(temporary),
                     false,
                     false,
-                    span.cloned(),
+                    false,
+                    spans.to_vec(),
                 )?;
                 for pending in &mut lifted {
                     for web in &mut pending.reads {
@@ -635,6 +715,7 @@ impl<D: Lift> Emitter<'_, D> {
             let merges = pending.positions.len() < usize::from(width);
             let statement_effects = if first { effects.to_vec() } else { Vec::new() };
             let throws = first && may_throw;
+            let exceptional = first && has_exceptional_successors;
             first = false;
             self.hand_off(
                 source,
@@ -650,7 +731,8 @@ impl<D: Lift> Emitter<'_, D> {
                 Some(pending.target),
                 merges,
                 throws,
-                span.cloned(),
+                exceptional,
+                spans.to_vec(),
             )?;
         }
         Ok(())
@@ -662,7 +744,8 @@ impl<D: Lift> Emitter<'_, D> {
         source: usize,
         id: StatementId,
         statement: &Statement<D>,
-        span: Option<<D as Vocabulary>::SourceSpan>,
+        has_exceptional_successors: bool,
+        spans: Vec<<D as Vocabulary>::SourceSpan>,
         annotation: &crate::SsaInstruction<Lane<D>>,
     ) -> Result<()> {
         match statement {
@@ -676,7 +759,8 @@ impl<D: Lift> Emitter<'_, D> {
                 assignments,
                 effects,
                 *may_throw,
-                span.as_ref(),
+                has_exceptional_successors,
+                &spans,
                 annotation,
             ),
             Statement::Effect {
@@ -703,7 +787,8 @@ impl<D: Lift> Emitter<'_, D> {
                     None,
                     false,
                     *may_throw,
-                    span,
+                    has_exceptional_successors,
+                    spans,
                 )
             }
             Statement::Branch { condition } => {
@@ -719,7 +804,8 @@ impl<D: Lift> Emitter<'_, D> {
                     None,
                     false,
                     false,
-                    span,
+                    false,
+                    spans,
                 )
             }
             Statement::Dispatch { scrutinee } => {
@@ -735,7 +821,8 @@ impl<D: Lift> Emitter<'_, D> {
                     None,
                     false,
                     false,
-                    span,
+                    false,
+                    spans,
                 )
             }
             Statement::Return { values } => {
@@ -745,8 +832,7 @@ impl<D: Lift> Emitter<'_, D> {
                 for value in values {
                     let mut reads = Vec::new();
                     let rebuilt = self.rebuild(value, &annotation.uses, &mut cursor, &mut reads)?;
-                    let (value, web) =
-                        self.returnable(source, id, rebuilt, &reads, span.clone())?;
+                    let (value, web) = self.returnable(source, id, rebuilt, &reads, &spans)?;
                     lowered.push(value);
                     return_reads.push(web);
                 }
@@ -758,7 +844,8 @@ impl<D: Lift> Emitter<'_, D> {
                     None,
                     false,
                     false,
-                    span,
+                    false,
+                    spans,
                 )
             }
             Statement::Raise {
@@ -784,7 +871,8 @@ impl<D: Lift> Emitter<'_, D> {
                     None,
                     false,
                     true,
-                    span,
+                    has_exceptional_successors,
+                    spans,
                 )
             }
         }

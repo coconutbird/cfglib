@@ -61,11 +61,11 @@ mod statement;
 mod template;
 mod types;
 
-pub use dialect::{Dialect, Edge, Lift};
+pub use dialect::{Dialect, Edge, Lift, MlilBridge};
 pub use emission::{EdgeContext, Emission, LiftMaps, Lifting};
 pub use error::{Error, Result};
 pub use expr::{Expr, Place};
-pub use function::{Function, FunctionBuilder};
+pub use function::{Function, FunctionBuilder, ProvenanceMap, Signature};
 pub use lift::lift;
 pub use lower::{Lower, LowerContext, LowerEdgeContext, Lowered, Placement, lower};
 pub use render::{ReadResolver, ResolvedRead, Webs, referenced_webs};
