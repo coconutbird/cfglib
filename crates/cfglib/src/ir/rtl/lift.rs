@@ -26,6 +26,7 @@ use super::dialect::{Dialect, Lift};
 use super::error::{Error, Result};
 use super::expr::Expr;
 use super::function::Function;
+use super::render::Webs;
 use super::statement::{Lane, Statement};
 use super::types::{ScalarType, ValueShape};
 
@@ -196,13 +197,12 @@ pub struct WebInfo<D: Dialect> {
 }
 
 /// The result of lifting: an MLIL builder ready for signature assignment
-/// and [`finish`](MlilBuilder::finish), plus the recovered webs in
-/// variable-identity order.
+/// and [`finish`](MlilBuilder::finish), plus the recovered webs.
 pub struct Lifting<D: Lift> {
     /// The populated MLIL builder.
     pub builder: MlilBuilder<D>,
-    /// Recovered webs, indexed by declared variable order.
-    pub webs: Vec<WebInfo<D>>,
+    /// Recovered webs, resolvable by variable identity.
+    pub webs: Webs<D>,
 }
 
 struct UnionFind {
@@ -449,7 +449,7 @@ pub fn lift<D: Lift>(function: &Function<D>) -> Result<Lifting<D>> {
 
     Ok(Lifting {
         builder: emitter.builder,
-        webs: emitter.webs,
+        webs: Webs::new(emitter.webs),
     })
 }
 

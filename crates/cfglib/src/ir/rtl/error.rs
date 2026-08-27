@@ -12,6 +12,9 @@ pub enum Error {
     InvalidConstruction(String),
     /// The lift into MLIL could not proceed.
     Lifting(String),
+    /// A read/operand alignment broke while resolving a lifted
+    /// expression against its HLIL operands.
+    Resolution(String),
 }
 
 impl fmt::Display for Error {
@@ -21,6 +24,7 @@ impl fmt::Display for Error {
                 write!(formatter, "invalid RTL construction: {message}")
             }
             Self::Lifting(message) => write!(formatter, "RTL lift: {message}"),
+            Self::Resolution(message) => write!(formatter, "RTL read resolution: {message}"),
         }
     }
 }

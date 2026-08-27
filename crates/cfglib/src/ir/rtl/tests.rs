@@ -1,16 +1,18 @@
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::EdgeKind;
 use crate::ir::dialect::Vocabulary;
+use crate::ir::hlil::{self, ExpressionKind, Lifted, StatementKind, lift_function as lift_hlil};
 use crate::ir::mlil::{self, InstructionMetadata, VerificationIssue};
-use crate::{EdgeKind, FlowEffect};
 
 use super::{
-    Dialect, Expr, Function, FunctionBuilder, Lift, LiftedStatement, Place, ScalarType, Statement,
-    ValueShape, lift,
+    Dialect, Edge, Expr, Function, FunctionBuilder, Lift, LiftedStatement, Place, ReadResolver,
+    ResolvedRead, ScalarType, Statement, ValueShape, VarExpr, lift, referenced_webs,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -30,14 +32,6 @@ enum Operator {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EffectOp {
     Emit,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Edge {
-    Entry,
-    True,
-    False,
-    Next,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -89,15 +83,11 @@ impl Dialect for TestDialect {
     }
 
     fn edge_kind(edge: &Self::Edge) -> EdgeKind {
-        match edge {
-            Edge::Entry | Edge::Next => EdgeKind::Fallthrough,
-            Edge::True => EdgeKind::ConditionalTrue,
-            Edge::False => EdgeKind::ConditionalFalse,
-        }
+        edge.kind()
     }
 
     fn is_entry_edge(edge: &Self::Edge) -> bool {
-        matches!(edge, Edge::Entry)
+        edge.is_entry()
     }
 }
 
@@ -109,34 +99,85 @@ impl mlil::Dialect for TestDialect {
         operation: &Self::Operation,
         may_throw: bool,
     ) -> InstructionMetadata<Self::Effect> {
-        match operation {
+        let effects = match operation {
             LiftedStatement::Assign { effects, .. } | LiftedStatement::Effect { effects, .. } => {
-                InstructionMetadata::new(effects.clone(), FlowEffect::Fallthrough, may_throw)
+                effects.clone()
             }
-            LiftedStatement::Branch { .. } => {
-                InstructionMetadata::new(Vec::new(), FlowEffect::ConditionalJump, false)
-            }
-            LiftedStatement::Return { .. } => {
-                InstructionMetadata::new(Vec::new(), FlowEffect::Return, false)
-            }
-        }
+            LiftedStatement::Branch { .. } | LiftedStatement::Return { .. } => Vec::new(),
+        };
+        InstructionMetadata::new(effects, operation.flow_effect(), may_throw)
     }
 
     fn mnemonic(operation: &Self::Operation) -> &str {
-        match operation {
-            LiftedStatement::Assign { .. } => "assign",
-            LiftedStatement::Effect { .. } => "effect",
-            LiftedStatement::Branch { .. } => "branch",
-            LiftedStatement::Return { .. } => "return",
-        }
+        operation.mnemonic()
     }
 
     fn edge_kind(edge: &Self::Edge) -> EdgeKind {
-        <Self as Dialect>::edge_kind(edge)
+        edge.kind()
     }
 
     fn is_entry_edge(edge: &Self::Edge) -> bool {
-        <Self as Dialect>::is_entry_edge(edge)
+        edge.is_entry()
+    }
+}
+
+impl mlil::AnalysisDialect for TestDialect {
+    type Constant = Vec<u64>;
+    type ExpressionOperator = Operator;
+    type Callee = u32;
+
+    fn is_copy(_operation: &Self::Operation) -> bool {
+        false
+    }
+
+    fn expression_operator(_operation: &Self::Operation) -> Option<Self::ExpressionOperator> {
+        None
+    }
+
+    fn constant(_operation: &Self::Operation) -> Option<Self::Constant> {
+        None
+    }
+
+    fn fold_constant(
+        _instruction: &mlil::Instruction<Self>,
+        _known: &BTreeMap<mlil::VariableId, Self::Constant>,
+    ) -> Option<(mlil::VariableId, Self::Constant)> {
+        None
+    }
+
+    fn callee(_operation: &Self::Operation) -> Option<Self::Callee> {
+        None
+    }
+}
+
+impl hlil::Dialect for TestDialect {
+    type Operation = LiftedStatement<TestDialect>;
+    type Constant = Vec<u64>;
+
+    fn mnemonic(operation: &Self::Operation) -> &str {
+        operation.mnemonic()
+    }
+}
+
+impl hlil::VerifyDialect for TestDialect {
+    fn verify(_function: &hlil::Function<Self>, _issues: &mut Vec<hlil::VerificationIssue>) {}
+}
+
+impl hlil::LiftDialect for TestDialect {
+    fn lift_operation(operation: &LiftedStatement<Self>) -> Lifted<LiftedStatement<Self>> {
+        operation.lifted()
+    }
+
+    fn case_values(_edge: &Edge) -> Vec<Vec<u64>> {
+        Vec::new()
+    }
+
+    fn void_type() -> ValueShape {
+        ValueShape::vector(ScalarType::Bits, 0)
+    }
+
+    fn previous_value_operand(operation: &LiftedStatement<Self>) -> Option<usize> {
+        operation.merge_operand()
     }
 }
 
@@ -378,8 +419,8 @@ fn join_unites_definitions_into_one_web() {
     builder.add_edge(entry, head, Edge::Entry).unwrap();
     builder.add_edge(head, then, Edge::True).unwrap();
     builder.add_edge(head, other, Edge::False).unwrap();
-    builder.add_edge(then, join, Edge::Next).unwrap();
-    builder.add_edge(other, join, Edge::Next).unwrap();
+    builder.add_edge(then, join, Edge::Fall).unwrap();
+    builder.add_edge(other, join, Edge::Fall).unwrap();
     builder
         .append(
             head,
@@ -485,4 +526,237 @@ fn partial_writes_merge_and_cross_web_reads_compose() {
         .unwrap();
     assert_eq!(r1_web.shape, ValueShape::vector(ScalarType::F32, 2));
     lifting.builder.finish().unwrap();
+}
+
+/// A merging assignment's previous-value slot trails every value read.
+#[test]
+fn merge_operand_trails_the_value_reads() {
+    let variable = mlil::VariableId::from_raw(0);
+    let value: VarExpr<TestDialect> = VarExpr::Apply {
+        operator: Operator::Add,
+        operands: vec![
+            VarExpr::Read {
+                variable,
+                positions: vec![0],
+                scalar: ScalarType::F32,
+            },
+            VarExpr::Read {
+                variable,
+                positions: vec![1],
+                scalar: ScalarType::F32,
+            },
+            VarExpr::Const {
+                bits: vec![0],
+                shape: ValueShape::scalar(ScalarType::F32),
+            },
+        ],
+        shape: ValueShape::scalar(ScalarType::F32),
+    };
+    assert_eq!(value.read_count(), 2);
+    let merging = LiftedStatement::<TestDialect>::Assign {
+        target: variable,
+        positions: vec![0],
+        width: 2,
+        merges: true,
+        value: value.clone(),
+        effects: Vec::new(),
+    };
+    assert_eq!(merging.merge_operand(), Some(2));
+    let full = LiftedStatement::<TestDialect>::Assign {
+        target: variable,
+        positions: vec![0, 1],
+        width: 2,
+        merges: false,
+        value,
+        effects: Vec::new(),
+    };
+    assert_eq!(full.merge_operand(), None);
+}
+
+/// Pre-order expression traversal visits every node once.
+#[test]
+fn for_each_expression_visits_pre_order() {
+    let value: VarExpr<TestDialect> = VarExpr::Apply {
+        operator: Operator::Add,
+        operands: vec![
+            VarExpr::Reinterpret {
+                operand: alloc::boxed::Box::new(VarExpr::Const {
+                    bits: vec![1],
+                    shape: ValueShape::scalar(ScalarType::U32),
+                }),
+                shape: ValueShape::scalar(ScalarType::F32),
+            },
+            VarExpr::Compose {
+                parts: vec![VarExpr::Read {
+                    variable: mlil::VariableId::from_raw(0),
+                    positions: vec![0],
+                    scalar: ScalarType::F32,
+                }],
+                shape: ValueShape::scalar(ScalarType::F32),
+            },
+        ],
+        shape: ValueShape::scalar(ScalarType::F32),
+    };
+    let mut mnemonics: Vec<String> = Vec::new();
+    value.for_each_expression(&mut |expression| mnemonics.push(expression.mnemonic().into()));
+    assert_eq!(mnemonics, vec!["add", "bitcast", "const", "compose", "mov"]);
+}
+
+/// Lifts a single-block RTL body through MLIL into HLIL.
+fn structured(
+    statements: Vec<Statement<TestDialect>>,
+) -> (hlil::LiftedFunction<TestDialect>, super::Webs<TestDialect>) {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    for statement in statements {
+        builder.append(body, statement, None).unwrap();
+    }
+    builder
+        .append(body, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    let function = builder.finish().unwrap();
+    let lifting = lift(&function).unwrap();
+    let webs = lifting.webs;
+    let function = lifting.builder.finish().unwrap();
+    let lifted = lift_hlil(&function).unwrap();
+    assert!(lifted.report.is_fully_structured());
+    (lifted, webs)
+}
+
+fn emit_twice(storage: u8, scalar: ScalarType) -> Statement<TestDialect> {
+    Statement::Effect {
+        operation: EffectOp::Emit,
+        operands: vec![read(storage, &[0], scalar), read(storage, &[0], scalar)],
+        effects: vec![Effect::Emit],
+        may_throw: false,
+    }
+}
+
+/// A read of an inlined producer resolves with the position remap the
+/// producer's written order dictates.
+#[test]
+fn read_resolver_remaps_through_an_inlined_producer() {
+    // r0.xy ← add (single use, inlines); r1.xy ← r0.yx (swapped read).
+    let (lifted, webs) = structured(vec![
+        assign(
+            0,
+            &[0, 1],
+            apply(
+                Operator::Add,
+                vec![
+                    Expr::Const {
+                        bits: vec![1, 2],
+                        shape: ValueShape::vector(ScalarType::F32, 2),
+                    },
+                    Expr::Const {
+                        bits: vec![3, 4],
+                        shape: ValueShape::vector(ScalarType::F32, 2),
+                    },
+                ],
+                ValueShape::vector(ScalarType::F32, 2),
+            ),
+        ),
+        assign(1, &[0, 1], read(0, &[1, 0], ScalarType::F32)),
+        emit_twice(1, ScalarType::F32),
+    ]);
+    let assignment = lifted
+        .function
+        .statements()
+        .iter()
+        .find_map(|statement| match statement.kind() {
+            StatementKind::Assign { value, .. } => lifted.function.expression(*value),
+            _ => None,
+        })
+        .expect("the r1 assignment survives as a statement");
+    let ExpressionKind::Operation {
+        operation:
+            LiftedStatement::Assign {
+                value: VarExpr::Read { positions, .. },
+                ..
+            },
+        operands,
+    } = assignment.kind()
+    else {
+        panic!("expected an assignment of a read");
+    };
+    assert_eq!(positions.as_slice(), &[1, 0]);
+    let mut reads = ReadResolver::new(&lifted.function, operands);
+    let ResolvedRead::Inlined { value, remap, .. } = reads.resolve(positions).unwrap() else {
+        panic!("single-use producer inlines");
+    };
+    assert!(matches!(
+        value,
+        VarExpr::Apply {
+            operator: Operator::Add,
+            ..
+        }
+    ));
+    assert_eq!(remap, Some(vec![1, 0]));
+    // The inlined producer's target never renders: it is not referenced.
+    let referenced = referenced_webs(&lifted.function);
+    let r0_web = webs.iter().find(|web| web.storage == Some(0)).unwrap();
+    let r1_web = webs.iter().find(|web| web.storage == Some(1)).unwrap();
+    assert!(!referenced.contains(&r0_web.variable));
+    assert!(referenced.contains(&r1_web.variable));
+}
+
+/// A read of a multi-use producer resolves as a variable occurrence, and
+/// the webs resolve by both levels' variable identities.
+#[test]
+fn read_resolver_names_multi_use_producers() {
+    let (lifted, webs) = structured(vec![
+        assign(
+            0,
+            &[0],
+            apply(
+                Operator::Add,
+                vec![constant(1, ScalarType::U32), constant(2, ScalarType::U32)],
+                ValueShape::scalar(ScalarType::U32),
+            ),
+        ),
+        assign(1, &[0], read(0, &[0], ScalarType::U32)),
+        assign(2, &[0], read(0, &[0], ScalarType::U32)),
+        emit_twice(1, ScalarType::U32),
+        emit_twice(2, ScalarType::U32),
+    ]);
+    let mut resolved = Vec::new();
+    for statement in lifted.function.statements() {
+        let StatementKind::Assign { value, .. } = statement.kind() else {
+            continue;
+        };
+        let Some(expression) = lifted.function.expression(*value) else {
+            continue;
+        };
+        let ExpressionKind::Operation {
+            operation:
+                LiftedStatement::Assign {
+                    value: VarExpr::Read { positions, .. },
+                    ..
+                },
+            operands,
+        } = expression.kind()
+        else {
+            continue;
+        };
+        let mut reads = ReadResolver::new(&lifted.function, operands);
+        resolved.push(reads.resolve(positions).unwrap());
+    }
+    let r0_web = webs.iter().find(|web| web.storage == Some(0)).unwrap();
+    assert_eq!(resolved.len(), 2, "both reads of r0 stay variable reads");
+    for entry in resolved {
+        let ResolvedRead::Variable(variable) = entry else {
+            panic!("multi-use producer must not inline");
+        };
+        assert_eq!(webs.of_lifted(variable).unwrap().variable, r0_web.variable);
+        assert_eq!(
+            webs.of(mlil::VariableId::from_raw(variable.raw()))
+                .unwrap()
+                .variable,
+            r0_web.variable
+        );
+    }
+    let referenced = referenced_webs(&lifted.function);
+    assert!(referenced.contains(&r0_web.variable));
 }

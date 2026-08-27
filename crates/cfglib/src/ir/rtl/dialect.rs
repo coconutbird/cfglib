@@ -8,6 +8,45 @@ use crate::ir::dialect::Vocabulary;
 use super::lift::LiftedStatement;
 use super::types::ValueShape;
 
+/// The canonical edge vocabulary for dialects with plain two-way
+/// branching.
+///
+/// A dialect whose control flow is fallthrough plus conditional
+/// true/false — no fused dispatch, no exceptional edges — can use this
+/// as its [`Dialect::Edge`] (and its
+/// [`mlil::Dialect::Edge`](crate::ir::mlil::Dialect::Edge)) and delegate
+/// the trait's edge hooks to [`kind`](Self::kind) and
+/// [`is_entry`](Self::is_entry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Edge {
+    /// The synthetic root's unique entry edge.
+    Entry,
+    /// Sequential flow.
+    Fall,
+    /// Taken branch of a conditional.
+    True,
+    /// Not-taken branch of a conditional.
+    False,
+}
+
+impl Edge {
+    /// The structural classification of the edge.
+    #[must_use]
+    pub const fn kind(self) -> EdgeKind {
+        match self {
+            Self::Entry | Self::Fall => EdgeKind::Fallthrough,
+            Self::True => EdgeKind::ConditionalTrue,
+            Self::False => EdgeKind::ConditionalFalse,
+        }
+    }
+
+    /// Whether the edge is the synthetic root's entry edge.
+    #[must_use]
+    pub const fn is_entry(self) -> bool {
+        matches!(self, Self::Entry)
+    }
+}
+
 /// Storage contract for one RTL semantic dialect.
 ///
 /// The level-independent types — value types, effects, source

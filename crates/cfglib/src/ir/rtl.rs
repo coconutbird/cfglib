@@ -28,14 +28,16 @@ mod error;
 mod expr;
 mod function;
 mod lift;
+mod render;
 mod statement;
 mod types;
 
-pub use dialect::{Dialect, Lift};
+pub use dialect::{Dialect, Edge, Lift};
 pub use error::{Error, Result};
 pub use expr::{Expr, Place};
 pub use function::{Function, FunctionBuilder};
 pub use lift::{LiftedStatement, Lifting, VarExpr, WebInfo, lift};
+pub use render::{ReadResolver, ResolvedRead, Webs, referenced_webs};
 pub use statement::{Lane, Statement, StatementNode};
 pub use types::{ScalarType, ValueShape};
 
