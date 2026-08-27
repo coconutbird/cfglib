@@ -36,7 +36,10 @@ pub use error::{Error, Result, VerificationIssue, VerificationReport};
 pub use expression::{Expression, ExpressionKind};
 pub use function::Function;
 pub use identity::{EntityId, ExpressionId, StatementId, VariableId};
-pub use lift::{LiftDialect, Lifted, LiftedFunction, lift_function};
+pub use lift::{
+    LiftDialect, LiftMetadata, Lifted, LiftedFunction, lift_function, lift_function_with_metadata,
+    lift_function_with_structure,
+};
 pub use lower::{LowerDialect, LoweredFunction, lower_function};
 pub use recover::{RecoverDialect, Recovery, recover_structure};
 pub use statement::{Handler, HandlerKind, Statement, StatementKind, SwitchArm};

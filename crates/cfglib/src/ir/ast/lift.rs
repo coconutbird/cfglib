@@ -61,7 +61,7 @@ struct LiftState<'a> {
     /// Region anchor (first protected block in reverse postorder) → the
     /// regions anchored there, outermost (largest protected set) first.
     anchors: &'a BTreeMap<u32, Vec<&'a Region>>,
-    visited: BTreeSet<u32>,
+    visited: Vec<bool>,
     /// Blocks targeted by an emitted [`AstNode::Goto`]; the label post-pass
     /// wraps their eventual emission in the matching label.
     goto_targets: BTreeSet<u32>,
@@ -73,6 +73,16 @@ struct LiftState<'a> {
     /// Regions structured as [`AstNode::TryCatch`].
     structured_regions: BTreeSet<u32>,
     report: LiftReport,
+}
+
+impl LiftState<'_> {
+    fn is_visited(&self, block: BlockId) -> bool {
+        self.visited[block.index()]
+    }
+
+    fn visit(&mut self, block: BlockId) {
+        self.visited[block.index()] = true;
+    }
 }
 
 fn has_edge_kind<I, E>(cfg: &Cfg<I, E>, edges: &[crate::EdgeId], kind: EdgeKind) -> bool {
@@ -221,7 +231,7 @@ pub fn lift_with_report<I: Clone, E>(cfg: &Cfg<I, E>) -> (AstNode<I>, LiftReport
         back_edges: &back_edges,
         loops: &natural_loops,
         anchors: &anchors,
-        visited: BTreeSet::new(),
+        visited: alloc::vec![false; cfg.block_count()],
         goto_targets: BTreeSet::new(),
         labeled_blocks: BTreeSet::new(),
         loop_stack: Vec::new(),
@@ -240,7 +250,7 @@ pub fn lift_with_report<I: Clone, E>(cfg: &Cfg<I, E>) -> (AstNode<I>, LiftReport
     while let Some(&pending) = order
         .iter()
         .chain(metadata_roots.iter())
-        .find(|block| !state.visited.contains(&block.0))
+        .find(|block| !state.is_visited(**block))
     {
         let pending_body = lift_region(cfg, &mut state, pending, None, None);
         if !pending_body.is_empty() {
@@ -304,7 +314,7 @@ fn lift_region<I: Clone, E>(
             result.push(node);
             break;
         }
-        if state.visited.contains(&block.0) {
+        if state.is_visited(block) {
             // Convergence is only silent at `stop`; any other transfer into
             // already-emitted code is a real control transfer.
             push_goto(cfg, state, &mut result, block, GotoReason::RevisitedTarget);
@@ -326,7 +336,7 @@ fn lift_region<I: Clone, E>(
             break;
         }
 
-        state.visited.insert(block.0);
+        state.visit(block);
 
         if let Some((node, continuation)) =
             try_catch::lift_try_catch(cfg, state, block, allowed_blocks)
@@ -335,7 +345,7 @@ fn lift_region<I: Clone, E>(
             // Resume at the region's own continuation, not the anchor's
             // merge — they differ whenever the try exits through an
             // explicit leave.
-            current = continuation.filter(|next| !state.visited.contains(&next.0));
+            current = continuation.filter(|&next| !state.is_visited(next));
             continue;
         }
 
@@ -411,7 +421,7 @@ fn lift_block<I: Clone, E>(
                 }
                 if let Some(node) = resolve_loop_transfer(cfg, state, target) {
                     result.push(node);
-                } else if !state.visited.contains(&target.0)
+                } else if !state.is_visited(target)
                     && cfg.predecessor_edges(target).len() == 1
                     && !region_member(cfg, target)
                 {
@@ -466,7 +476,7 @@ fn through_trampolines<I, E>(
     let mut hops = Vec::new();
     let mut current = target;
     for _ in 0..8 {
-        if state.visited.contains(&current.0) || !cfg.block(current).instructions().is_empty() {
+        if state.is_visited(current) || !cfg.block(current).instructions().is_empty() {
             break;
         }
         let mut normal = cfg
@@ -501,7 +511,7 @@ fn resolve_loop_transfer<I, E>(
     // The consumed trampolines carry no content; the sweep must not
     // resurrect them as labeled residue.
     for hop in hops {
-        state.visited.insert(hop.0);
+        state.visit(hop);
     }
     let innermost = position + 1 == state.loop_stack.len();
     let label = if innermost {
@@ -572,8 +582,7 @@ fn advance_merge<I, E>(
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
 ) -> Option<BlockId> {
-    effective_merge(cfg, state, block, allowed_blocks)
-        .filter(|merge| !state.visited.contains(&merge.0))
+    effective_merge(cfg, state, block, allowed_blocks).filter(|&merge| !state.is_visited(merge))
 }
 
 /// Lift an if/else conditional starting at `block`.
@@ -648,12 +657,12 @@ fn lift_switch<I: Clone, E>(
     // an arm-to-arm transfer stays explicit instead.
     for &target in &case_targets {
         if Some(target) != merge && block_is_allowed(allowed_blocks, target) {
-            state.visited.insert(target.0);
+            state.visit(target);
         }
     }
     if let Some(target) = default_target {
         if Some(target) != merge && block_is_allowed(allowed_blocks, target) {
-            state.visited.insert(target.0);
+            state.visit(target);
         }
     }
 

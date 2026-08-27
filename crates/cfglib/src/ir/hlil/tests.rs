@@ -9,8 +9,9 @@ use crate::ir::mlil;
 use crate::{EdgeKind, FlowEffect};
 
 use super::{
-    Dialect, ExpressionKind, FunctionBuilder, LiftDialect, Lifted, LowerDialect, Signature,
-    StatementKind, VerificationIssue, VerifyDialect, lift_function,
+    Dialect, ExpressionKind, FunctionBuilder, LiftDialect, LiftMetadata, Lifted, LowerDialect,
+    Signature, StatementKind, VerificationIssue, VerifyDialect, lift_function,
+    lift_function_with_metadata,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -647,6 +648,22 @@ fn lift_recovers_a_while_loop_with_inlined_expressions() {
             .contains_key(&mlil::InstructionId::from_raw(3)),
         "{:?}",
         lifted.instructions
+    );
+}
+
+#[test]
+fn lift_can_omit_correspondence_and_provenance() {
+    let source = counting_loop();
+    let lifted = lift_function_with_metadata(&source, LiftMetadata::Omit).unwrap();
+
+    assert!(lifted.instructions.is_empty());
+    assert!(lifted.function.provenance().is_empty());
+    assert!(lifted.function.verify().is_ok());
+    assert!(
+        lifted
+            .function
+            .to_pseudocode()
+            .contains("while (lt(v0, v1))")
     );
 }
 

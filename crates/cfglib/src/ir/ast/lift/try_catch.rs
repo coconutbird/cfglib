@@ -164,7 +164,7 @@ pub(super) fn lift_try_catch<I: Clone, E>(
     let mut try_body = Vec::new();
     if let Some((inner, inner_continuation)) = lift_try_catch(cfg, state, block, Some(&try_bound)) {
         try_body.push(inner);
-        if let Some(next) = inner_continuation.filter(|next| !state.visited.contains(&next.0)) {
+        if let Some(next) = inner_continuation.filter(|&next| !state.is_visited(next)) {
             try_body.extend(lift_region(
                 cfg,
                 state,
@@ -183,7 +183,7 @@ pub(super) fn lift_try_catch<I: Clone, E>(
             &mut try_body,
         );
         if let Some(next) = next {
-            if !state.visited.contains(&next.0) {
+            if !state.is_visited(next) {
                 try_body.extend(lift_region(
                     cfg,
                     state,
@@ -198,7 +198,7 @@ pub(super) fn lift_try_catch<I: Clone, E>(
     // the targets of a multi-successor linear anchor) still belong to the
     // try body.
     for succ in cfg.successors(block) {
-        if region.protected_blocks.contains(&succ) && !state.visited.contains(&succ.0) {
+        if region.protected_blocks.contains(&succ) && !state.is_visited(succ) {
             try_body.extend(lift_region(
                 cfg,
                 state,

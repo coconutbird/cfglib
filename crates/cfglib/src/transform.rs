@@ -11,6 +11,7 @@
 //! - [`dce`] — dead code elimination via liveness analysis.
 //! - [`linearize`] — re-serialize a CFG back to a flat instruction stream.
 //! - [`loops`] — loop rotation and loop-invariant detection.
+//! - [`pass`] — named, ordered, fallible pass composition and reports.
 //! - [`pre`] — partial redundancy elimination.
 //! - [`duplicate`] — structuring-driven tail duplication.
 
@@ -22,4 +23,5 @@ pub mod dce;
 pub mod duplicate;
 pub mod linearize;
 pub mod loops;
+pub mod pass;
 pub mod pre;

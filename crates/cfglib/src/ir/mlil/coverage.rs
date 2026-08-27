@@ -27,7 +27,9 @@ use super::{Dialect, Instruction};
 /// Mutates the graph in place; run it through
 /// [`Function::with_derived_cfg`](super::Function::with_derived_cfg) so
 /// the canonical function keeps the exact declared coverage.
-pub fn extend_equivalent_coverage<D: Dialect>(cfg: &mut Cfg<Instruction<D>, D::Edge>) {
+/// Returns the number of protected-block memberships added across all regions.
+pub fn extend_equivalent_coverage<D: Dialect>(cfg: &mut Cfg<Instruction<D>, D::Edge>) -> usize {
+    let mut extended = 0usize;
     for index in 0..cfg.regions().len() {
         let id = cfg.regions()[index].id;
         let mut protected = cfg.regions()[index].protected_blocks.clone();
@@ -63,6 +65,7 @@ pub fn extend_equivalent_coverage<D: Dialect>(cfg: &mut Cfg<Instruction<D>, D::E
                 });
                 if enclosed {
                     protected.insert(candidate);
+                    extended += 1;
                     grown = true;
                 }
             }
@@ -74,4 +77,5 @@ pub fn extend_equivalent_coverage<D: Dialect>(cfg: &mut Cfg<Instruction<D>, D::E
             region.protected_blocks = protected;
         }
     }
+    extended
 }

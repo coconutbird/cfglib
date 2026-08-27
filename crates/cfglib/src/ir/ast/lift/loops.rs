@@ -235,7 +235,7 @@ pub(super) fn lift_loop<I: Clone, E>(
     // body or the completeness sweep.
     if let LoopShape::While { chain, .. } = &shape {
         for &block in &chain[1..] {
-            state.visited.insert(block.0);
+            state.visit(block);
         }
     }
 
@@ -325,7 +325,7 @@ fn lift_shape<I: Clone, E>(
             // The latch is the condition, not part of the body: pre-visit
             // it so the body walk ends there silently, and transfers to it
             // resolve as `continue`.
-            state.visited.insert(latch.0);
+            state.visit(latch);
             let body = lift_header_body(cfg, state, header, bound, Some(latch));
             (
                 LoopKind::DoWhile {

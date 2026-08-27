@@ -4,12 +4,13 @@ use cfglib::{
     BlockId, BlockOrder, Cfg, ClrExceptionRegion, ClrHandler, ClrHandlerKind, DominatorTree,
     EdgeKind, Emitter, FlowEffect, HandlerBody, HandlerTypes, Liveness, SehExceptionRegion,
     SehHandler, SehHandlerKind, color_graph, contract_edge_mapped, dead_code_elimination,
-    detect_loops_tagged, duplicate_structuring_tails, eliminate_pre, find_loop_invariants,
-    install_clr_region, install_seh_region, interference_graph, linearize, merge_blocks_mapped,
-    promote_handler_extents, remove_dead_code, remove_dead_code_mapped, remove_empty_blocks_mapped,
-    remove_unreachable, remove_unreachable_mapped, resolve_jump_edges, rotate_loop, simplify,
-    simplify_mapped, split_critical_edges, split_critical_edges_mapped, split_critical_edges_with,
-    split_node, split_node_at_points, split_node_with_payload_mapped, verify,
+    detect_loops_tagged, duplicate_structuring_tails, duplicate_structuring_tails_with_structure,
+    eliminate_pre, find_loop_invariants, install_clr_region, install_seh_region,
+    interference_graph, linearize, merge_blocks_mapped, promote_handler_extents, remove_dead_code,
+    remove_dead_code_mapped, remove_empty_blocks_mapped, remove_unreachable,
+    remove_unreachable_mapped, resolve_jump_edges, rotate_loop, simplify, simplify_mapped,
+    split_critical_edges, split_critical_edges_mapped, split_critical_edges_with, split_node,
+    split_node_at_points, split_node_with_payload_mapped, verify,
 };
 
 use super::BenchmarkSuite;
@@ -469,6 +470,20 @@ fn register_tail_duplication(suite: &mut BenchmarkSuite<'_>) {
             duplicate_structuring_tails(&mut candidate)
         },
         |duplicated: &usize| assert_eq!(*duplicated, 1)
+    );
+    benchmark_case!(
+        suite,
+        "api_duplicate_structuring_tails_with_structure",
+        covers[duplicate_structuring_tails_with_structure],
+        || {
+            let mut candidate = shared.clone();
+            duplicate_structuring_tails_with_structure(&mut candidate)
+        },
+        |duplication| {
+            assert_eq!(duplication.blocks_materialized, 1);
+            assert!(duplication.report.is_fully_structured());
+            assert!(!duplication.ast.is_empty());
+        }
     );
 }
 

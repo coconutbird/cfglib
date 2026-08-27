@@ -171,12 +171,12 @@ impl<D: Dialect> Function<D> {
     /// edges). Identity tables keep describing the original function, and
     /// canonical storage is never mutated.
     #[must_use]
-    pub fn with_derived_cfg(
+    pub fn with_derived_cfg<R>(
         &self,
-        transform: impl FnOnce(&mut Cfg<Instruction<D>, D::Edge>),
+        transform: impl FnOnce(&mut Cfg<Instruction<D>, D::Edge>) -> R,
     ) -> Self {
         let mut derived = self.clone();
-        transform(&mut derived.cfg);
+        let _ = transform(&mut derived.cfg);
         derived
     }
 

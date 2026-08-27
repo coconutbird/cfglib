@@ -64,6 +64,16 @@ pub enum Lifted<Operation> {
     ControlFlow,
 }
 
+/// Metadata retained while lifting MLIL into HLIL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LiftMetadata {
+    /// Preserve MLIL-instruction correspondence and source provenance.
+    #[default]
+    Preserve,
+    /// Omit correspondence and provenance when a consumer needs only HLIL semantics.
+    Omit,
+}
+
 /// The bridge between one consumer's MLIL and HLIL dialects.
 ///
 /// Implemented on the same type as both level dialects; the shared
@@ -186,6 +196,9 @@ impl<D: LiftDialect + VerifyDialect + RecoverDialect> LiftedFunction<D> {
     ///
     /// Returns an error when the rebuilt function fails verification.
     pub fn with_recovered_structure(self) -> Result<Self> {
+        if !has_recovery_candidates(&self.function) {
+            return Ok(self);
+        }
         let recovery = recover_structure(&self.function)?;
         let instructions = self
             .instructions
@@ -226,18 +239,79 @@ pub fn lift_function<D>(source: &mlil::Function<D>) -> Result<LiftedFunction<D>>
 where
     D: LiftDialect + VerifyDialect,
 {
+    lift_function_with_metadata(source, LiftMetadata::Preserve)
+}
+
+/// Lifts one MLIL function with an explicit metadata-retention policy.
+///
+/// # Errors
+///
+/// Returns the same structural, translation, and verification failures as
+/// [`lift_function`].
+pub fn lift_function_with_metadata<D>(
+    source: &mlil::Function<D>,
+    metadata: LiftMetadata,
+) -> Result<LiftedFunction<D>>
+where
+    D: LiftDialect + VerifyDialect,
+{
     let (ast, report) = match trampolines_cleared(source) {
         Some(cleared) => crate::lift_with_report(&cleared),
         None => source.structured_control_flow_with_report(),
     };
-    let mut lifter = Lifter::new(source)?;
-    let body = lifter.translate_node(&ast)?;
+    lift_from_structure(source, &ast, report, metadata)
+}
+
+/// Lifts MLIL while reusing a structured view already computed for the same
+/// function. If HLIL must clear jump trampolines, it recomputes only that
+/// distinct working view so the normal lifting contract remains unchanged.
+///
+/// # Errors
+///
+/// Returns the same structural, translation, and verification failures as
+/// [`lift_function`].
+pub fn lift_function_with_structure<D>(
+    source: &mlil::Function<D>,
+    ast: &AstNode<mlil::Instruction<D>>,
+    report: &LiftReport,
+    metadata: LiftMetadata,
+) -> Result<LiftedFunction<D>>
+where
+    D: LiftDialect + VerifyDialect,
+{
+    if let Some(cleared) = trampolines_cleared(source) {
+        let (ast, report) = crate::lift_with_report(&cleared);
+        return lift_from_structure(source, &ast, report, metadata);
+    }
+    lift_from_structure(source, ast, report.clone(), metadata)
+}
+
+fn lift_from_structure<D>(
+    source: &mlil::Function<D>,
+    ast: &AstNode<mlil::Instruction<D>>,
+    report: LiftReport,
+    metadata: LiftMetadata,
+) -> Result<LiftedFunction<D>>
+where
+    D: LiftDialect + VerifyDialect,
+{
+    let mut lifter = Lifter::new(source, metadata)?;
+    let body = lifter.translate_node(ast)?;
     lifter.builder.set_body(body)?;
     let function = lifter.builder.finish()?;
     Ok(LiftedFunction {
         function,
         report,
         instructions: lifter.instructions,
+    })
+}
+
+fn has_recovery_candidates<D: Dialect>(function: &Function<D>) -> bool {
+    function.statements().iter().any(|statement| {
+        matches!(
+            statement.kind(),
+            StatementKind::If { .. } | StatementKind::While { .. } | StatementKind::Try { .. }
+        )
     })
 }
 
@@ -290,6 +364,7 @@ pub(super) struct Lifter<'a, D: LiftDialect> {
     pub(super) liveness: Liveness<mlil::VariableId>,
     pub(super) spans: BTreeMap<mlil::InstructionId, Vec<D::SourceSpan>>,
     pub(super) instructions: BTreeMap<mlil::InstructionId, EntityId>,
+    metadata: LiftMetadata,
     contexts: Vec<Context>,
 }
 
@@ -302,7 +377,7 @@ struct Context {
 }
 
 impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
-    fn new(source: &'a mlil::Function<D>) -> Result<Self> {
+    fn new(source: &'a mlil::Function<D>, metadata: LiftMetadata) -> Result<Self> {
         let mut builder = FunctionBuilder::new(source.source().clone());
         for variable in source.variables() {
             builder.declare_variable(variable.role.clone(), variable.native.clone(), None)?;
@@ -317,21 +392,23 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
             signature.returns.clone(),
         ))?;
         let mut spans: BTreeMap<mlil::InstructionId, Vec<D::SourceSpan>> = BTreeMap::new();
-        for entry in source.provenance().entries() {
-            match entry.entity {
-                mlil::EntityId::Instruction(instruction) => {
-                    spans
-                        .entry(instruction)
-                        .or_default()
-                        .push(entry.source.clone());
+        if metadata == LiftMetadata::Preserve {
+            for entry in source.provenance().entries() {
+                match entry.entity {
+                    mlil::EntityId::Instruction(instruction) => {
+                        spans
+                            .entry(instruction)
+                            .or_default()
+                            .push(entry.source.clone());
+                    }
+                    mlil::EntityId::Variable(variable) => {
+                        builder.map_entity(
+                            entry.source.clone(),
+                            EntityId::Variable(VariableId::from_raw(variable.raw())),
+                        )?;
+                    }
+                    mlil::EntityId::Block(_) | mlil::EntityId::Edge(_) => {}
                 }
-                mlil::EntityId::Variable(variable) => {
-                    builder.map_entity(
-                        entry.source.clone(),
-                        EntityId::Variable(VariableId::from_raw(variable.raw())),
-                    )?;
-                }
-                mlil::EntityId::Block(_) | mlil::EntityId::Edge(_) => {}
             }
         }
         Ok(Self {
@@ -340,6 +417,7 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
             liveness: source.liveness(),
             spans,
             instructions: BTreeMap::new(),
+            metadata,
             contexts: Vec::new(),
         })
     }
@@ -351,6 +429,9 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         instruction: mlil::InstructionId,
         entity: EntityId,
     ) -> Result<()> {
+        if self.metadata == LiftMetadata::Omit {
+            return Ok(());
+        }
         self.instructions.insert(instruction, entity);
         if let Some(spans) = self.spans.get(&instruction) {
             for span in spans.clone() {

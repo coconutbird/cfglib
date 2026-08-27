@@ -172,10 +172,11 @@ pub fn lift<D: Lift>(
 
     // Phase 2: resolve roots and collect per-web facts.
     let roots: Vec<usize> = (0..union.parent.len()).map(|id| union.find(id)).collect();
-    let mut facts: BTreeMap<usize, WebFact<D>> = BTreeMap::new();
+    let mut facts: Vec<Option<WebFact<D>>> =
+        core::iter::repeat_with(|| None).take(roots.len()).collect();
     for ((lane, version), &id) in &ids {
         let root = roots[id];
-        let fact = facts.entry(root).or_insert_with(|| WebFact {
+        let fact = facts[root].get_or_insert_with(|| WebFact {
             storage: lane.0.clone(),
             lanes: BTreeSet::new(),
             scalar: Inference::Unseen,
@@ -202,7 +203,7 @@ pub fn lift<D: Lift>(
                     cursor += 1;
                     let key = (value.variable.clone(), value.version);
                     if let Some(&id) = ids.get(&key)
-                        && let Some(fact) = facts.get_mut(&roots[id])
+                        && let Some(fact) = facts[roots[id]].as_mut()
                     {
                         fact.scalar.observe(scalar, context);
                     }
@@ -218,7 +219,7 @@ pub fn lift<D: Lift>(
                     def_cursor += place.lanes.len();
                     let key = (target.variable.clone(), target.version);
                     if let Some(&id) = ids.get(&key)
-                        && let Some(fact) = facts.get_mut(&roots[id])
+                        && let Some(fact) = facts[roots[id]].as_mut()
                     {
                         fact.scalar.observe(&value.shape().scalar, context);
                     }
@@ -230,14 +231,16 @@ pub fn lift<D: Lift>(
     // Phase 4: declare one typed MLIL variable per web, in deterministic
     // first-appearance order over sorted SSA values.
     let mut builder = MlilBuilder::<<D as MlilBridge>::Mlil>::new(function.source.clone());
-    let mut web_of_root: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut web_of_root = alloc::vec![None; roots.len()];
     let mut webs: Vec<WebInfo<D>> = Vec::new();
     for &id in ids.values() {
         let root = roots[id];
-        if web_of_root.contains_key(&root) {
+        if web_of_root[root].is_some() {
             continue;
         }
-        let fact = &facts[&root];
+        let fact = facts[root]
+            .as_ref()
+            .ok_or_else(|| Error::Lifting("web lost its inferred facts".into()))?;
         let lanes: Vec<u8> = fact.lanes.iter().copied().collect();
         let shape = Shape {
             scalar: fact.scalar.resolve(),
@@ -255,7 +258,7 @@ pub fn lift<D: Lift>(
         let variable = builder
             .declare_variable(role, D::native_variable(&fact.storage, function.source()))
             .map_err(|error| Error::Lifting(error.to_string()))?;
-        web_of_root.insert(root, webs.len());
+        web_of_root[root] = Some(webs.len());
         webs.push(WebInfo {
             variable,
             storage: Some(fact.storage.clone()),
@@ -311,7 +314,10 @@ pub fn lift<D: Lift>(
         web_index: webs
             .iter()
             .enumerate()
-            .map(|(index, web)| (web.variable, index))
+            .map(|(index, web)| {
+                debug_assert_eq!(web.variable.index(), index);
+                Some(index)
+            })
             .collect(),
         webs,
         resolver,

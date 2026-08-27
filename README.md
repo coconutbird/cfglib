@@ -4,6 +4,13 @@ Generic, `no_std` graph and dataflow framework for code intelligence, program an
 
 `cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Its generic RTL and MLIL layers combine CFGs with checked construction, exact edge payloads, signatures, exception regions, and many-to-many source provenance; RTL/MLIL bridges recover typed semantic variables from native storage or lower them back while allowing the two levels to use distinct dialect and native-location types. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
 
+Named transformations compose through `PassPipeline<T, E>`. A pipeline keeps
+the caller's declared order, supports closure-backed or stateful trait passes,
+reports which executions changed the target, and attributes the first failure
+while retaining the completed-prefix report. Pass selection and canonical
+schedules remain consumer policy, so one framework can drive CFG, RTL, MLIL,
+HLIL, or consumer-owned compilation contexts without coupling their dialects.
+
 Everything is `no_std + alloc` and the core graph structure uses `SmallVec` adjacency lists with tombstone-based edge removal for cache-friendly, arena-stable IDs.
 
 ## Quick start
@@ -189,7 +196,7 @@ HLIL:
 | Door | Description |
 |---|---|
 | `FunctionBuilder<D>` | Checked bottom-up construction for source-language lowering (`add_expression` / `add_statement` / `set_body`) |
-| `lift_function(&mlil::Function<D>)` | Binary/bytecode lifting: structures control flow via `ir::ast`, recognizes `while`/`do-while` conditions, recovers switch case values from dispatch-edge payloads, structures declared exception regions, empties jump trampolines in its working view (blocks whose every instruction is a dialect-declared pure transfer — `Lifted::ControlFlow`, no definitions, no throw — so `break`/`continue` resolutions forward through them), and inlines single-use definitions into expression trees while provably preserving effect and exception order — with `LiftDialect::evaluation_commutes` letting the dialect widen that order (read-read pairs fold into one expression; the default refuses every pair). Straight-line block runs coalesce into one translation list, so frontends that emit one block per native instruction still inline across the whole linear region, and a single-pair parallel move (a type-refinement pair, a lone phi-copy commit) inlines as a plain copy |
+| `lift_function(&mlil::Function<D>)` | Binary/bytecode lifting: structures control flow via `ir::ast`, recognizes `while`/`do-while` conditions, recovers switch case values from dispatch-edge payloads, structures declared exception regions, empties jump trampolines in its working view (blocks whose every instruction is a dialect-declared pure transfer — `Lifted::ControlFlow`, no definitions, no throw — so `break`/`continue` resolutions forward through them), and inlines single-use definitions into expression trees while provably preserving effect and exception order — with `LiftDialect::evaluation_commutes` letting the dialect widen that order (read-read pairs fold into one expression; the default refuses every pair). Straight-line block runs coalesce into one translation list, so frontends that emit one block per native instruction still inline across the whole linear region, and a single-pair parallel move (a type-refinement pair, a lone phi-copy commit) inlines as a plain copy. `lift_function_with_metadata` can omit instruction correspondence and provenance for semantics-only consumers |
 | `lower_function(&hlil::Function<D>)` | The downward mirror: statements flatten to blocks and edges with lazy join materialization, expression trees linearize into typed temporaries, loops/switches/labels wire their transfers, and declared `try` regions register with known handler extents and unwind edges — producing a verified `mlil::Function` for flat analyses or consumer code generation |
 
 Both level bridges return per-instruction maps between MLIL identities and
@@ -289,6 +296,11 @@ inverted — before falling back to a wrapping `logical_not`.
 | Switch table recovery | `detect_switch_tables` (`SwitchSource`), `recover_switch_tables` | Consumer-typed targets: addresses, syntax nodes; dispatch → structured switch |
 
 ### Transforms
+
+`PassPipeline` composes heterogeneous named passes over any caller-owned target.
+`pass_fn` adapts a closure; implementing `Pass` supports stateful reusable
+passes. Schedules retain insertion order and report the completed prefix when a
+fallible pass stops execution.
 
 | Transform | Function | Description |
 |---|---|---|

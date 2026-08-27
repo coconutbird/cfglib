@@ -17,6 +17,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::string::ToString;
 use alloc::vec::Vec;
+use smallvec::SmallVec;
 
 use crate::ir::dialect::Vocabulary;
 use crate::ir::mlil::{
@@ -142,7 +143,7 @@ impl EdgeContext<'_> {
 pub(super) struct Resolver<'a, D: Dialect> {
     pub(super) ids: &'a BTreeMap<(Lane<D>, usize), usize>,
     pub(super) roots: &'a [usize],
-    pub(super) web_of_root: &'a BTreeMap<usize, usize>,
+    pub(super) web_of_root: &'a [Option<usize>],
 }
 
 impl<D: Dialect> Resolver<'_, D> {
@@ -154,8 +155,9 @@ impl<D: Dialect> Resolver<'_, D> {
             .get(&key)
             .ok_or_else(|| Error::Lifting("unregistered SSA value".into()))?;
         self.web_of_root
-            .get(&self.roots[*id])
+            .get(self.roots[*id])
             .copied()
+            .flatten()
             .ok_or_else(|| Error::Lifting("web lost its variable".into()))
     }
 }
@@ -163,7 +165,7 @@ impl<D: Dialect> Resolver<'_, D> {
 pub(super) struct Emitter<'a, D: Lift> {
     pub(super) builder: MlilBuilder<MlilOf<D>>,
     pub(super) webs: Vec<WebInfo<D>>,
-    pub(super) web_index: BTreeMap<VariableId, usize>,
+    pub(super) web_index: Vec<Option<usize>>,
     pub(super) resolver: Resolver<'a, D>,
     pub(super) maps: LiftMaps,
     /// The MLIL block currently receiving each RTL block's instructions —
@@ -228,7 +230,7 @@ pub struct Emission<'a, 'b, D: Lift> {
     merge: bool,
     exceptional_flow: ExceptionalFlow,
     spans: Vec<<D as Vocabulary>::SourceSpan>,
-    allowed: BTreeSet<VariableId>,
+    allowed: SmallVec<[VariableId; 8]>,
     appended_throwing: bool,
 }
 
@@ -312,7 +314,9 @@ impl<D: Lift> Emission<'_, '_, D> {
             .builder
             .declare_variable(role, None)
             .map_err(|error| Error::Lifting(error.to_string()))?;
-        self.allowed.insert(variable);
+        if !self.allowed.contains(&variable) {
+            self.allowed.push(variable);
+        }
         Ok(TypedVariable::new(variable, value_type))
     }
 
@@ -354,12 +358,16 @@ impl<D: Lift> Emission<'_, '_, D> {
             }
         }
         for defined in &defs {
-            self.allowed.insert(defined.variable);
+            if !self.allowed.contains(&defined.variable) {
+                self.allowed.push(defined.variable);
+            }
             if self
                 .emitter
                 .web_index
-                .get(&defined.variable)
-                .is_some_and(|&web| self.emitter.webs[web].storage.is_some())
+                .get(defined.variable.index())
+                .copied()
+                .flatten()
+                .is_some_and(|web| self.emitter.webs[web].storage.is_some())
             {
                 self.emitter.native_defined = true;
             }
@@ -446,7 +454,10 @@ impl<D: Lift> Emitter<'_, D> {
             shape,
             live_in: false,
         });
-        self.web_index.insert(variable, index);
+        if self.web_index.len() <= variable.index() {
+            self.web_index.resize(variable.index() + 1, None);
+        }
+        self.web_index[variable.index()] = Some(index);
         Ok(index)
     }
 
@@ -546,9 +557,16 @@ impl<D: Lift> Emitter<'_, D> {
         let reads: Vec<TypedVariable<MlilOf<D>>> =
             reads.iter().map(|&web| self.typed(web)).collect();
         let target = target.map(|web| self.typed(web));
-        let mut allowed: BTreeSet<VariableId> = reads.iter().map(|typed| typed.variable).collect();
+        let mut allowed = SmallVec::<[VariableId; 8]>::new();
+        for variable in reads.iter().map(|typed| typed.variable) {
+            if !allowed.contains(&variable) {
+                allowed.push(variable);
+            }
+        }
         if let Some(target) = &target {
-            allowed.insert(target.variable);
+            if !allowed.contains(&target.variable) {
+                allowed.push(target.variable);
+            }
         }
         let exceptional_flow = ExceptionalFlow::from_flags(may_throw, has_exceptional_successors)?;
         let mut emission = Emission {

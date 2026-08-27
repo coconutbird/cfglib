@@ -36,6 +36,9 @@
 //! MLIL ([`lift_hlil_function`]) with effect-ordered single-use inlining,
 //! and lowered back to flat MLIL ([`lower_hlil_function`]) so both
 //! directions of the pipeline meet at either level.
+//! [`PassPipeline`] composes named, ordered, fallible transformations over any
+//! of these IR levels or a consumer-owned compilation context, retaining a
+//! change report and failed-pass identity without imposing dialect policy.
 //! Every level's dialect ([`Vocabulary`], [`ir::rtl::Dialect`],
 //! [`ir::mlil::Dialect`], [`ir::hlil::Dialect`]) keeps operations, types,
 //! effects, edge meaning,
@@ -287,14 +290,16 @@ pub use ir::hlil::{
     Expression as HlilExpression, ExpressionId as HlilExpressionId,
     ExpressionKind as HlilExpressionKind, Function as HlilFunction,
     FunctionBuilder as HlilFunctionBuilder, Handler as HlilHandler, HandlerKind as HlilHandlerKind,
-    LiftDialect as HlilLiftDialect, Lifted as HlilLifted, LiftedFunction as HlilLiftedFunction,
-    LowerDialect as HlilLowerDialect, LoweredFunction as HlilLoweredFunction,
-    ProvenanceEntry as HlilProvenanceEntry, ProvenanceMap as HlilProvenanceMap,
-    Result as HlilResult, Signature as HlilSignature, Statement as HlilStatement,
-    StatementId as HlilStatementId, StatementKind as HlilStatementKind, SwitchArm as HlilSwitchArm,
-    Variable as HlilVariable, VariableId as HlilVariableId,
+    LiftDialect as HlilLiftDialect, LiftMetadata as HlilLiftMetadata, Lifted as HlilLifted,
+    LiftedFunction as HlilLiftedFunction, LowerDialect as HlilLowerDialect,
+    LoweredFunction as HlilLoweredFunction, ProvenanceEntry as HlilProvenanceEntry,
+    ProvenanceMap as HlilProvenanceMap, Result as HlilResult, Signature as HlilSignature,
+    Statement as HlilStatement, StatementId as HlilStatementId, StatementKind as HlilStatementKind,
+    SwitchArm as HlilSwitchArm, Variable as HlilVariable, VariableId as HlilVariableId,
     VerificationIssue as HlilVerificationIssue, VerificationReport as HlilVerificationReport,
     VerifyDialect as HlilVerifyDialect, lift_function as lift_hlil_function,
+    lift_function_with_metadata as lift_hlil_function_with_metadata,
+    lift_function_with_structure as lift_hlil_function_with_structure,
     lower_function as lower_hlil_function,
 };
 pub use ir::mlil::{
@@ -345,7 +350,12 @@ pub use transform::critical::{
     split_critical_edges, split_critical_edges_mapped, split_critical_edges_with,
 };
 pub use transform::dce::{dead_code_elimination, remove_dead_code, remove_dead_code_mapped};
-pub use transform::duplicate::duplicate_structuring_tails;
+pub use transform::duplicate::{
+    TailDuplication, duplicate_structuring_tails, duplicate_structuring_tails_with_structure,
+};
 pub use transform::linearize::{BlockOrder, Emitter, LinearInst, linearize};
 pub use transform::loops::{LoopRotation, find_loop_invariants, rotate_loop};
+pub use transform::pass::{
+    Pass, PassChange, PassExecution, PassFailure, PassFn, PassId, PassPipeline, PassReport, pass_fn,
+};
 pub use transform::pre::{PreAnalysis, eliminate_pre};

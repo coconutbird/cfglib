@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 use crate::graph::dominator::DominatorTree;
-use crate::ir::ast::GotoReason;
+use crate::ir::ast::{AstNode, GotoReason, LiftReport};
 use crate::region::HandlerBody;
 
 /// At most this many blocks are materialized per call.
@@ -26,6 +26,23 @@ const BLOCK_BUDGET: usize = 16;
 const INSTRUCTION_LIMIT: usize = 8;
 /// Re-structuring rounds; each round can expose new shared tails.
 const ROUNDS: usize = 4;
+
+/// Tail-duplication changes together with the final structured view.
+#[derive(Debug, Clone)]
+pub struct TailDuplication<I> {
+    /// Blocks materialized by tail unfolding.
+    pub blocks_materialized: usize,
+    /// Final structured AST of the transformed graph.
+    pub ast: AstNode<I>,
+    /// Fidelity report corresponding exactly to [`Self::ast`].
+    pub report: LiftReport,
+}
+
+#[derive(Clone, Copy)]
+enum StructureRetention {
+    Discard,
+    Retain,
+}
 
 /// Duplicates small shared tails that block tree structuring, returning
 /// the number of blocks materialized.
@@ -41,9 +58,31 @@ const ROUNDS: usize = 4;
 /// consumer-side identities embedded in them now appear at several graph
 /// positions. Use it on derived presentation views, not canonical storage.
 pub fn duplicate_structuring_tails<I: Clone, E: Clone>(cfg: &mut Cfg<I, E>) -> usize {
+    duplicate_tails(cfg, StructureRetention::Discard).0
+}
+
+/// Duplicates small shared tails and returns the transformed graph's final
+/// structured view without requiring a second structuring walk.
+pub fn duplicate_structuring_tails_with_structure<I: Clone, E: Clone>(
+    cfg: &mut Cfg<I, E>,
+) -> TailDuplication<I> {
+    let (blocks_materialized, structure) = duplicate_tails(cfg, StructureRetention::Retain);
+    let (ast, report) = structure.unwrap_or_else(|| crate::lift_with_report(cfg));
+    TailDuplication {
+        blocks_materialized,
+        ast,
+        report,
+    }
+}
+
+fn duplicate_tails<I: Clone, E: Clone>(
+    cfg: &mut Cfg<I, E>,
+    retention: StructureRetention,
+) -> (usize, Option<(AstNode<I>, LiftReport)>) {
     let mut duplicated = 0usize;
     for _ in 0..ROUNDS {
-        let (_, report) = crate::lift_with_report(cfg);
+        let structure = crate::lift_with_report(cfg);
+        let report = &structure.1;
         let mut targets: Vec<BlockId> = report
             .gotos
             .iter()
@@ -53,15 +92,24 @@ pub fn duplicate_structuring_tails<I: Clone, E: Clone>(cfg: &mut Cfg<I, E>) -> u
         targets.sort_unstable();
         targets.dedup();
         if targets.is_empty() {
-            break;
+            return (duplicated, retain(structure, retention));
         }
         let region_blocks = region_referenced_blocks(cfg);
         let progressed = duplicate_targets(cfg, &targets, &region_blocks, &mut duplicated);
         if !progressed {
-            break;
+            return (duplicated, retain(structure, retention));
         }
     }
-    duplicated
+    let structure =
+        matches!(retention, StructureRetention::Retain).then(|| crate::lift_with_report(cfg));
+    (duplicated, structure)
+}
+
+fn retain<I>(
+    structure: (AstNode<I>, LiftReport),
+    retention: StructureRetention,
+) -> Option<(AstNode<I>, LiftReport)> {
+    matches!(retention, StructureRetention::Retain).then_some(structure)
 }
 
 fn duplicate_targets<I: Clone, E: Clone>(
@@ -215,6 +263,19 @@ mod tests {
         assert!(after.is_fully_structured(), "{after:?}");
         // The original tail kept one predecessor; the copy took the other.
         assert_eq!(cfg.predecessor_edges(tail).len(), 1);
+    }
+
+    #[test]
+    fn structured_variant_returns_the_final_post_transform_view() {
+        let (mut cfg, _) = shared_tail_cfg();
+
+        let duplication = duplicate_structuring_tails_with_structure(&mut cfg);
+        let expected = crate::lift_with_report(&cfg);
+
+        assert_eq!(duplication.blocks_materialized, 1);
+        assert!(duplication.report.is_fully_structured());
+        assert!(!duplication.ast.is_empty());
+        assert_eq!(duplication.report, expected.1);
     }
 
     #[test]

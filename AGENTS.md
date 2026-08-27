@@ -108,6 +108,9 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
   exists without one; a transform whose only form returns a map takes no
   suffix. Passes that only add blocks or edges return the new identities
   directly instead of a map.
+- Generic pass composition owns only stable identity, declared order, change
+  reporting, and fallible execution. Consumers own pass selection, dependency
+  order, dialect semantics, and any analysis-cache invalidation policy.
 - Every fixpoint solver carries the identical facility matrix — full solve,
   `_from` seeding, `_with_config` bounds, and fallible `try_` counterparts —
   built as a fallible core with infallible wrappers, sharing `SolveConfig`,
