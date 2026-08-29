@@ -19,6 +19,7 @@ use alloc::vec::Vec;
 
 use crate::block::BlockId;
 use crate::ir::mlil;
+use crate::{FlowControl, FlowEffect};
 
 use super::super::{
     Dialect, EntityId, Error, ExpressionId, ExpressionKind, Result, StatementId, StatementKind,
@@ -112,6 +113,36 @@ fn is_value_shape<D: LiftDialect>(shape: &Shape<D>) -> bool {
     )
 }
 
+/// Instructions retained by the presentation lift after local dead-value
+/// pruning. A backward liveness walk removes pure fallthrough definitions
+/// whose results cannot reach a retained instruction or another block.
+fn retained_positions<D: LiftDialect>(
+    instructions: &[mlil::Instruction<D>],
+    live_out: &BTreeSet<mlil::VariableId>,
+) -> Vec<bool> {
+    let mut live = live_out.clone();
+    let mut retained = vec![true; instructions.len()];
+    for (position, instruction) in instructions.iter().enumerate().rev() {
+        let dead_value = !instruction.defs().is_empty()
+            && instruction
+                .defs()
+                .iter()
+                .all(|variable| !live.contains(variable))
+            && instruction.effects().is_empty()
+            && !instruction.may_throw()
+            && instruction.flow_effect() == FlowEffect::Fallthrough;
+        if dead_value {
+            retained[position] = false;
+            continue;
+        }
+        for definition in instruction.defs() {
+            live.remove(definition);
+        }
+        live.extend(instruction.uses().iter().copied());
+    }
+    retained
+}
+
 struct CandidateFacts<D: LiftDialect> {
     /// Every variable the candidate's expression tree reads.
     reads: BTreeSet<mlil::VariableId>,
@@ -144,10 +175,12 @@ fn single_use_positions<D: LiftDialect>(
     instructions: &[mlil::Instruction<D>],
     shapes: &[Shape<D>],
     live_out: &BTreeSet<mlil::VariableId>,
+    retained: &[bool],
 ) -> Vec<Option<usize>> {
     let mut viable: Vec<Option<usize>> = vec![None; instructions.len()];
     for (position, instruction) in instructions.iter().enumerate() {
-        if !is_value_shape(&shapes[position])
+        if !retained[position]
+            || !is_value_shape(&shapes[position])
             || instruction.defs().len() != 1
             || D::previous_value_operand(instruction.operation()).is_some()
         {
@@ -160,6 +193,9 @@ fn single_use_positions<D: LiftDialect>(
         let mut use_position = None;
         let mut redefined = false;
         for (later, candidate_use) in instructions.iter().enumerate().skip(position + 1) {
+            if !retained[later] {
+                continue;
+            }
             let here = candidate_use
                 .uses()
                 .iter()
@@ -186,15 +222,19 @@ fn plan_inlining<D: LiftDialect>(
     instructions: &[mlil::Instruction<D>],
     shapes: &[Shape<D>],
     live_out: &BTreeSet<mlil::VariableId>,
+    retained: &[bool],
 ) -> Vec<Option<usize>> {
     let length = instructions.len();
-    let viable = single_use_positions(instructions, shapes, live_out);
+    let viable = single_use_positions(instructions, shapes, live_out, retained);
 
     // Order-safety walk over the movable candidates.
     let mut inline_at: Vec<Option<usize>> = vec![None; length];
     let mut facts: Vec<Option<CandidateFacts<D>>> = (0..length).map(|_| None).collect();
     let mut active: BTreeMap<mlil::VariableId, usize> = BTreeMap::new();
     for (position, instruction) in instructions.iter().enumerate() {
+        if !retained[position] {
+            continue;
+        }
         // Consumption first: feeding this instruction is not a crossing.
         // Effect-relevant candidates consumed by one instruction must keep
         // their original relative order across its operands, since operands
@@ -301,7 +341,13 @@ impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
         expect: Expect,
     ) -> Result<(Vec<StatementId>, Option<ListEnd>)> {
         let shapes: Vec<Shape<D>> = instructions.iter().map(classify).collect();
-        let inline_at = plan_inlining(instructions, &shapes, self.liveness.live_out(block));
+        let retained = retained_positions(instructions, self.liveness.live_out(block));
+        let inline_at = plan_inlining(
+            instructions,
+            &shapes,
+            self.liveness.live_out(block),
+            &retained,
+        );
         let mut by_consumer: BTreeMap<usize, BTreeMap<mlil::VariableId, usize>> = BTreeMap::new();
         for (candidate, consumer) in inline_at.iter().enumerate() {
             if let Some(consumer) = consumer {
@@ -326,6 +372,9 @@ impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
                     "instruction {} follows its block's terminator",
                     instruction.id()
                 )));
+            }
+            if !retained[position] {
+                continue;
             }
             match &shapes[position] {
                 Shape::ControlFlow => {}

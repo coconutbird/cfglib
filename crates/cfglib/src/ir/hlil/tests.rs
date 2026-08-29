@@ -830,9 +830,9 @@ fn lift_structures_declared_exception_regions() {
 }
 #[test]
 fn variable_splitting_composes_with_lifting() {
-    // One storage slot reused for two lifetimes, each read twice so neither
-    // definition inlines away — the decompiler shape variable splitting
-    // exists for.
+    // One storage slot reused for two lifetimes. Each lifetime feeds two
+    // effectful consumers, so neither definition disappears or inlines —
+    // the decompiler shape variable splitting exists for.
     let mut builder = mlil::FunctionBuilder::<Toy>::new("toy::slots".into());
     let block = builder.new_block("body");
     let slot = builder.declare_variable(0, Some(7)).unwrap();
@@ -858,6 +858,16 @@ fn variable_splitting_composes_with_lifting() {
                     MediumOperation::Copy,
                     vec![typed(slot)],
                     vec![typed(read)],
+                    false,
+                    None,
+                )
+                .unwrap();
+            builder
+                .append_instruction(
+                    block,
+                    MediumOperation::Call,
+                    vec![typed(read)],
+                    Vec::new(),
                     false,
                     None,
                 )
@@ -899,6 +909,9 @@ fn variable_splitting_composes_with_lifting() {
 
 /// HLIL → MLIL lowering tests, split out to respect the source-size policy.
 mod lowering;
+
+/// Local dead-value pruning tests for the presentation lift.
+mod dead;
 
 /// Effect-ordered inlining tests, split out to respect the source-size
 /// policy.

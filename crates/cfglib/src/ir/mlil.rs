@@ -8,6 +8,7 @@
 //! into strings or a closed library-owned opcode enum.
 
 mod builder;
+mod constant;
 mod coverage;
 mod dialect;
 mod error;
@@ -16,11 +17,13 @@ mod identity;
 mod instruction;
 mod promote;
 mod provenance;
+mod rewrite;
 mod split;
 mod variable;
 mod verify;
 
 pub use builder::FunctionBuilder;
+pub use constant::{ConstantMaterialization, ConstantMaterializationDialect};
 pub use coverage::extend_equivalent_coverage;
 pub use dialect::{AnalysisDialect, Dialect, InstructionMetadata, VerifyDialect};
 pub use error::{Error, Result, VerificationIssue, VerificationReport};
@@ -29,6 +32,7 @@ pub use identity::{EntityId, InstructionId, VariableId};
 pub use instruction::Instruction;
 pub use promote::{MemoryPromotion, PromoteDialect, PromotionAccess};
 pub use provenance::{ProvenanceEntry, ProvenanceMap};
+pub use rewrite::{InstructionReplacement, InstructionRewrite};
 pub use split::VariableSplit;
 pub use variable::{TypedVariable, Variable};
 

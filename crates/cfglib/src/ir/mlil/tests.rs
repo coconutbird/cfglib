@@ -14,6 +14,8 @@ use super::{
     InstructionMetadata, TypedVariable, VariableId, VerificationIssue, VerifyDialect,
 };
 
+mod rewrite;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 enum Type {
     Integer,

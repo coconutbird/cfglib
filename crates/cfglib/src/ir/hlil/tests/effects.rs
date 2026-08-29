@@ -172,12 +172,12 @@ fn effectful_definitions_inline_only_when_order_is_preserved() {
             None,
         )
         .unwrap();
-    // t_second = call(); y = call(); z = t_second → t_second materializes
+    // t_second = call(x); y = call(x); z = t_second → t_second materializes
     builder
         .append_instruction(
             block,
             MediumOperation::Call,
-            Vec::new(),
+            vec![typed(x)],
             vec![typed(t_second)],
             false,
             None,
@@ -187,7 +187,7 @@ fn effectful_definitions_inline_only_when_order_is_preserved() {
         .append_instruction(
             block,
             MediumOperation::Call,
-            Vec::new(),
+            vec![typed(x)],
             vec![typed(y)],
             false,
             None,
@@ -224,8 +224,8 @@ fn effectful_definitions_inline_only_when_order_is_preserved() {
     assert!(!pseudo.contains("v0 = call()"), "{pseudo}");
     // Second call pair: the temporary materializes so the calls stay in
     // order, and the pure copy chain still folds into the return.
-    let second = pseudo.find("v2 = call();").expect(&pseudo);
-    let third = pseudo.find("v3 = call();").expect(&pseudo);
+    let second = pseudo.find("v2 = call(").expect(&pseudo);
+    let third = pseudo.find("v3 = call(").expect(&pseudo);
     assert!(second < third, "{pseudo}");
     assert!(pseudo.contains("return v2;"), "{pseudo}");
 }

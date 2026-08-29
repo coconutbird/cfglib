@@ -216,8 +216,39 @@ pub enum HandlerKind {
     },
 }
 
-/// Every child statement body of one statement, in program order.
-pub(super) fn child_bodies<D: Dialect>(kind: &StatementKind<D>) -> Vec<&[StatementId]> {
+/// Whether a child statement sequence introduces a lexical body or belongs
+/// to the containing statement's expression-like syntax.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ChildBodyKind {
+    Lexical,
+    Clause,
+}
+
+/// One child statement sequence and its declaration-scope role.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct ChildBody<'a> {
+    pub(super) statements: &'a [StatementId],
+    pub(super) kind: ChildBodyKind,
+}
+
+impl<'a> ChildBody<'a> {
+    const fn lexical(statements: &'a [StatementId]) -> Self {
+        Self {
+            statements,
+            kind: ChildBodyKind::Lexical,
+        }
+    }
+
+    const fn clause(statements: &'a [StatementId]) -> Self {
+        Self {
+            statements,
+            kind: ChildBodyKind::Clause,
+        }
+    }
+}
+
+/// Every child statement body of one statement, in execution order.
+pub(super) fn child_body_entries<D: Dialect>(kind: &StatementKind<D>) -> Vec<ChildBody<'_>> {
     match kind {
         StatementKind::Expression(_)
         | StatementKind::Assign { .. }
@@ -229,43 +260,55 @@ pub(super) fn child_bodies<D: Dialect>(kind: &StatementKind<D>) -> Vec<&[Stateme
             then_body,
             else_body,
             ..
-        } => alloc::vec![then_body.as_slice(), else_body.as_slice()],
+        } => alloc::vec![ChildBody::lexical(then_body), ChildBody::lexical(else_body)],
         StatementKind::While { body, .. }
         | StatementKind::DoWhile { body, .. }
         | StatementKind::Loop { body }
         | StatementKind::Labeled { body, .. }
-        | StatementKind::Region { body, .. } => alloc::vec![body.as_slice()],
+        | StatementKind::Region { body, .. } => alloc::vec![ChildBody::lexical(body)],
         StatementKind::For {
             initializer,
             update,
             body,
             ..
-        } => alloc::vec![initializer.as_slice(), update.as_slice(), body.as_slice()],
+        } => alloc::vec![
+            ChildBody::clause(initializer),
+            ChildBody::lexical(body),
+            ChildBody::clause(update)
+        ],
         StatementKind::Switch {
             cases,
             default_body,
             ..
         } => cases
             .iter()
-            .map(|case| case.body.as_slice())
-            .chain(core::iter::once(default_body.as_slice()))
+            .map(|case| ChildBody::lexical(&case.body))
+            .chain(core::iter::once(ChildBody::lexical(default_body)))
             .collect(),
         StatementKind::Try {
             body,
             handlers,
             finally_body,
         } => {
-            let mut bodies = alloc::vec![body.as_slice()];
+            let mut bodies = alloc::vec![ChildBody::lexical(body)];
             for handler in handlers {
                 if let HandlerKind::Filter { filter_body } = &handler.kind {
-                    bodies.push(filter_body.as_slice());
+                    bodies.push(ChildBody::lexical(filter_body));
                 }
-                bodies.push(handler.body.as_slice());
+                bodies.push(ChildBody::lexical(&handler.body));
             }
-            bodies.push(finally_body.as_slice());
+            bodies.push(ChildBody::lexical(finally_body));
             bodies
         }
     }
+}
+
+/// Every child statement sequence without its declaration-scope role.
+pub(super) fn child_bodies<D: Dialect>(kind: &StatementKind<D>) -> Vec<&[StatementId]> {
+    child_body_entries(kind)
+        .into_iter()
+        .map(|body| body.statements)
+        .collect()
 }
 
 /// Visits every expression directly referenced by one statement.

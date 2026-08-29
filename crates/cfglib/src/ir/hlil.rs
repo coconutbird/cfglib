@@ -25,6 +25,7 @@ mod function;
 mod identity;
 mod lift;
 mod lower;
+mod placement;
 mod recover;
 mod statement;
 mod variable;
@@ -41,6 +42,7 @@ pub use lift::{
     lift_function_with_structure,
 };
 pub use lower::{LowerDialect, LoweredFunction, lower_function};
+pub use placement::VariablePlacements;
 pub use recover::{RecoverDialect, Recovery, recover_structure};
 pub use statement::{Handler, HandlerKind, Statement, StatementKind, SwitchArm};
 pub use variable::Variable;
