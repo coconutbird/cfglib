@@ -26,7 +26,7 @@ impl<D: RecoverDialect + VerifyDialect> Rebuilder<'_, D> {
     ) -> Result<Option<StatementId>> {
         let init = ids[index];
         let loop_id = ids[index + 1];
-        let StatementKind::Assign { target, .. } = self.statement_kind(init)? else {
+        let StatementKind::Assign { target, value } = self.statement_kind(init)? else {
             return Ok(None);
         };
         let target_node = self.expression(*target)?;
@@ -34,7 +34,7 @@ impl<D: RecoverDialect + VerifyDialect> Rebuilder<'_, D> {
             return Ok(None);
         };
         let inductive = *inductive;
-        if !D::single_expression_assignment(target_node.value_type()) {
+        if !self.assignment_is_single_expression(*target, *value)? {
             return Ok(None);
         }
         let StatementKind::While { condition, body } = self.statement_kind(loop_id)? else {
@@ -48,7 +48,7 @@ impl<D: RecoverDialect + VerifyDialect> Rebuilder<'_, D> {
         };
         let StatementKind::Assign {
             target: update_target,
-            ..
+            value: update_value,
         } = self.statement_kind(update)?
         else {
             return Ok(None);
@@ -57,7 +57,9 @@ impl<D: RecoverDialect + VerifyDialect> Rebuilder<'_, D> {
         let ExpressionKind::Variable(updated) = update_node.kind() else {
             return Ok(None);
         };
-        if *updated != inductive || !D::single_expression_assignment(update_node.value_type()) {
+        if *updated != inductive
+            || !self.assignment_is_single_expression(*update_target, *update_value)?
+        {
             return Ok(None);
         }
         if self.contains_continue(rest)? {

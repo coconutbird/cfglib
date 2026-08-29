@@ -112,13 +112,15 @@ impl<D: RecoverDialect + VerifyDialect> Rebuilder<'_, D> {
         };
         match self.statement_kind(*only)? {
             StatementKind::Assign {
-                target: assigned, ..
+                target: assigned,
+                value,
             } => {
                 let node = self.expression(*assigned)?;
                 let ExpressionKind::Variable(variable) = node.kind() else {
                     return Ok(false);
                 };
-                Ok(*variable == target && D::single_expression_assignment(node.value_type()))
+                Ok(*variable == target
+                    && self.assignment_is_single_expression(*assigned, *value)?)
             }
             StatementKind::If {
                 then_body,

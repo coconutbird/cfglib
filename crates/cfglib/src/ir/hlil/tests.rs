@@ -70,6 +70,8 @@ enum Operation {
     Release,
     Caught,
     Throw,
+    /// An operation whose source spelling expands into multiple statements.
+    Expanded,
 }
 
 impl Dialect for Toy {
@@ -91,6 +93,7 @@ impl Dialect for Toy {
             Operation::Release => "release",
             Operation::Caught => "caught",
             Operation::Throw => "throw",
+            Operation::Expanded => "expanded",
         }
     }
 }
@@ -304,6 +307,10 @@ impl super::RecoverDialect for Toy {
         Some(Operation::Select)
     }
 
+    fn single_expression_operation(operation: &Operation) -> bool {
+        *operation != Operation::Expanded
+    }
+
     fn region_enter(operation: &Operation) -> Option<Operation> {
         matches!(operation, Operation::Acquire).then_some(Operation::Acquire)
     }
@@ -334,7 +341,7 @@ impl LowerDialect for Toy {
             | Operation::Throw => MediumOperation::LessThan,
             Operation::Not => MediumOperation::Not,
             Operation::Load | Operation::Deref => MediumOperation::Load,
-            Operation::Call => MediumOperation::Call,
+            Operation::Call | Operation::Expanded => MediumOperation::Call,
         }
     }
 

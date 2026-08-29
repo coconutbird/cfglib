@@ -50,6 +50,17 @@ pub trait RecoverDialect: Dialect {
         true
     }
 
+    /// Whether this operation has one expression spelling. Return `false` for
+    /// operations a renderer must expand into multiple statements. Recovery
+    /// checks every operation in an assignment's value tree, then leaves the
+    /// assignment out of `for` clauses and conditional selections if any
+    /// operation is not expression-like.
+    #[must_use]
+    fn single_expression_operation(operation: &Self::Operation) -> bool {
+        let _ = operation;
+        true
+    }
+
     /// The [`Region`](StatementKind::Region) operation recovering one
     /// paired enter/exit protocol, given its enter operation. `None`
     /// leaves the enter operation as an ordinary statement.
@@ -193,6 +204,34 @@ impl<'a, D: RecoverDialect + VerifyDialect> Rebuilder<'a, D> {
         self.source
             .expression(id)
             .ok_or_else(|| Error::InvalidConstruction("unresolvable expression identity".into()))
+    }
+
+    /// Whether one assignment can appear in a source-language expression
+    /// clause rather than expanding into a statement sequence.
+    fn assignment_is_single_expression(
+        &self,
+        target: ExpressionId,
+        value: ExpressionId,
+    ) -> Result<bool> {
+        let target = self.expression(target)?;
+        if !D::single_expression_assignment(target.value_type()) {
+            return Ok(false);
+        }
+        let mut pending = Vec::new();
+        pending.push(value);
+        while let Some(expression) = pending.pop() {
+            if let ExpressionKind::Operation {
+                operation,
+                operands,
+            } = self.expression(expression)?.kind()
+            {
+                if !D::single_expression_operation(operation) {
+                    return Ok(false);
+                }
+                pending.extend(operands.iter().copied());
+            }
+        }
+        Ok(true)
     }
 
     fn rebuild_body(&mut self, ids: &[StatementId]) -> Result<Vec<StatementId>> {

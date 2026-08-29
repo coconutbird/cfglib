@@ -211,7 +211,9 @@ protocols with their exceptional cleanup handlers become `Region`
 statements (`synchronized`, `lock`) — each recovery opt-in per dialect
 hook, each a pure re-expression, and each remappable through the returned
 identity maps (`LiftedFunction::with_recovered_structure` composes it with
-the lift's instruction table). Exit-on-true loop conditions negate exactly
+the lift's instruction table). `RecoverDialect::single_expression_operation`
+keeps operations that expand into statement sequences out of `for` clauses
+and selection arms. Exit-on-true loop conditions negate exactly
 through `LiftDialect::negate_operation` — a comparison with its relation
 inverted — before falling back to a wrapping `logical_not`.
 

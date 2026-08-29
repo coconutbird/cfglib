@@ -7,23 +7,65 @@ use alloc::vec::Vec;
 
 use super::{Edge, MediumOperation, Operation, Toy, Type};
 use crate::ir::hlil::{
-    ExpressionKind, FunctionBuilder, StatementId, StatementKind, VariableId, lift_function,
-    recover_structure,
+    ExpressionId, ExpressionKind, FunctionBuilder, StatementId, StatementKind, VariableId,
+    lift_function, recover_structure,
 };
 use crate::ir::mlil;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateForm {
+    Add,
+    ExpandedOperand,
+}
+
+fn variable(builder: &mut FunctionBuilder<Toy>, id: VariableId) -> ExpressionId {
+    builder
+        .add_expression(ExpressionKind::Variable(id), Type::Integer)
+        .unwrap()
+}
+
+fn counting_update(
+    builder: &mut FunctionBuilder<Toy>,
+    index: VariableId,
+    form: UpdateForm,
+) -> ExpressionId {
+    let left = variable(builder, index);
+    let one = builder
+        .add_expression(ExpressionKind::Constant(1), Type::Integer)
+        .unwrap();
+    let (operation, operands) = match form {
+        UpdateForm::Add => (Operation::Add, vec![left, one]),
+        UpdateForm::ExpandedOperand => {
+            let expanded = builder
+                .add_expression(
+                    ExpressionKind::Operation {
+                        operation: Operation::Expanded,
+                        operands: vec![left],
+                    },
+                    Type::Integer,
+                )
+                .unwrap();
+            (Operation::Add, vec![expanded, one])
+        }
+    };
+    builder
+        .add_expression(
+            ExpressionKind::Operation {
+                operation,
+                operands,
+            },
+            Type::Integer,
+        )
+        .unwrap()
+}
+
 /// `index = 0; while (index < bound) { total = total + index; index =
 /// index + 1; } return total;` — and the loop statement's identity.
-fn counting_while() -> (crate::ir::hlil::Function<Toy>, StatementId) {
+fn counting_while(update_form: UpdateForm) -> (crate::ir::hlil::Function<Toy>, StatementId) {
     let mut builder = FunctionBuilder::<Toy>::new("toy::count".into());
     let bound = builder.declare_variable(0, None, None).unwrap();
     let index = builder.declare_variable(0, None, None).unwrap();
     let total = builder.declare_variable(0, None, None).unwrap();
-    let variable = |builder: &mut FunctionBuilder<Toy>, id: VariableId| {
-        builder
-            .add_expression(ExpressionKind::Variable(id), Type::Integer)
-            .unwrap()
-    };
     let init_target = variable(&mut builder, index);
     let zero = builder
         .add_expression(ExpressionKind::Constant(0), Type::Integer)
@@ -70,19 +112,7 @@ fn counting_while() -> (crate::ir::hlil::Function<Toy>, StatementId) {
         )
         .unwrap();
     let update_target = variable(&mut builder, index);
-    let update_left = variable(&mut builder, index);
-    let one = builder
-        .add_expression(ExpressionKind::Constant(1), Type::Integer)
-        .unwrap();
-    let update_value = builder
-        .add_expression(
-            ExpressionKind::Operation {
-                operation: Operation::Add,
-                operands: vec![update_left, one],
-            },
-            Type::Integer,
-        )
-        .unwrap();
+    let update_value = counting_update(&mut builder, index, update_form);
     let update = builder
         .add_statement(
             StatementKind::Assign {
@@ -116,7 +146,7 @@ fn counting_while() -> (crate::ir::hlil::Function<Toy>, StatementId) {
 
 #[test]
 fn counted_loop_recovers_as_for() {
-    let (function, looped) = counting_while();
+    let (function, looped) = counting_while(UpdateForm::Add);
     let recovery = recover_structure(&function).unwrap();
     assert_eq!(
         recovery.for_loops,
@@ -132,6 +162,19 @@ fn counted_loop_recovers_as_for() {
     assert!(matches!(
         recovery.function.statement(recovered_loop).unwrap().kind(),
         StatementKind::For { .. }
+    ));
+}
+
+#[test]
+fn counted_loop_keeps_a_nested_multi_statement_update_in_the_body() {
+    let (function, looped) = counting_while(UpdateForm::ExpandedOperand);
+    let recovery = recover_structure(&function).unwrap();
+
+    assert_eq!(recovery.for_loops, 0);
+    let recovered_loop = recovery.statements[&looped];
+    assert!(matches!(
+        recovery.function.statement(recovered_loop).unwrap().kind(),
+        StatementKind::While { .. }
     ));
 }
 
