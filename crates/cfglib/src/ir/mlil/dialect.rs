@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 
 use crate::ir::dialect::Vocabulary;
+use crate::memory::MemoryEvent;
 use crate::{EdgeKind, FlowEffect};
 
 use super::{Function, Instruction, VariableId, VerificationIssue};
@@ -63,6 +64,24 @@ pub trait Dialect: Vocabulary {
 
     /// Returns whether an edge is the synthetic root's unique entry edge.
     fn is_entry_edge(edge: &Self::Edge) -> bool;
+}
+
+/// Optional memory-event contract for an MLIL dialect.
+///
+/// Implementing this trait automatically exposes every
+/// [`Instruction<Self>`] through
+/// [`MemoryEventInfo`](crate::MemoryEventInfo), so generic memory analyses do
+/// not need a dialect-specific instruction wrapper.
+pub trait MemoryDialect: Dialect {
+    /// Consumer-defined location or conservative alias region.
+    type MemoryLocation: Clone + Ord;
+    /// Consumer-defined fence ordering and visibility details.
+    type MemoryFence: Clone + Eq;
+
+    /// Returns one instruction's memory events in semantic order.
+    fn memory_events(
+        instruction: &Instruction<Self>,
+    ) -> impl Iterator<Item = MemoryEvent<Self::MemoryLocation, VariableId, Self::MemoryFence>>;
 }
 
 /// Optional semantic hooks used by reusable MLIL analyses.

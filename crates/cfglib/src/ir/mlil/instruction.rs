@@ -10,10 +10,10 @@ use core::fmt;
 
 use crate::{
     AliasPairs, CallInfo, ConstantFolder, CopySource, DisplayInstr, EffectInfo, ExprInstr,
-    FlowControl, FlowEffect, InstrInfo,
+    FlowControl, FlowEffect, InstrInfo, MemoryEvent, MemoryEventInfo,
 };
 
-use super::{AnalysisDialect, Dialect, InstructionId, TypedVariable, VariableId};
+use super::{AnalysisDialect, Dialect, InstructionId, MemoryDialect, TypedVariable, VariableId};
 
 /// One typed semantic MLIL instruction.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -121,6 +121,17 @@ impl<D: Dialect> InstrInfo for Instruction<D> {
 
     fn defs(&self) -> &[Self::Variable] {
         &self.defs
+    }
+}
+
+impl<D: MemoryDialect> MemoryEventInfo for Instruction<D> {
+    type Location = D::MemoryLocation;
+    type Fence = D::MemoryFence;
+
+    fn memory_events(
+        &self,
+    ) -> impl Iterator<Item = MemoryEvent<Self::Location, Self::Variable, Self::Fence>> {
+        D::memory_events(self)
     }
 }
 

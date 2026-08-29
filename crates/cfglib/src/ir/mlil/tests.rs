@@ -14,6 +14,7 @@ use super::{
     InstructionMetadata, TypedVariable, VariableId, VerificationIssue, VerifyDialect,
 };
 
+mod memory;
 mod rewrite;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

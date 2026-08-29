@@ -2,7 +2,7 @@
 
 Generic, `no_std` graph and dataflow framework for code intelligence, program analysis, decompilation, and compiler infrastructure.
 
-`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Its generic RTL and MLIL layers combine CFGs with checked construction, exact edge payloads, signatures, exception regions, and many-to-many source provenance; RTL/MLIL bridges recover typed semantic variables from native storage or lower them back while allowing the two levels to use distinct dialect and native-location types. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
+`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Its generic RTL and MLIL layers combine CFGs with checked construction, exact edge payloads, signatures, exception regions, and many-to-many source provenance; RTL/MLIL bridges recover typed semantic variables from native storage or lower them back while allowing the two levels to use distinct dialect and native-location types. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, location-aware memory SSA, dataflow analyses, value numbering, explicit alias sets, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
 
 Named transformations compose through `PassPipeline<T, E>`. A pipeline keeps
 the caller's declared order, supports closure-backed or stateful trait passes,
@@ -277,7 +277,8 @@ inverted — before falling back to a wrapping `logical_not`.
 | Constant propagation | `constant_propagation`, `ConstantFolder` (associated `Const`) | Top/Const/Bottom lattice over a consumer constant domain — machine words, strings, bools, float bits |
 | Sparse conditional constant propagation | `SccpAnalysis::compute` | SSA-based, marks unreachable edges |
 | Copy and value-alias propagation | `copy_propagation`, `alias_propagation`, `CopySource` trait | Guarded chain resolution and dead transfer removal; pairwise aliases may refine types or metadata without changing runtime values |
-| Memory SSA | `MemorySSA::compute`, `MemoryEffect` trait | Memory versioning with φ-nodes |
+| Memory-event trace | `MemoryTrace::compute`, `MemoryEventInfo` trait | Ordered, location-typed reads, writes, read/modify/write accesses, address-variable dependencies, and fences; instruction summaries distinguish separate read+write from compound modification |
+| Memory SSA | `MemorySSA::compute`, `MemoryAlias` trait | Event-driven SSA per may-alias location class: loop/branch φ-nodes, reaching writes and clobbers, bidirectional def-use chains, transitive readers, and ordinary-SSA address inputs |
 | Abstract interpretation | `abstract_interpret`, `AbstractDomain` trait | Generic abstract domain framework |
 
 ### Higher-level analyses
@@ -288,7 +289,7 @@ inverted — before falling back to a wrapping `logical_not`.
 | Value numbering (local) | `BlockValueNumbers::compute` | Per-block hash-consing |
 | Value numbering (global) | `ValueNumbering::compute`, `ValueNumberInfo` (associated `Operator`) | Dominator-scoped GVN over any operation identity |
 | Redundancy counting | `ValueNumbering::redundant_count` | From GVN results |
-| Alias analysis | `AliasSets::compute`, `MemoryInfo` trait | Union-find based alias sets |
+| Explicit alias sets | `AliasSets::new` / `merge`; `MemoryAlias` trait | Caller-populated union-find classes usable directly as the alias oracle for memory SSA; an unmerged pair is a proof of disjointness |
 | Dead code analysis | `DeadCode::compute` | Liveness-dead instructions (effect-guarded) and unreachable blocks, reported without mutating — the analysis `dead_code_elimination` applies |
 | Purity classification | `cfg_purity`, `block_purity`, `EffectInfo` (associated `Effect`) | Consumer effect vocabularies — machine memory/IO, allocation, panics |
 | Metrics | `GraphMetrics::compute` (any rooted view); `CfgMetrics::compute` | Node/edge counts, cyclomatic complexity, nesting depth, instruction density |
@@ -359,13 +360,23 @@ InstrInfo<Variable = V>   (optional — native IR variables, defs/uses)
 ├── ConstantFolder        (constant propagation, SCCP — associated Const)
 ├── ExprInstr             (expression trees — associated Operator, Const)
 ├── ValueNumberInfo       (value numbering, PRE — associated Operator)
-├── MemoryInfo            (alias analysis)
-└── MemoryEffect          (memory SSA)
+└── MemoryEventInfo       (locations, address uses, access kinds, and fences — associated Location, Fence)
+
+MemoryAlias<Location>     (optional may-alias oracle consumed by MemorySSA)
 
 DisplayInstr              (rendering only — DOT, pseudocode)
 CallInfo                  (call graphs, explicit tail calls — associated Callee)
 SwitchSource              (switch table recovery — associated Target)
 ```
+
+`MemoryEventInfo` is the single instruction-side source of truth for memory.
+It distinguishes read, write, and compound read/modify/write events, retains
+their exact reported locations and ordered fences, and names every native
+variable used to select an address. `MemorySSA` merges locations through the
+caller-provided `MemoryAlias` relation, then exposes loop-correct reaching
+definitions, clobbered states, users, and transitive readers. Returning
+`false` from an alias oracle promises the locations cannot overlap at runtime;
+`ConservativeMemoryAlias` is the safe fallback when that cannot be proven.
 
 ## Workspace
 

@@ -17,8 +17,10 @@
 //!
 //! Implement [`InstrInfo`] for your instruction type to declare which
 //! IR variables each instruction reads from and writes to, then run any
-//! of the provided analyses. Variables are supplied by the IR adapter;
-//! the framework does not impose a register numbering scheme.
+//! of the provided analyses. The [`MemoryEventInfo`](crate::MemoryEventInfo)
+//! extension adds ordered memory data flow and an instruction-level
+//! read/modify/write summary. Variables and memory locations are supplied by
+//! the IR adapter; the framework does not impose a numbering scheme.
 
 pub mod abstract_interpretation;
 pub mod constant_propagation;
@@ -27,7 +29,6 @@ pub mod def_use;
 pub mod edge_fixpoint;
 pub mod fixpoint;
 pub mod liveness;
-pub mod memory_ssa;
 pub mod node_fixpoint;
 pub mod phi_web;
 pub mod reaching;
@@ -60,6 +61,9 @@ impl<T: Clone + Ord> VariableId for T {}
 /// hot-path fixpoint iteration. The instruction is expected to own (or
 /// borrow from its own storage) the def/use sets it reports; adapters over
 /// external structures typically materialize them once at construction.
+/// Memory accesses are reported separately through the
+/// [`MemoryEventInfo`](crate::MemoryEventInfo) extension so adapters without a
+/// memory model keep this base contract minimal.
 pub trait InstrInfo {
     /// IR variable identity used by this instruction representation.
     type Variable: VariableId;

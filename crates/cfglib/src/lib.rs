@@ -99,12 +99,20 @@
 //!   ├─ CopySource           (optional — copy propagation)
 //!   ├─ ConstantFolder       (optional — constant propagation, Const)
 //!   ├─ ExprInstr            (optional — expression trees, Operator + Const)
-//!   └─ ValueNumberInfo      (optional — value numbering, Operator)
+//!   ├─ ValueNumberInfo      (optional — value numbering, Operator)
+//!   └─ MemoryEventInfo      (optional — memory data flow + fences, Location + Fence)
+//!
+//! MemoryAlias<Location>     (optional may-alias oracle consumed by MemorySSA)
 //!
 //! DisplayInstr              (optional — rendering only: DOT, pseudocode)
 //! CallInfo                  (optional — call graphs, Callee)
 //! SwitchSource              (optional — switch table recovery, Target)
 //! ```
+//!
+//! [`MemoryEventInfo`] is the sole instruction-side memory contract.
+//! [`MemorySSA`] merges its reported locations through a caller-owned
+//! [`MemoryAlias`] relation and provides location-class phis, reaching writes,
+//! clobbers, users, transitive readers, and SSA-resolved address inputs.
 //!
 //! Additionally, [`Problem`] is the trait for pluggable instruction-level
 //! dataflow analyses (run by [`solve_problem`]), [`NodeProblem`] its
@@ -151,6 +159,7 @@ pub mod exception;
 pub mod flow;
 pub mod graph;
 pub mod ir;
+pub mod memory;
 pub mod region;
 pub mod rewrite;
 pub mod transform;
@@ -158,7 +167,7 @@ pub mod transform;
 #[cfg(test)]
 pub(crate) mod test_util;
 
-pub use analysis::alias::{AliasSets, MemoryInfo, MemoryOp};
+pub use analysis::alias::AliasSets;
 pub use analysis::dead_code::DeadCode;
 pub use analysis::expr::{
     BlockExprTrees, ExprInstr, ExprNode, recover_block_expressions, recover_expressions,
@@ -204,7 +213,6 @@ pub use dataflow::fixpoint::{
     try_solve_problem_with_config,
 };
 pub use dataflow::liveness::{Liveness, LivenessProblem};
-pub use dataflow::memory_ssa::{MemoryAccess, MemoryEffect, MemorySSA, MemoryVersion};
 pub use dataflow::node_fixpoint::{
     NodeFacts, NodeProblem, TryNodeProblem, solve_node_problem, solve_node_problem_from,
     solve_node_problem_from_with_config, solve_node_problem_with_config, try_solve_node_problem,
@@ -306,13 +314,13 @@ pub use ir::mlil::{
     AnalysisDialect as MlilAnalysisDialect, Dialect as MlilDialect, EntityId as MlilEntityId,
     Error as MlilError, Function as MlilFunction, FunctionBuilder as MlilFunctionBuilder,
     Instruction as MlilInstruction, InstructionId as MlilInstructionId,
-    InstructionMetadata as MlilInstructionMetadata, MemoryPromotion as MlilMemoryPromotion,
-    PromoteDialect as MlilPromoteDialect, PromotionAccess as MlilPromotionAccess,
-    ProvenanceEntry as MlilProvenanceEntry, ProvenanceMap as MlilProvenanceMap,
-    Result as MlilResult, Signature as MlilSignature, TypedVariable as MlilTypedVariable,
-    Variable as MlilVariable, VariableId as MlilVariableId, VariableSplit as MlilVariableSplit,
-    VerificationIssue as MlilVerificationIssue, VerificationReport as MlilVerificationReport,
-    VerifyDialect as MlilVerifyDialect,
+    InstructionMetadata as MlilInstructionMetadata, MemoryDialect as MlilMemoryDialect,
+    MemoryPromotion as MlilMemoryPromotion, PromoteDialect as MlilPromoteDialect,
+    PromotionAccess as MlilPromotionAccess, ProvenanceEntry as MlilProvenanceEntry,
+    ProvenanceMap as MlilProvenanceMap, Result as MlilResult, Signature as MlilSignature,
+    TypedVariable as MlilTypedVariable, Variable as MlilVariable, VariableId as MlilVariableId,
+    VariableSplit as MlilVariableSplit, VerificationIssue as MlilVerificationIssue,
+    VerificationReport as MlilVerificationReport, VerifyDialect as MlilVerifyDialect,
 };
 pub use ir::provenance::{ProvenanceEntry, ProvenanceError, ProvenanceMap};
 pub use ir::rtl::{
@@ -331,6 +339,12 @@ pub use ir::rtl::{
     lower as lower_rtl_function, referenced_webs as rtl_referenced_webs,
 };
 pub use ir::signature::Signature;
+pub use memory::{
+    ConservativeMemoryAlias, ExactMemoryAlias, MemoryAccessKind, MemoryAlias, MemoryAtomicity,
+    MemoryClassId, MemoryDefinition, MemoryEvent, MemoryEventAccess, MemoryEventInfo,
+    MemoryEventSite, MemoryLocationClass, MemoryOperations, MemoryPhi, MemorySSA, MemorySSAEvent,
+    MemorySsaValue, MemoryTrace, MemoryTraceEntry, MemoryUse,
+};
 pub use region::{
     Cleanup, CompletionReason, Continuation, Handler, HandlerBody, HandlerFilters, HandlerKind,
     HandlerMetadata, HandlerRef, HandlerTypes, Region, RegionId, RegionIndex,

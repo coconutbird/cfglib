@@ -25,7 +25,7 @@ mod verify;
 pub use builder::FunctionBuilder;
 pub use constant::{ConstantMaterialization, ConstantMaterializationDialect};
 pub use coverage::extend_equivalent_coverage;
-pub use dialect::{AnalysisDialect, Dialect, InstructionMetadata, VerifyDialect};
+pub use dialect::{AnalysisDialect, Dialect, InstructionMetadata, MemoryDialect, VerifyDialect};
 pub use error::{Error, Result, VerificationIssue, VerificationReport};
 pub use function::Function;
 pub use identity::{EntityId, InstructionId, VariableId};
