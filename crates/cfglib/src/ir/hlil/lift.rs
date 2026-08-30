@@ -15,6 +15,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 
 use crate::block::BlockId;
 use crate::dataflow::liveness::Liveness;
@@ -255,45 +256,50 @@ pub fn lift_function_with_metadata<D>(
 where
     D: LiftDialect + VerifyDialect,
 {
-    let (ast, report) = match trampolines_cleared(source) {
-        Some(cleared) => crate::lift_with_report(&cleared),
-        None => source.structured_control_flow_with_report(),
-    };
+    if let Some(cleared) = trampolines_cleared(source) {
+        let (ast, report) = crate::lift_borrowed_with_report(&cleared);
+        return lift_from_structure(source, &ast, report, metadata);
+    }
+    let (ast, report) = crate::lift_borrowed_with_report(source.cfg());
     lift_from_structure(source, &ast, report, metadata)
 }
 
 /// Lifts MLIL while reusing a structured view already computed for the same
 /// function. If HLIL must clear jump trampolines, it recomputes only that
 /// distinct working view so the normal lifting contract remains unchanged.
+/// Instruction payloads may be owned values or borrowed references; this
+/// function does not clone either representation.
 ///
 /// # Errors
 ///
 /// Returns the same structural, translation, and verification failures as
 /// [`lift_function`].
-pub fn lift_function_with_structure<D>(
+pub fn lift_function_with_structure<D, P>(
     source: &mlil::Function<D>,
-    ast: &AstNode<mlil::Instruction<D>>,
+    ast: &AstNode<P>,
     report: &LiftReport,
     metadata: LiftMetadata,
 ) -> Result<LiftedFunction<D>>
 where
     D: LiftDialect + VerifyDialect,
+    P: Borrow<mlil::Instruction<D>>,
 {
     if let Some(cleared) = trampolines_cleared(source) {
-        let (ast, report) = crate::lift_with_report(&cleared);
+        let (ast, report) = crate::lift_borrowed_with_report(&cleared);
         return lift_from_structure(source, &ast, report, metadata);
     }
     lift_from_structure(source, ast, report.clone(), metadata)
 }
 
-fn lift_from_structure<D>(
+fn lift_from_structure<D, P>(
     source: &mlil::Function<D>,
-    ast: &AstNode<mlil::Instruction<D>>,
+    ast: &AstNode<P>,
     report: LiftReport,
     metadata: LiftMetadata,
 ) -> Result<LiftedFunction<D>>
 where
     D: LiftDialect + VerifyDialect,
+    P: Borrow<mlil::Instruction<D>>,
 {
     let mut lifter = Lifter::new(source, metadata)?;
     let body = lifter.translate_node(ast)?;
@@ -434,8 +440,8 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         }
         self.instructions.insert(instruction, entity);
         if let Some(spans) = self.spans.get(&instruction) {
-            for span in spans.clone() {
-                self.builder.map_entity(span, entity)?;
+            for span in spans {
+                self.builder.map_entity(span.clone(), entity)?;
             }
         }
         Ok(())
@@ -449,10 +455,10 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
             .map_or_else(|| format!(".bb{}", block.index()), String::from)
     }
 
-    fn translate_nodes(
-        &mut self,
-        nodes: &[AstNode<mlil::Instruction<D>>],
-    ) -> Result<Vec<StatementId>> {
+    fn translate_nodes<P>(&mut self, nodes: &[AstNode<P>]) -> Result<Vec<StatementId>>
+    where
+        P: Borrow<mlil::Instruction<D>>,
+    {
         let mut statements = Vec::new();
         let mut index = 0;
         while index < nodes.len() {
@@ -469,18 +475,18 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
             // absorbs a directly following return or decision list — so
             // expression inlining sees the whole linear region instead of
             // one fragment per frontend block.
-            let mut list: Vec<mlil::Instruction<D>> = Vec::new();
+            let mut list: Vec<&mlil::Instruction<D>> = Vec::new();
             let mut final_block = None;
             for node in &nodes[index..end] {
                 if let AstNode::Block { id, instructions } = node {
-                    list.extend(instructions.iter().cloned());
+                    list.extend(instructions.iter().map(Borrow::borrow));
                     final_block = Some(*id);
                 }
             }
             let final_block = final_block.expect("the run contains at least one block node");
             match nodes.get(end) {
                 Some(AstNode::Return { id, instructions }) => {
-                    list.extend(instructions.iter().cloned());
+                    list.extend(instructions.iter().map(Borrow::borrow));
                     let (result, _) = self.translate_list(*id, &list, Expect::Statements)?;
                     statements.extend(result);
                     index = end + 1;
@@ -491,7 +497,7 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
                     then_body,
                     else_body,
                 }) => {
-                    list.extend(condition_instructions.iter().cloned());
+                    list.extend(condition_instructions.iter().map(Borrow::borrow));
                     statements.extend(self.translate_if(*condition, &list, then_body, else_body)?);
                     index = end + 1;
                 }
@@ -502,7 +508,7 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
                     default_body,
                     ..
                 }) => {
-                    list.extend(condition_instructions.iter().cloned());
+                    list.extend(condition_instructions.iter().map(Borrow::borrow));
                     statements.extend(self.translate_switch(
                         *condition,
                         &list,
@@ -525,7 +531,10 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         Ok(statements)
     }
 
-    fn translate_node(&mut self, node: &AstNode<mlil::Instruction<D>>) -> Result<Vec<StatementId>> {
+    fn translate_node<P>(&mut self, node: &AstNode<P>) -> Result<Vec<StatementId>>
+    where
+        P: Borrow<mlil::Instruction<D>>,
+    {
         match node {
             AstNode::Sequence { body } => self.translate_nodes(body),
             AstNode::Block { id, instructions } | AstNode::Return { id, instructions } => {
@@ -594,13 +603,17 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         }
     }
 
-    fn translate_if(
+    fn translate_if<C, P>(
         &mut self,
         condition: BlockId,
-        condition_instructions: &[mlil::Instruction<D>],
-        then_body: &[AstNode<mlil::Instruction<D>>],
-        else_body: &[AstNode<mlil::Instruction<D>>],
-    ) -> Result<Vec<StatementId>> {
+        condition_instructions: &[C],
+        then_body: &[AstNode<P>],
+        else_body: &[AstNode<P>],
+    ) -> Result<Vec<StatementId>>
+    where
+        C: Borrow<mlil::Instruction<D>>,
+        P: Borrow<mlil::Instruction<D>>,
+    {
         let (mut statements, end) =
             self.translate_list(condition, condition_instructions, Expect::Branch)?;
         let ListEnd {
@@ -622,12 +635,15 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         Ok(statements)
     }
 
-    fn translate_try(
+    fn translate_try<P>(
         &mut self,
-        try_body: &[AstNode<mlil::Instruction<D>>],
-        handlers: &[crate::ir::ast::CatchHandler<mlil::Instruction<D>>],
-        finally_body: &[AstNode<mlil::Instruction<D>>],
-    ) -> Result<Vec<StatementId>> {
+        try_body: &[AstNode<P>],
+        handlers: &[crate::ir::ast::CatchHandler<P>],
+        finally_body: &[AstNode<P>],
+    ) -> Result<Vec<StatementId>>
+    where
+        P: Borrow<mlil::Instruction<D>>,
+    {
         let body = self.translate_nodes(try_body)?;
         let mut lifted_handlers = Vec::new();
         for handler in handlers {
@@ -685,13 +701,17 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         None
     }
 
-    fn translate_switch(
+    fn translate_switch<C, P>(
         &mut self,
         condition: BlockId,
-        condition_instructions: &[mlil::Instruction<D>],
-        cases: &[crate::ir::ast::SwitchCase<mlil::Instruction<D>>],
-        default_body: &[AstNode<mlil::Instruction<D>>],
-    ) -> Result<Vec<StatementId>> {
+        condition_instructions: &[C],
+        cases: &[crate::ir::ast::SwitchCase<P>],
+        default_body: &[AstNode<P>],
+    ) -> Result<Vec<StatementId>>
+    where
+        C: Borrow<mlil::Instruction<D>>,
+        P: Borrow<mlil::Instruction<D>>,
+    {
         let (mut statements, end) =
             self.translate_list(condition, condition_instructions, Expect::Switch)?;
         let ListEnd {
@@ -733,13 +753,16 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         Ok(statements)
     }
 
-    fn translate_loop(
+    fn translate_loop<P>(
         &mut self,
         header: BlockId,
-        kind: &LoopKind<mlil::Instruction<D>>,
-        body: &[AstNode<mlil::Instruction<D>>],
+        kind: &LoopKind<P>,
+        body: &[AstNode<P>],
         outer_label: Option<String>,
-    ) -> Result<Vec<StatementId>> {
+    ) -> Result<Vec<StatementId>>
+    where
+        P: Borrow<mlil::Instruction<D>>,
+    {
         let label = outer_label
             .clone()
             .unwrap_or_else(|| self.block_label(header));
@@ -774,11 +797,14 @@ impl<'a, D: LiftDialect + VerifyDialect> Lifter<'a, D> {
         Ok(vec![statement])
     }
 
-    fn translate_loop_kind(
+    fn translate_loop_kind<P>(
         &mut self,
-        kind: &LoopKind<mlil::Instruction<D>>,
-        body: &[AstNode<mlil::Instruction<D>>],
-    ) -> Result<StatementId> {
+        kind: &LoopKind<P>,
+        body: &[AstNode<P>],
+    ) -> Result<StatementId>
+    where
+        P: Borrow<mlil::Instruction<D>>,
+    {
         match kind {
             LoopKind::Endless => {
                 let statements = self.translate_nodes(body)?;

@@ -142,8 +142,21 @@ fn classify_block<I, E>(
     }
 }
 
-fn push_block<I: Clone, E>(result: &mut Vec<AstNode<I>>, cfg: &Cfg<I, E>, block: BlockId) {
-    let instructions = cfg.block(block).instructions().to_vec();
+fn map_block<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
+    block: BlockId,
+    map: &mut impl FnMut(&'a I) -> O,
+) -> Vec<O> {
+    cfg.block(block).instructions().iter().map(map).collect()
+}
+
+fn push_block<'a, I, E, O>(
+    result: &mut Vec<AstNode<O>>,
+    cfg: &'a Cfg<I, E>,
+    block: BlockId,
+    map: &mut impl FnMut(&'a I) -> O,
+) {
+    let instructions = map_block(cfg, block, map);
     if !instructions.is_empty() {
         result.push(AstNode::Block {
             id: block,
@@ -171,6 +184,17 @@ fn block_label_name<I, E>(cfg: &Cfg<I, E>, id: BlockId) -> alloc::string::String
 #[must_use]
 pub fn lift<I: Clone, E>(cfg: &Cfg<I, E>) -> AstNode<I> {
     lift_with_report(cfg).0
+}
+
+/// Borrows a [`Cfg`]'s instruction payloads into a structured [`AstNode`]
+/// tree without cloning them.
+///
+/// The returned tree owns only its control structure and vectors of
+/// references. It therefore cannot outlive `cfg`; use [`lift`] when the tree
+/// must be stored independently.
+#[must_use]
+pub fn lift_borrowed<I, E>(cfg: &Cfg<I, E>) -> AstNode<&I> {
+    lift_borrowed_with_report(cfg).0
 }
 
 /// Lift a [`Cfg`] into a structured [`AstNode`] tree and report exactly
@@ -209,6 +233,23 @@ pub fn lift<I: Clone, E>(cfg: &Cfg<I, E>) -> AstNode<I> {
 /// a region as unstructured flow.
 #[must_use]
 pub fn lift_with_report<I: Clone, E>(cfg: &Cfg<I, E>) -> (AstNode<I>, LiftReport) {
+    lift_with_report_by(cfg, &mut Clone::clone)
+}
+
+/// Borrows a [`Cfg`]'s instruction payloads into a structured [`AstNode`]
+/// tree and reports every construct that degraded to unstructured flow.
+///
+/// Unlike [`lift_with_report`], this variant performs no instruction clone;
+/// the returned tree borrows every payload from `cfg`.
+#[must_use]
+pub fn lift_borrowed_with_report<I, E>(cfg: &Cfg<I, E>) -> (AstNode<&I>, LiftReport) {
+    lift_with_report_by(cfg, &mut |instruction| instruction)
+}
+
+fn lift_with_report_by<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
+    map: &mut impl FnMut(&'a I) -> O,
+) -> (AstNode<O>, LiftReport) {
     let dom = DominatorTree::compute(cfg);
     let pdom = DominatorTree::compute_post(cfg);
     let natural_loops: BTreeMap<u32, NaturalLoop> = detect_loops_tagged(cfg, &dom)
@@ -238,7 +279,7 @@ pub fn lift_with_report<I: Clone, E>(cfg: &Cfg<I, E>) -> (AstNode<I>, LiftReport
         structured_regions: BTreeSet::new(),
         report: LiftReport::default(),
     };
-    let mut body = lift_region(cfg, &mut state, cfg.entry(), None, None);
+    let mut body = lift_region(cfg, &mut state, cfg.entry(), None, None, map);
 
     // Completeness sweep: emit every reachable block the structured walk
     // refused or never reached, each under its label so the boundary
@@ -252,7 +293,7 @@ pub fn lift_with_report<I: Clone, E>(cfg: &Cfg<I, E>) -> (AstNode<I>, LiftReport
         .chain(metadata_roots.iter())
         .find(|block| !state.is_visited(**block))
     {
-        let pending_body = lift_region(cfg, &mut state, pending, None, None);
+        let pending_body = lift_region(cfg, &mut state, pending, None, None, map);
         if !pending_body.is_empty() {
             state.labeled_blocks.insert(pending.0);
             state.report.swept_blocks.push(pending);
@@ -296,13 +337,14 @@ pub fn lift_with_report<I: Clone, E>(cfg: &Cfg<I, E>) -> (AstNode<I>, LiftReport
 /// point — an arm's merge, a post-tested loop's latch); every other
 /// transfer that cannot proceed is resolved against the loop stack or made
 /// explicit as a goto.
-fn lift_region<I: Clone, E>(
-    cfg: &Cfg<I, E>,
+fn lift_region<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
     state: &mut LiftState<'_>,
     head: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
     stop: Option<BlockId>,
-) -> Vec<AstNode<I>> {
+    map: &mut impl FnMut(&'a I) -> O,
+) -> Vec<AstNode<O>> {
     let mut result = Vec::new();
     let mut current = Some(head);
 
@@ -329,7 +371,7 @@ fn lift_region<I: Clone, E>(
             // explicit and the completeness sweep emits the target under
             // the matching label.
             if cfg.predecessor_edges(block).len() == 1 && !region_member(cfg, block) {
-                result.extend(lift_region(cfg, state, block, None, stop));
+                result.extend(lift_region(cfg, state, block, None, stop, map));
             } else {
                 push_goto(cfg, state, &mut result, block, GotoReason::BoundaryEscape);
             }
@@ -339,7 +381,7 @@ fn lift_region<I: Clone, E>(
         state.visit(block);
 
         if let Some((node, continuation)) =
-            try_catch::lift_try_catch(cfg, state, block, allowed_blocks)
+            try_catch::lift_try_catch(cfg, state, block, allowed_blocks, map)
         {
             result.push(node);
             // Resume at the region's own continuation, not the anchor's
@@ -349,7 +391,7 @@ fn lift_region<I: Clone, E>(
             continue;
         }
 
-        current = lift_block(cfg, state, block, allowed_blocks, stop, &mut result);
+        current = lift_block(cfg, state, block, allowed_blocks, stop, &mut result, map);
     }
 
     result
@@ -362,37 +404,38 @@ fn lift_region<I: Clone, E>(
 /// try-body anchor, and switch case arms all run it, so a region anchored
 /// at a branch, dispatch, or loop header keeps its structure inside the
 /// enclosing construct.
-fn lift_block<I: Clone, E>(
-    cfg: &Cfg<I, E>,
+fn lift_block<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
     stop: Option<BlockId>,
-    result: &mut Vec<AstNode<I>>,
+    result: &mut Vec<AstNode<O>>,
+    map: &mut impl FnMut(&'a I) -> O,
 ) -> Option<BlockId> {
     let successor_edges = cfg.successor_edges(block);
     let flow = classify_block(cfg, state.back_edges, block);
 
     if flow == BlockFlowKind::LoopHeader {
-        let (node, follow) = loops::lift_loop(cfg, state, block, allowed_blocks);
+        let (node, follow) = loops::lift_loop(cfg, state, block, allowed_blocks, map);
         result.push(node);
         return follow;
     }
 
     if flow == BlockFlowKind::Conditional {
-        let node = lift_conditional(cfg, state, block, allowed_blocks);
+        let node = lift_conditional(cfg, state, block, allowed_blocks, map);
         result.push(node);
         return advance_merge(cfg, state, block, allowed_blocks);
     }
 
     if flow == BlockFlowKind::Switch {
-        let node = lift_switch(cfg, state, block, allowed_blocks);
+        let node = lift_switch(cfg, state, block, allowed_blocks, map);
         result.push(node);
         return advance_merge(cfg, state, block, allowed_blocks);
     }
 
     if flow == BlockFlowKind::BackEdge {
-        push_block(result, cfg, block);
+        push_block(result, cfg, block, map);
         let target = successor_edges
             .iter()
             .find(|&&edge| is_back_edge(cfg, state.back_edges, edge))
@@ -408,7 +451,7 @@ fn lift_block<I: Clone, E>(
     }
 
     if flow == BlockFlowKind::Jump {
-        push_block(result, cfg, block);
+        push_block(result, cfg, block, map);
         for &eid in successor_edges {
             let edge = cfg.edge(eid);
             if edge.kind() == EdgeKind::Jump {
@@ -439,7 +482,7 @@ fn lift_block<I: Clone, E>(
     }
 
     if successor_edges.is_empty() {
-        let insts = cfg.block(block).instructions().to_vec();
+        let insts = map_block(cfg, block, map);
         if !insts.is_empty() {
             result.push(AstNode::Return {
                 id: block,
@@ -449,7 +492,7 @@ fn lift_block<I: Clone, E>(
         return None;
     }
 
-    push_block(result, cfg, block);
+    push_block(result, cfg, block, map);
 
     // Advance along the single sequential successor; exception edges are
     // not sequential flow, so they never block the advance. The walk in
@@ -499,11 +542,11 @@ fn through_trampolines<I, E>(
 /// Resolve a control transfer against the enclosing loops: `continue` when
 /// it reaches a loop's continue point, `break` when it reaches a loop's
 /// follow. Inner loops win; resolving against an outer loop labels it.
-fn resolve_loop_transfer<I, E>(
+fn resolve_loop_transfer<I, E, O>(
     cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
     target: BlockId,
-) -> Option<AstNode<I>> {
+) -> Option<AstNode<O>> {
     let (target, hops) = through_trampolines(cfg, state, target);
     let position = state.loop_stack.iter().rposition(|context| {
         context.continue_target == target.0 || context.follow == Some(target.0)
@@ -547,10 +590,10 @@ fn region_member<I, E>(cfg: &Cfg<I, E>, block: BlockId) -> bool {
     })
 }
 
-fn push_goto<I, E>(
+fn push_goto<I, E, O>(
     cfg: &Cfg<I, E>,
     state: &mut LiftState<'_>,
-    result: &mut Vec<AstNode<I>>,
+    result: &mut Vec<AstNode<O>>,
     target: BlockId,
     reason: GotoReason,
 ) {
@@ -586,12 +629,13 @@ fn advance_merge<I, E>(
 }
 
 /// Lift an if/else conditional starting at `block`.
-fn lift_conditional<I: Clone, E>(
-    cfg: &Cfg<I, E>,
+fn lift_conditional<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
-) -> AstNode<I> {
+    map: &mut impl FnMut(&'a I) -> O,
+) -> AstNode<O> {
     let mut true_target = None;
     let mut false_target = None;
     for &eid in cfg.successor_edges(block) {
@@ -605,27 +649,28 @@ fn lift_conditional<I: Clone, E>(
     let merge = effective_merge(cfg, state, block, allowed_blocks);
 
     let then_body = true_target
-        .map(|target| lift_region(cfg, state, target, allowed_blocks, merge))
+        .map(|target| lift_region(cfg, state, target, allowed_blocks, merge, map))
         .unwrap_or_default();
     let else_body = false_target
-        .map(|target| lift_region(cfg, state, target, allowed_blocks, merge))
+        .map(|target| lift_region(cfg, state, target, allowed_blocks, merge, map))
         .unwrap_or_default();
 
     AstNode::IfThenElse {
         condition: block,
-        condition_instructions: cfg.block(block).instructions().to_vec(),
+        condition_instructions: map_block(cfg, block, map),
         then_body,
         else_body,
     }
 }
 
 /// Lift a switch starting at `block`.
-fn lift_switch<I: Clone, E>(
-    cfg: &Cfg<I, E>,
+fn lift_switch<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
-) -> AstNode<I> {
+    map: &mut impl FnMut(&'a I) -> O,
+) -> AstNode<O> {
     let merge = effective_merge(cfg, state, block, allowed_blocks);
 
     // Group dispatch edges by target in first-encounter order, and find the
@@ -669,7 +714,7 @@ fn lift_switch<I: Clone, E>(
     let mut cases = Vec::new();
     for target in case_targets {
         let edges = case_edges.remove(&target.0).unwrap_or_default();
-        let body = lift_switch_arm(cfg, state, target, allowed_blocks, merge);
+        let body = lift_switch_arm(cfg, state, target, allowed_blocks, merge, map);
         cases.push(SwitchCase {
             id: target,
             edges,
@@ -677,12 +722,12 @@ fn lift_switch<I: Clone, E>(
         });
     }
     let default_body = default_target
-        .map(|target| lift_switch_arm(cfg, state, target, allowed_blocks, merge))
+        .map(|target| lift_switch_arm(cfg, state, target, allowed_blocks, merge, map))
         .unwrap_or_default();
 
     AstNode::Switch {
         condition: block,
-        condition_instructions: cfg.block(block).instructions().to_vec(),
+        condition_instructions: map_block(cfg, block, map),
         cases,
         default_body,
         default_edge,
@@ -690,13 +735,14 @@ fn lift_switch<I: Clone, E>(
 }
 
 /// Lift one switch arm (a case body or the default body) up to the merge.
-fn lift_switch_arm<I: Clone, E>(
-    cfg: &Cfg<I, E>,
+fn lift_switch_arm<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
     state: &mut LiftState<'_>,
     target: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
     merge: Option<BlockId>,
-) -> Vec<AstNode<I>> {
+    map: &mut impl FnMut(&'a I) -> O,
+) -> Vec<AstNode<O>> {
     if Some(target) == merge {
         // The arm transfers straight to the switch continuation.
         return Vec::new();
@@ -709,9 +755,9 @@ fn lift_switch_arm<I: Clone, E>(
     // The arm entry was pre-visited above; classify it through the shared
     // path so branch or loop structure at the arm entry is kept, then
     // continue the ordinary walk toward the merge.
-    let next = lift_block(cfg, state, target, allowed_blocks, merge, &mut body);
+    let next = lift_block(cfg, state, target, allowed_blocks, merge, &mut body, map);
     if let Some(next) = next {
-        body.extend(lift_region(cfg, state, next, allowed_blocks, merge));
+        body.extend(lift_region(cfg, state, next, allowed_blocks, merge, map));
     }
     body
 }

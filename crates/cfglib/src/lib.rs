@@ -29,7 +29,9 @@
 //! payload without changing its semantic level — loops classified as
 //! pre-/post-tested, switch arms with their dispatch edges and default,
 //! breaks and continues derived from natural-loop membership, and a
-//! [`LiftReport`] naming exactly what degraded to gotos.
+//! [`LiftReport`] naming exactly what degraded to gotos. [`lift_borrowed`]
+//! retains that structure while borrowing payloads from the source CFG, so
+//! presentation and cross-level lifts do not duplicate instruction storage.
 //! [`ir::mlil`] layers stable semantic identities, point-specific types,
 //! many-to-many source provenance, checked construction (including
 //! exception regions and signatures), and reusable analyses over that CFG.
@@ -314,7 +316,7 @@ pub use graph::verify::{
 pub use graph::view::{DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView};
 pub use ir::ast::{
     AstNode, CatchHandler, GotoDiagnostic, GotoReason, LiftReport, LoopKind, SwitchCase, lift,
-    lift_predicated, lift_with_report,
+    lift_borrowed, lift_borrowed_with_report, lift_predicated, lift_with_report,
 };
 pub use ir::dialect::Vocabulary;
 pub use ir::hlil::{

@@ -14,7 +14,7 @@ use super::super::node::{AstNode, LoopKind};
 use super::{
     LiftState, LoopContext, advance_merge, block_is_allowed, block_label_name, flow_successors,
     has_edge_kind, is_back_edge, is_exception_edge, lift_conditional, lift_region, lift_switch,
-    push_block,
+    map_block, push_block,
 };
 use crate::block::BlockId;
 use crate::cfg::Cfg;
@@ -197,12 +197,13 @@ fn endless_follow<I, E>(
 
 /// Lift the loop anchored at `header` (already visited by the caller) and
 /// return the lifted node with the loop's sequential continuation.
-pub(super) fn lift_loop<I: Clone, E>(
-    cfg: &Cfg<I, E>,
+pub(super) fn lift_loop<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
     state: &mut LiftState<'_>,
     header: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
-) -> (AstNode<I>, Option<BlockId>) {
+    map: &mut impl FnMut(&'a I) -> O,
+) -> (AstNode<O>, Option<BlockId>) {
     let fallback;
     let natural = if let Some(natural) = state.loops.get(&header.0) {
         natural
@@ -246,7 +247,7 @@ pub(super) fn lift_loop<I: Clone, E>(
         labeled: false,
     });
 
-    let (kind, mut body) = lift_shape(cfg, state, header, &bound, shape);
+    let (kind, mut body) = lift_shape(cfg, state, header, &bound, shape, map);
 
     // A trailing plain `continue` at the structural end of the body is the
     // loop's own back edge — implicit in the representation.
@@ -272,13 +273,14 @@ pub(super) fn lift_loop<I: Clone, E>(
 }
 
 /// Lift the loop's condition witness and body per its recognized shape.
-fn lift_shape<I: Clone, E>(
-    cfg: &Cfg<I, E>,
+fn lift_shape<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
     state: &mut LiftState<'_>,
     header: BlockId,
     bound: &BTreeSet<BlockId>,
     shape: LoopShape,
-) -> (LoopKind<I>, Vec<AstNode<I>>) {
+    map: &mut impl FnMut(&'a I) -> O,
+) -> (LoopKind<O>, Vec<AstNode<O>>) {
     match shape {
         LoopShape::While {
             chain,
@@ -288,7 +290,8 @@ fn lift_shape<I: Clone, E>(
         } => {
             let condition = chain
                 .iter()
-                .flat_map(|&block| cfg.block(block).instructions().iter().cloned())
+                .flat_map(|&block| cfg.block(block).instructions())
+                .map(&mut *map)
                 .collect();
             let condition_block = *chain.last().expect("a chain begins at its header");
             let body = if body_start == header {
@@ -296,7 +299,7 @@ fn lift_shape<I: Clone, E>(
                 // loop is its own condition.
                 Vec::new()
             } else {
-                lift_region(cfg, state, body_start, Some(bound), None)
+                lift_region(cfg, state, body_start, Some(bound), None, map)
             };
             (
                 LoopKind::While {
@@ -312,7 +315,7 @@ fn lift_shape<I: Clone, E>(
         } => (
             LoopKind::DoWhile {
                 latch: header,
-                condition: cfg.block(header).instructions().to_vec(),
+                condition: map_block(cfg, header, map),
                 continue_on_true,
             },
             Vec::new(),
@@ -326,11 +329,11 @@ fn lift_shape<I: Clone, E>(
             // it so the body walk ends there silently, and transfers to it
             // resolve as `continue`.
             state.visit(latch);
-            let body = lift_header_body(cfg, state, header, bound, Some(latch));
+            let body = lift_header_body(cfg, state, header, bound, Some(latch), map);
             (
                 LoopKind::DoWhile {
                     latch,
-                    condition: cfg.block(latch).instructions().to_vec(),
+                    condition: map_block(cfg, latch, map),
                     continue_on_true,
                 },
                 body,
@@ -338,7 +341,7 @@ fn lift_shape<I: Clone, E>(
         }
         LoopShape::Endless => (
             LoopKind::Endless,
-            lift_header_body(cfg, state, header, bound, None),
+            lift_header_body(cfg, state, header, bound, None, map),
         ),
     }
 }
@@ -346,13 +349,14 @@ fn lift_shape<I: Clone, E>(
 /// Lift a loop body whose header's own instructions belong inside it (the
 /// post-tested and endless shapes): emit the header's structure manually —
 /// it is already visited — then continue the ordinary walk.
-fn lift_header_body<I: Clone, E>(
-    cfg: &Cfg<I, E>,
+fn lift_header_body<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
     state: &mut LiftState<'_>,
     header: BlockId,
     bound: &BTreeSet<BlockId>,
     stop: Option<BlockId>,
-) -> Vec<AstNode<I>> {
+    map: &mut impl FnMut(&'a I) -> O,
+) -> Vec<AstNode<O>> {
     let mut body = Vec::new();
     let successor_edges = cfg.successor_edges(header);
     let is_conditional = has_edge_kind(cfg, successor_edges, EdgeKind::ConditionalTrue)
@@ -360,23 +364,30 @@ fn lift_header_body<I: Clone, E>(
     let has_switch = has_edge_kind(cfg, successor_edges, EdgeKind::SwitchCase);
 
     if is_conditional {
-        let node = lift_conditional(cfg, state, header, Some(bound));
+        let node = lift_conditional(cfg, state, header, Some(bound), map);
         body.push(node);
         if let Some(merge) = advance_merge(cfg, state, header, Some(bound)) {
-            body.extend(lift_region(cfg, state, merge, Some(bound), stop));
+            body.extend(lift_region(cfg, state, merge, Some(bound), stop, map));
         }
     } else if has_switch {
-        let node = lift_switch(cfg, state, header, Some(bound));
+        let node = lift_switch(cfg, state, header, Some(bound), map);
         body.push(node);
         if let Some(merge) = advance_merge(cfg, state, header, Some(bound)) {
-            body.extend(lift_region(cfg, state, merge, Some(bound), stop));
+            body.extend(lift_region(cfg, state, merge, Some(bound), stop, map));
         }
     } else {
-        push_block(&mut body, cfg, header);
+        push_block(&mut body, cfg, header, map);
         for &eid in successor_edges {
             let edge = cfg.edge(eid);
             if !is_back_edge(cfg, state.back_edges, eid) && !is_exception_edge(edge.kind()) {
-                body.extend(lift_region(cfg, state, edge.target(), Some(bound), stop));
+                body.extend(lift_region(
+                    cfg,
+                    state,
+                    edge.target(),
+                    Some(bound),
+                    stop,
+                    map,
+                ));
             }
         }
     }

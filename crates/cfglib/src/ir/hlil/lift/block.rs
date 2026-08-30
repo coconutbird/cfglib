@@ -16,6 +16,7 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::format;
 use alloc::vec;
 use alloc::vec::Vec;
+use core::borrow::Borrow;
 
 use crate::block::BlockId;
 use crate::ir::mlil;
@@ -116,13 +117,14 @@ fn is_value_shape<D: LiftDialect>(shape: &Shape<D>) -> bool {
 /// Instructions retained by the presentation lift after local dead-value
 /// pruning. A backward liveness walk removes pure fallthrough definitions
 /// whose results cannot reach a retained instruction or another block.
-fn retained_positions<D: LiftDialect>(
-    instructions: &[mlil::Instruction<D>],
+fn retained_positions<D: LiftDialect, P: Borrow<mlil::Instruction<D>>>(
+    instructions: &[P],
     live_out: &BTreeSet<mlil::VariableId>,
 ) -> Vec<bool> {
     let mut live = live_out.clone();
     let mut retained = vec![true; instructions.len()];
     for (position, instruction) in instructions.iter().enumerate().rev() {
+        let instruction = instruction.borrow();
         let dead_value = !instruction.defs().is_empty()
             && instruction
                 .defs()
@@ -171,55 +173,69 @@ impl<D: LiftDialect> CandidateFacts<D> {
 /// Exact local single-use positions: one use between the definition and
 /// the variable's next redefinition, and dead beyond the list unless
 /// redefined inside it.
-fn single_use_positions<D: LiftDialect>(
-    instructions: &[mlil::Instruction<D>],
+fn single_use_positions<D: LiftDialect, P: Borrow<mlil::Instruction<D>>>(
+    instructions: &[P],
     shapes: &[Shape<D>],
     live_out: &BTreeSet<mlil::VariableId>,
     retained: &[bool],
 ) -> Vec<Option<usize>> {
+    struct PendingUse {
+        definition: usize,
+        occurrences: usize,
+        use_position: Option<usize>,
+    }
+
     let mut viable: Vec<Option<usize>> = vec![None; instructions.len()];
+    let mut active: BTreeMap<mlil::VariableId, PendingUse> = BTreeMap::new();
     for (position, instruction) in instructions.iter().enumerate() {
-        if !retained[position]
-            || !is_value_shape(&shapes[position])
-            || instruction.defs().len() != 1
-            || D::previous_value_operand(instruction.operation()).is_some()
-        {
-            // A read-modify-write definition merges with prior state:
-            // it is not a pure value and never inlines forward.
+        let instruction = instruction.borrow();
+        if !retained[position] {
             continue;
         }
-        let variable = instruction.defs()[0];
-        let mut occurrences = 0usize;
-        let mut use_position = None;
-        let mut redefined = false;
-        for (later, candidate_use) in instructions.iter().enumerate().skip(position + 1) {
-            if !retained[later] {
-                continue;
-            }
-            let here = candidate_use
-                .uses()
-                .iter()
-                .filter(|&&used| used == variable)
-                .count();
-            if here > 0 {
-                occurrences += here;
-                use_position.get_or_insert(later);
-            }
-            if candidate_use.defs().contains(&variable) {
-                redefined = true;
-                break;
+
+        // Reads precede writes. This preserves the old segment semantics for
+        // read-modify-write instructions while visiting each operand once.
+        for &variable in instruction.uses() {
+            if let Some(pending) = active.get_mut(&variable) {
+                pending.occurrences = pending.occurrences.saturating_add(1);
+                pending.use_position.get_or_insert(position);
             }
         }
-        if occurrences == 1 && (redefined || !live_out.contains(&variable)) {
-            viable[position] = use_position;
+        for &variable in instruction.defs() {
+            if let Some(pending) = active.remove(&variable)
+                && pending.occurrences == 1
+            {
+                viable[pending.definition] = pending.use_position;
+            }
+        }
+
+        if is_value_shape(&shapes[position])
+            && instruction.defs().len() == 1
+            && D::previous_value_operand(instruction.operation()).is_none()
+        {
+            // A read-modify-write definition merges with prior state: it is
+            // not a pure value and never inlines forward.
+            active.insert(
+                instruction.defs()[0],
+                PendingUse {
+                    definition: position,
+                    occurrences: 0,
+                    use_position: None,
+                },
+            );
+        }
+    }
+    for (variable, pending) in active {
+        if pending.occurrences == 1 && !live_out.contains(&variable) {
+            viable[pending.definition] = pending.use_position;
         }
     }
     viable
 }
 
 /// Decide, per definition, the consumer it inlines into (if any).
-fn plan_inlining<D: LiftDialect>(
-    instructions: &[mlil::Instruction<D>],
+fn plan_inlining<D: LiftDialect, P: Borrow<mlil::Instruction<D>>>(
+    instructions: &[P],
     shapes: &[Shape<D>],
     live_out: &BTreeSet<mlil::VariableId>,
     retained: &[bool],
@@ -232,6 +248,7 @@ fn plan_inlining<D: LiftDialect>(
     let mut facts: Vec<Option<CandidateFacts<D>>> = (0..length).map(|_| None).collect();
     let mut active: BTreeMap<mlil::VariableId, usize> = BTreeMap::new();
     for (position, instruction) in instructions.iter().enumerate() {
+        let instruction = instruction.borrow();
         if !retained[position] {
             continue;
         }
@@ -295,7 +312,7 @@ fn plan_inlining<D: LiftDialect>(
                 let inlined = consumed
                     .iter()
                     .copied()
-                    .find(|&candidate| instructions[candidate].defs()[0] == variable);
+                    .find(|&candidate| instructions[candidate].borrow().defs()[0] == variable);
                 if let Some(candidate) = inlined {
                     if let Some(f) = facts[candidate].as_ref() {
                         reads.extend(f.reads.iter().copied());
@@ -334,13 +351,19 @@ struct ListState {
 impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
     /// Translates one block-shaped instruction list into statements, with
     /// its terminator value when the caller expects one.
-    pub(super) fn translate_list(
+    pub(super) fn translate_list<P>(
         &mut self,
         block: BlockId,
-        instructions: &[mlil::Instruction<D>],
+        instructions: &[P],
         expect: Expect,
-    ) -> Result<(Vec<StatementId>, Option<ListEnd>)> {
-        let shapes: Vec<Shape<D>> = instructions.iter().map(classify).collect();
+    ) -> Result<(Vec<StatementId>, Option<ListEnd>)>
+    where
+        P: Borrow<mlil::Instruction<D>>,
+    {
+        let shapes: Vec<Shape<D>> = instructions
+            .iter()
+            .map(|instruction| classify(instruction.borrow()))
+            .collect();
         let retained = retained_positions(instructions, self.liveness.live_out(block));
         let inline_at = plan_inlining(
             instructions,
@@ -354,7 +377,7 @@ impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
                 by_consumer
                     .entry(*consumer)
                     .or_default()
-                    .insert(instructions[candidate].defs()[0], candidate);
+                    .insert(instructions[candidate].borrow().defs()[0], candidate);
             }
         }
         let mut state = ListState {
@@ -367,6 +390,7 @@ impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
         let mut end = None;
         let mut finished = false;
         for (position, instruction) in instructions.iter().enumerate() {
+            let instruction = instruction.borrow();
             if finished || end.is_some() {
                 return Err(Error::UnsupportedLift(format!(
                     "instruction {} follows its block's terminator",
@@ -617,7 +641,7 @@ impl<D: LiftDialect + VerifyDialect> Lifter<'_, D> {
             }
             ExpressionKind::Constant(_) => {}
             ExpressionKind::Operation { operands, .. } => {
-                for operand in operands.clone() {
+                for &operand in operands {
                     self.expression_reads(operand, reads);
                 }
             }

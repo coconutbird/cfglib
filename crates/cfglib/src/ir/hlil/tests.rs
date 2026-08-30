@@ -11,7 +11,7 @@ use crate::{EdgeKind, FlowEffect};
 use super::{
     Dialect, ExpressionKind, FunctionBuilder, LiftDialect, LiftMetadata, Lifted, LowerDialect,
     Signature, StatementKind, VerificationIssue, VerifyDialect, lift_function,
-    lift_function_with_metadata,
+    lift_function_with_metadata, lift_function_with_structure,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -656,6 +656,24 @@ fn lift_recovers_a_while_loop_with_inlined_expressions() {
         "{:?}",
         lifted.instructions
     );
+}
+
+#[test]
+fn lift_reuses_owned_or_borrowed_structure_with_identical_output() {
+    let source = counting_loop();
+    let (owned, owned_report) = source.structured_control_flow_with_report();
+    let (borrowed, borrowed_report) = crate::lift_borrowed_with_report(source.cfg());
+
+    let from_owned =
+        lift_function_with_structure(&source, &owned, &owned_report, LiftMetadata::Preserve)
+            .unwrap();
+    let from_borrowed =
+        lift_function_with_structure(&source, &borrowed, &borrowed_report, LiftMetadata::Preserve)
+            .unwrap();
+
+    assert_eq!(from_borrowed.report, from_owned.report);
+    assert_eq!(from_borrowed.function, from_owned.function);
+    assert_eq!(from_borrowed.instructions, from_owned.instructions);
 }
 
 #[test]

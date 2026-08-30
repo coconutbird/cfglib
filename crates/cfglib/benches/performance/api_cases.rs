@@ -66,6 +66,8 @@ pub(super) const PUBLIC_API_FUNCTIONS: &[&str] = &[
     "is_reducible",
     "kosaraju_scc",
     "lift",
+    "lift_borrowed",
+    "lift_borrowed_with_report",
     "lift_predicated",
     "lift_with_report",
     "linearize",

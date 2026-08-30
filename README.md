@@ -371,7 +371,9 @@ generic instruction payload.
 | Feature | Description |
 |---|---|
 | `lift()` → `AstNode<I>` | Recover structured control flow from a CFG |
+| `lift_borrowed()` → `AstNode<&I>` | Zero-copy recovery for consumers that keep the source CFG alive; owns only the control tree and reference vectors |
 | `lift_with_report()` | The same tree plus a `LiftReport`: every emitted goto with its reason, swept blocks, unstructured regions, unresolved labels — per-construct degradation instead of guessing from the tree |
+| `lift_borrowed_with_report()` | The zero-copy tree plus the same complete degradation report |
 | `lift_predicated()` | Additionally regionize `Predicated` instruction runs into `Guarded` nodes (ARM IT, GPU wavefront, CMOV) |
 | If/then/else | Diamond and triangle patterns; arms stop exactly at the post-dominator merge |
 | Loops | `LoopKind` classifies pre-tested (`While` with condition witness and polarity), post-tested (`DoWhile` with latch), and endless loops from natural-loop membership |

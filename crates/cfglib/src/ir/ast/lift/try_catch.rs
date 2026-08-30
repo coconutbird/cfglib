@@ -123,12 +123,13 @@ fn region_continuation<I, E>(cfg: &Cfg<I, E>, region: &Region) -> Option<BlockId
 /// remain ordinary control flow. Bounds intersect with the enclosing
 /// `allowed_blocks`, so a nested region never escapes the extent it was
 /// entered under.
-pub(super) fn lift_try_catch<I: Clone, E>(
-    cfg: &Cfg<I, E>,
+pub(super) fn lift_try_catch<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
     state: &mut LiftState<'_>,
     block: BlockId,
     allowed_blocks: Option<&BTreeSet<BlockId>>,
-) -> Option<(AstNode<I>, Option<BlockId>)> {
+    map: &mut impl FnMut(&'a I) -> O,
+) -> Option<(AstNode<O>, Option<BlockId>)> {
     let candidates = state.anchors.get(&block.0)?;
     let (region, handler_bodies) = candidates
         .iter()
@@ -162,7 +163,9 @@ pub(super) fn lift_try_catch<I: Clone, E>(
     // a branch, dispatch, or loop header keeps its structure.
     let try_bound = intersect_bounds(allowed_blocks, &region.protected_blocks);
     let mut try_body = Vec::new();
-    if let Some((inner, inner_continuation)) = lift_try_catch(cfg, state, block, Some(&try_bound)) {
+    if let Some((inner, inner_continuation)) =
+        lift_try_catch(cfg, state, block, Some(&try_bound), map)
+    {
         try_body.push(inner);
         if let Some(next) = inner_continuation.filter(|&next| !state.is_visited(next)) {
             try_body.extend(lift_region(
@@ -171,6 +174,7 @@ pub(super) fn lift_try_catch<I: Clone, E>(
                 next,
                 Some(&try_bound),
                 continuation,
+                map,
             ));
         }
     } else {
@@ -181,6 +185,7 @@ pub(super) fn lift_try_catch<I: Clone, E>(
             Some(&try_bound),
             continuation,
             &mut try_body,
+            map,
         );
         if let Some(next) = next {
             if !state.is_visited(next) {
@@ -190,6 +195,7 @@ pub(super) fn lift_try_catch<I: Clone, E>(
                     next,
                     Some(&try_bound),
                     continuation,
+                    map,
                 ));
             }
         }
@@ -205,40 +211,20 @@ pub(super) fn lift_try_catch<I: Clone, E>(
                 succ,
                 Some(&try_bound),
                 continuation,
+                map,
             ));
         }
     }
 
-    let mut handlers = Vec::new();
-    let mut finally_body = Vec::new();
-
-    for ((index, handler), handler_blocks) in region.handlers.iter().enumerate().zip(handler_bodies)
-    {
-        // The synthetic landing entry belongs to its handler even when the
-        // enclosing bound does not name it; refusing it would degenerate
-        // to an immediate boundary escape.
-        let mut handler_bound = intersect_bounds(allowed_blocks, handler_blocks);
-        handler_bound.insert(handler.entry);
-        let body = lift_region(
-            cfg,
-            state,
-            handler.entry,
-            Some(&handler_bound),
-            continuation,
-        );
-        match handler.kind {
-            // Multiple `Finally` handlers concatenate in declaration order.
-            HandlerKind::Finally => finally_body.extend(body),
-            _ => {
-                handlers.push(CatchHandler {
-                    handler: HandlerRef::new(region.id, index),
-                    entry: handler.entry,
-                    kind: handler.kind,
-                    body,
-                });
-            }
-        }
-    }
+    let (handlers, finally_body) = lift_handlers(
+        cfg,
+        state,
+        region,
+        handler_bodies,
+        allowed_blocks,
+        continuation,
+        map,
+    );
 
     Some((
         AstNode::TryCatch {
@@ -248,4 +234,44 @@ pub(super) fn lift_try_catch<I: Clone, E>(
         },
         continuation,
     ))
+}
+
+fn lift_handlers<'a, I, E, O>(
+    cfg: &'a Cfg<I, E>,
+    state: &mut LiftState<'_>,
+    region: &Region,
+    handler_bodies: Vec<&BTreeSet<BlockId>>,
+    allowed_blocks: Option<&BTreeSet<BlockId>>,
+    continuation: Option<BlockId>,
+    map: &mut impl FnMut(&'a I) -> O,
+) -> (Vec<CatchHandler<O>>, Vec<AstNode<O>>) {
+    let mut handlers = Vec::new();
+    let mut finally_body = Vec::new();
+    for ((index, handler), handler_blocks) in region.handlers.iter().enumerate().zip(handler_bodies)
+    {
+        // A synthetic landing entry belongs to its handler even when the
+        // enclosing bound does not name it.
+        let mut handler_bound = intersect_bounds(allowed_blocks, handler_blocks);
+        handler_bound.insert(handler.entry);
+        let body = lift_region(
+            cfg,
+            state,
+            handler.entry,
+            Some(&handler_bound),
+            continuation,
+            map,
+        );
+        if handler.kind == HandlerKind::Finally {
+            // Multiple finally handlers concatenate in declaration order.
+            finally_body.extend(body);
+        } else {
+            handlers.push(CatchHandler {
+                handler: HandlerRef::new(region.id, index),
+                entry: handler.entry,
+                kind: handler.kind,
+                body,
+            });
+        }
+    }
+    (handlers, finally_body)
 }

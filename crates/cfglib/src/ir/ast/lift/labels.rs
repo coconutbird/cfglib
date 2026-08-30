@@ -28,22 +28,22 @@ fn anchor<I>(node: &AstNode<I>) -> Option<u32> {
 /// Wrap the emission of every block in `pending` with its label, removing
 /// each target as it is anchored. Targets that remain afterwards have no
 /// structured anchor — dangling gotos the caller reports.
-pub(super) fn apply_labels<I, E>(
+pub(super) fn apply_labels<I, E, O>(
     cfg: &Cfg<I, E>,
-    nodes: Vec<AstNode<I>>,
+    nodes: Vec<AstNode<O>>,
     pending: &mut BTreeSet<u32>,
-) -> Vec<AstNode<I>> {
+) -> Vec<AstNode<O>> {
     nodes
         .into_iter()
         .map(|node| apply_to_node(cfg, node, pending))
         .collect()
 }
 
-fn apply_to_node<I, E>(
+fn apply_to_node<I, E, O>(
     cfg: &Cfg<I, E>,
-    node: AstNode<I>,
+    node: AstNode<O>,
     pending: &mut BTreeSet<u32>,
-) -> AstNode<I> {
+) -> AstNode<O> {
     let wrap = anchor(&node).filter(|block| pending.remove(block));
     let node = apply_to_children(cfg, node, pending);
     match wrap {
@@ -55,11 +55,11 @@ fn apply_to_node<I, E>(
     }
 }
 
-fn apply_to_children<I, E>(
+fn apply_to_children<I, E, O>(
     cfg: &Cfg<I, E>,
-    node: AstNode<I>,
+    node: AstNode<O>,
     pending: &mut BTreeSet<u32>,
-) -> AstNode<I> {
+) -> AstNode<O> {
     match node {
         AstNode::Sequence { body } => AstNode::Sequence {
             body: apply_labels(cfg, body, pending),

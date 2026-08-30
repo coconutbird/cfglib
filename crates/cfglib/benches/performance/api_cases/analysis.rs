@@ -2,8 +2,9 @@ use cfglib::{
     AstNode, BlockId, Cfg, EdgeKind, FlowEffect, Purity, block_nesting_depths, block_purities,
     block_purity, cfg_block_nesting_depths, cfg_purity, detect_cfg_patterns,
     detect_explicit_tail_calls, detect_patterns, detect_switch_tables, detect_tail_calls, lift,
-    lift_predicated, lift_with_report, recover_block_expressions, recover_expressions,
-    recover_switch_tables, set_uniform_edge_weights, verify,
+    lift_borrowed, lift_borrowed_with_report, lift_predicated, lift_with_report,
+    recover_block_expressions, recover_expressions, recover_switch_tables,
+    set_uniform_edge_weights, verify,
 };
 
 use super::BenchmarkSuite;
@@ -129,6 +130,22 @@ fn register_expressions_and_ast(suite: &mut BenchmarkSuite<'_>) {
         covers[lift],
         || lift(&cfg),
         |ast| assert!(matches!(ast, AstNode::Sequence { .. }))
+    );
+    benchmark_case!(
+        suite,
+        "api_lift_borrowed",
+        covers[lift_borrowed],
+        || lift_borrowed(&cfg),
+        |ast| assert!(matches!(ast, AstNode::Sequence { .. }))
+    );
+    benchmark_case!(
+        suite,
+        "api_lift_borrowed_with_report",
+        covers[lift_borrowed_with_report],
+        || lift_borrowed_with_report(&cfg),
+        |lifted: &(AstNode<&ApiInst>, cfglib::LiftReport)| {
+            assert!(matches!(lifted.0, AstNode::Sequence { .. }));
+        }
     );
     benchmark_case!(
         suite,

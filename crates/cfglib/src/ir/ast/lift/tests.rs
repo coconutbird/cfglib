@@ -866,6 +866,25 @@ fn map_instructions_preserves_structure() {
     assert_eq!(loops[0].1, vec!["condition"], "{mapped:?}");
 }
 
+#[test]
+fn borrowed_lift_accepts_non_clone_payloads_and_preserves_identity() {
+    #[derive(Debug)]
+    struct NotClone(u32);
+
+    let mut cfg = Cfg::<NotClone>::new();
+    cfg.block_mut(cfg.entry()).push(NotClone(7));
+    let source = &cfg.block(cfg.entry()).instructions()[0];
+
+    let (ast, report) = lift_borrowed_with_report(&cfg);
+    let AstNode::Return { instructions, .. } = ast else {
+        panic!("a terminal entry block lifts as a return");
+    };
+    assert_eq!(instructions.len(), 1);
+    assert!(core::ptr::eq(instructions[0], source));
+    assert_eq!(instructions[0].0, 7);
+    assert_eq!(report, LiftReport::default());
+}
+
 /// Exception-region lifting tests, split out to respect the source-size
 /// policy.
 mod regions;

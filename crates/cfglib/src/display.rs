@@ -18,3 +18,9 @@ pub trait DisplayInstr {
     /// Short label for this instruction (mnemonic, statement text, node kind).
     fn mnemonic(&self) -> Cow<'_, str>;
 }
+
+impl<T: DisplayInstr + ?Sized> DisplayInstr for &T {
+    fn mnemonic(&self) -> Cow<'_, str> {
+        T::mnemonic(self)
+    }
+}
