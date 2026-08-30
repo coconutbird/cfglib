@@ -7,7 +7,7 @@ use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
-use crate::region::{HandlerKind, Region, RegionId};
+use crate::region::{Cleanup, Continuation, HandlerKind, HandlerRef, Region, RegionId};
 use crate::{BlockId, Cfg, EdgeId, ProgramPoint};
 
 use super::{
@@ -108,6 +108,69 @@ impl<D: Dialect> FunctionBuilder<D> {
             }
         }
         Ok(self.cfg.add_region(region))
+    }
+
+    /// Records the block at which one cleanup handler selects a continuation.
+    ///
+    /// Register the owning region first with [`Self::add_region`]. A cleanup
+    /// that never resumes leaves this unset.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the handler or resume block does not belong to
+    /// this function.
+    pub fn set_cleanup_resume(&mut self, handler: HandlerRef, resume_from: BlockId) -> Result<()> {
+        self.require_handler(handler)?;
+        self.require_block(resume_from)?;
+        self.cfg.set_cleanup_resume(handler, resume_from);
+        Ok(())
+    }
+
+    /// Records one reason-tagged route out of a cleanup handler.
+    ///
+    /// Register the owning region first with [`Self::add_region`]. Repeating
+    /// the same route is a no-op.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the handler or continuation block does not belong
+    /// to this function.
+    pub fn add_continuation(
+        &mut self,
+        handler: HandlerRef,
+        continuation: Continuation,
+    ) -> Result<()> {
+        self.require_handler(handler)?;
+        self.require_block(continuation.resume)?;
+        self.cfg.add_continuation(handler, continuation);
+        Ok(())
+    }
+
+    fn require_handler(&self, handler: HandlerRef) -> Result<()> {
+        if self
+            .cfg
+            .regions()
+            .get(handler.region().index())
+            .is_some_and(|region| handler.index() < region.handlers.len())
+        {
+            Ok(())
+        } else {
+            Err(Error::InvalidConstruction(format!(
+                "cleanup handler {handler} does not exist"
+            )))
+        }
+    }
+
+    pub(super) fn copy_cleanups(&mut self, cleanups: &[Cleanup]) -> Result<()> {
+        for cleanup in cleanups {
+            if let Some(resume_from) = cleanup.resume_from {
+                self.set_cleanup_resume(cleanup.handler, resume_from)?;
+            }
+            for &continuation in &cleanup.continuations {
+                self.add_continuation(cleanup.handler, continuation)?;
+            }
+        }
+        Ok(())
     }
 
     fn require_region_block(&self, block: BlockId, role: &str) -> Result<()> {

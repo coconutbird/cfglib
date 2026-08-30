@@ -29,6 +29,7 @@ pub mod def_use;
 pub mod edge_fixpoint;
 pub mod fixpoint;
 pub mod liveness;
+pub mod memory;
 pub mod node_fixpoint;
 pub mod phi_web;
 pub mod reaching;

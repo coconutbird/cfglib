@@ -5,8 +5,7 @@ use alloc::vec::Vec;
 
 use crate::ir::mlil::{MemoryDialect, TypedVariable};
 use crate::{
-    MemoryAccessKind, MemoryAtomicity, MemoryEvent, MemoryEventAccess, MemoryEventInfo,
-    MemoryOperations, MemoryTrace,
+    MemoryAccess, MemoryAccessKind, MemoryEvent, MemoryEventInfo, MemoryOperations, MemoryTrace,
 };
 
 use super::{Edge, Operation, ToyDialect, Type};
@@ -20,17 +19,13 @@ impl MemoryDialect for ToyDialect {
     ) -> impl Iterator<Item = MemoryEvent<Self::MemoryLocation, super::VariableId, Self::MemoryFence>>
     {
         let access = match instruction.operation() {
-            Operation::Load(location) => Some(MemoryEventAccess::new(
+            Operation::Load(location) => Some(MemoryAccess::read(
                 *location,
-                Vec::new(),
-                MemoryAccessKind::Read,
-                MemoryAtomicity::NonAtomic,
+                instruction.defs().iter().copied(),
             )),
-            Operation::Store(location) => Some(MemoryEventAccess::new(
+            Operation::Store(location) => Some(MemoryAccess::write(
                 *location,
-                Vec::new(),
-                MemoryAccessKind::Write,
-                MemoryAtomicity::NonAtomic,
+                instruction.uses().iter().copied(),
             )),
             Operation::Constant(_)
             | Operation::Copy
@@ -96,7 +91,7 @@ fn mlil_dialect_automatically_exposes_memory_events() {
     let kinds: Vec<_> = trace
         .entries_in(body)
         .filter_map(|entry| match entry.event() {
-            MemoryEvent::Access(access) => Some(access.kind),
+            MemoryEvent::Access(access) => Some(access.kind()),
             MemoryEvent::Fence(()) => None,
         })
         .collect();

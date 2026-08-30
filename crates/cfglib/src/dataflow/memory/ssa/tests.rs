@@ -4,9 +4,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::{
-    Cfg, DominatorTree, EdgeKind, ExactMemoryAlias, InstrInfo, MemoryAccessKind, MemoryAtomicity,
-    MemoryDefinition, MemoryEvent, MemoryEventAccess, MemoryEventInfo, MemoryEventSite, MemorySSA,
-    MemorySSAEvent, MemoryUse, ProgramPoint, SsaForm,
+    Cfg, DominatorTree, EdgeKind, ExactMemoryAlias, InstrInfo, MemoryAccess, MemoryAccessKind,
+    MemoryDefinition, MemoryEvent, MemoryEventInfo, MemoryEventSite, MemorySSA, MemorySSAEvent,
+    MemoryUse, ProgramPoint, SsaForm,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -78,12 +78,14 @@ fn memory_access(
     address_uses: Vec<u8>,
     kind: MemoryAccessKind,
 ) -> MemoryEvent<Location, u8, Fence> {
-    MemoryEvent::Access(MemoryEventAccess::new(
-        location,
-        address_uses,
-        kind,
-        MemoryAtomicity::NonAtomic,
-    ))
+    let access = match kind {
+        MemoryAccessKind::Read => MemoryAccess::read(location, Vec::new()),
+        MemoryAccessKind::Write => MemoryAccess::write(location, Vec::new()),
+        MemoryAccessKind::ReadModifyWrite => {
+            MemoryAccess::read_modify_write(location, Vec::new(), Vec::new())
+        }
+    };
+    MemoryEvent::Access(access.with_address_uses(address_uses))
 }
 
 fn site(block: crate::BlockId, inst_idx: usize) -> MemoryEventSite {

@@ -126,6 +126,9 @@
 //! [`MemorySSA`] merges its reported locations through a caller-owned
 //! [`MemoryAlias`] relation and provides location-class phis, reaching writes,
 //! clobbers, users, transitive readers, and SSA-resolved address inputs.
+//! [`MemoryValueFlow`] then combines matching ordinary and memory SSA forms in
+//! one dependency graph whose typed edges distinguish addresses, stored and
+//! loaded values, state reads/writes, and ordinary/memory phis.
 //!
 //! Additionally, [`Problem`] is the trait for pluggable instruction-level
 //! dataflow analyses (run by [`solve_problem`]), [`NodeProblem`] its
@@ -226,6 +229,12 @@ pub use dataflow::fixpoint::{
     try_solve_problem_with_config,
 };
 pub use dataflow::liveness::{Liveness, LivenessProblem};
+pub use dataflow::memory::{
+    ConservativeMemoryAlias, ExactMemoryAlias, MemoryAlias, MemoryClassId, MemoryDefinition,
+    MemoryEventSite, MemoryLocationClass, MemoryPhi, MemorySSA, MemorySSAEvent, MemorySsaValue,
+    MemoryUse, MemoryValueEdge, MemoryValueFlow, MemoryValueFlowError, MemoryValueNode,
+    MemoryValueRole,
+};
 pub use dataflow::node_fixpoint::{
     NodeFacts, NodeProblem, TryNodeProblem, solve_node_problem, solve_node_problem_from,
     solve_node_problem_from_with_config, solve_node_problem_with_config, try_solve_node_problem,
@@ -366,10 +375,8 @@ pub use ir::rtl::{
 };
 pub use ir::signature::Signature;
 pub use memory::{
-    ConservativeMemoryAlias, ExactMemoryAlias, MemoryAccessKind, MemoryAlias, MemoryAtomicity,
-    MemoryClassId, MemoryDefinition, MemoryEvent, MemoryEventAccess, MemoryEventInfo,
-    MemoryEventSite, MemoryLocationClass, MemoryOperations, MemoryPhi, MemorySSA, MemorySSAEvent,
-    MemorySsaValue, MemoryTrace, MemoryTraceEntry, MemoryUse,
+    MemoryAccess, MemoryAccessKind, MemoryAtomicity, MemoryEvent, MemoryEventInfo,
+    MemoryOperations, MemoryTrace, MemoryTraceEntry,
 };
 pub use region::{
     Cleanup, CompletionReason, Continuation, Handler, HandlerBody, HandlerFilters, HandlerKind,

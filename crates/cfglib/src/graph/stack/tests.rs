@@ -1,6 +1,5 @@
 extern crate alloc;
 
-use alloc::string::String;
 use alloc::vec;
 
 use crate::{DirectedGraphView, EdgeGraphView, SearchOrder};

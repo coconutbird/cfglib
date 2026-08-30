@@ -9,7 +9,7 @@ use alloc::vec::Vec;
 use core::cmp::Ordering;
 
 use crate::dataflow::VariableId;
-use crate::memory::MemoryAlias;
+use crate::dataflow::memory::MemoryAlias;
 
 /// Caller-populated may-alias equivalence classes.
 ///

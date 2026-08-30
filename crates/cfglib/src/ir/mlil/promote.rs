@@ -211,6 +211,7 @@ where
     for region in source.cfg.regions() {
         builder.add_region(region.clone())?;
     }
+    builder.copy_cleanups(source.cfg.cleanups())?;
     builder.set_signature(source.signature.clone())?;
     for entry in source.provenance.entries() {
         builder.map_entity(entry.source.clone(), entry.entity)?;

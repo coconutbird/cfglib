@@ -9,8 +9,8 @@ use core::ops::Range;
 
 use crate::{BlockId, Cfg, DominatorTree, InstrInfo, ProgramPoint, SsaForm, SsaValue, VariableId};
 
-use super::{
-    MemoryAccessKind, MemoryAtomicity, MemoryEvent, MemoryEventAccess, MemoryEventInfo,
+use crate::memory::{
+    MemoryAccess, MemoryAccessKind, MemoryAtomicity, MemoryEvent, MemoryEventInfo,
     MemoryOperations, MemoryTrace, MemoryTraceEntry,
 };
 
@@ -215,7 +215,7 @@ impl<L, V, F> MemorySSAEvent<L, V, F> {
 
     /// Location access, or `None` for a fence.
     #[must_use]
-    pub const fn access(&self) -> Option<&MemoryEventAccess<L, V>> {
+    pub const fn access(&self) -> Option<&MemoryAccess<L, V>> {
         match &self.event {
             MemoryEvent::Access(access) => Some(access),
             MemoryEvent::Fence(_) => None,
@@ -253,7 +253,7 @@ impl<L, V, F> MemorySSAEvent<L, V, F> {
     #[must_use]
     pub const fn location(&self) -> Option<&L> {
         match &self.event {
-            MemoryEvent::Access(access) => Some(&access.location),
+            MemoryEvent::Access(access) => Some(access.location()),
             MemoryEvent::Fence(_) => None,
         }
     }
@@ -261,7 +261,7 @@ impl<L, V, F> MemorySSAEvent<L, V, F> {
     /// Native variables used to select the binding or sub-location.
     #[must_use]
     pub fn address_uses(&self) -> Option<&[V]> {
-        self.access().map(MemoryEventAccess::address_uses)
+        self.access().map(MemoryAccess::address_uses)
     }
 
     /// Read, modify, and write properties contributed by this event.
@@ -274,7 +274,7 @@ impl<L, V, F> MemorySSAEvent<L, V, F> {
     #[must_use]
     pub const fn kind(&self) -> Option<MemoryAccessKind> {
         match &self.event {
-            MemoryEvent::Access(access) => Some(access.kind),
+            MemoryEvent::Access(access) => Some(access.kind()),
             MemoryEvent::Fence(_) => None,
         }
     }
@@ -283,7 +283,7 @@ impl<L, V, F> MemorySSAEvent<L, V, F> {
     #[must_use]
     pub const fn atomicity(&self) -> Option<MemoryAtomicity> {
         match &self.event {
-            MemoryEvent::Access(access) => Some(access.atomicity),
+            MemoryEvent::Access(access) => Some(access.atomicity()),
             MemoryEvent::Fence(_) => None,
         }
     }
@@ -390,8 +390,8 @@ where
         A: MemoryAlias<L> + ?Sized,
     {
         let trace = MemoryTrace::compute(cfg);
-        let (classes, class_by_location) = build_location_classes(&trace.entries, alias);
-        let shadow = build_shadow_cfg(cfg, trace.entries, &class_by_location);
+        let (classes, class_by_location) = build_location_classes(trace.entries(), alias);
+        let shadow = build_shadow_cfg(cfg, trace.entries(), &class_by_location);
         let dominators = DominatorTree::compute(&shadow);
         let ssa = SsaForm::compute(&shadow, &dominators);
         Self::from_shadow_ssa(classes, class_by_location, &shadow, &ssa)
@@ -725,7 +725,7 @@ impl<L, V, F> InstrInfo for ShadowInstruction<L, V, F> {
 
 fn build_shadow_cfg<I, E, L, V, F>(
     cfg: &Cfg<I, E>,
-    entries: Vec<MemoryTraceEntry<L, V, F>>,
+    entries: &[MemoryTraceEntry<L, V, F>],
     class_by_location: &BTreeMap<L, MemoryClassId>,
 ) -> Cfg<ShadowInstruction<L, V, F>>
 where
@@ -749,7 +749,7 @@ where
         let class = match &event {
             MemoryEvent::Access(access) => Some(
                 *class_by_location
-                    .get(&access.location)
+                    .get(access.location())
                     .expect("every access location must have an alias class"),
             ),
             MemoryEvent::Fence(_) => None,
@@ -782,7 +782,7 @@ where
     let locations: Vec<L> = entries
         .iter()
         .filter_map(|entry| match entry.event() {
-            MemoryEvent::Access(access) => Some(access.location.clone()),
+            MemoryEvent::Access(access) => Some(access.location().clone()),
             MemoryEvent::Fence(_) => None,
         })
         .collect::<BTreeSet<_>>()

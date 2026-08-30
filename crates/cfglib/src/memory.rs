@@ -6,6 +6,10 @@
 //! details remain consumer-owned: an ISA can retain address spaces and
 //! hardware scopes while a source language can use fields, objects, and
 //! language-level ordering domains.
+//!
+//! Derived memory SSA and combined value flow live in
+//! [`crate::dataflow::memory`]; this module owns only the semantic event
+//! vocabulary and static event trace.
 
 extern crate alloc;
 
@@ -14,14 +18,6 @@ use alloc::vec::Vec;
 use core::ops::Range;
 
 use crate::{BlockId, Cfg, InstrInfo, ProgramPoint, SsaForm, SsaValue, VariableId};
-
-mod data_flow;
-
-pub use data_flow::{
-    ConservativeMemoryAlias, ExactMemoryAlias, MemoryAlias, MemoryClassId, MemoryDefinition,
-    MemoryEventSite, MemoryLocationClass, MemoryPhi, MemorySSA, MemorySSAEvent, MemorySsaValue,
-    MemoryUse,
-};
 
 /// Instruction-level summary of reported memory accesses.
 ///
@@ -143,38 +139,126 @@ pub enum MemoryAtomicity {
 /// carried by `location`; if they are omitted, the location must denote a
 /// conservative region containing every possible selected sub-location.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct MemoryEventAccess<L, V> {
+pub struct MemoryAccess<L, V> {
     /// The location or conservative region being accessed.
-    pub location: L,
+    location: L,
     /// Instruction uses that determine the accessed binding or sub-location.
-    pub address_uses: Vec<V>,
+    address_uses: Vec<V>,
+    /// Instruction uses whose runtime values are written to this location.
+    ///
+    /// These are value operands, not address operands. A store of `value` to
+    /// `base[index]` therefore reports `value` here and reports `base` and
+    /// `index` through [`address_uses`](Self::address_uses). Empty is valid for
+    /// an opaque clobber whose replacement value is unknown.
+    value_uses: Vec<V>,
+    /// Instruction definitions receiving values read from this location.
+    ///
+    /// Empty is valid for a read performed only for its effects. For a
+    /// read/modify/write, these definitions receive the value observed before
+    /// the replacement is committed.
+    value_defs: Vec<V>,
     /// Whether the location is read, written, or modified in place.
-    pub kind: MemoryAccessKind,
+    kind: MemoryAccessKind,
     /// Whether competing observers see the access as indivisible.
-    pub atomicity: MemoryAtomicity,
+    atomicity: MemoryAtomicity,
 }
 
-impl<L, V> MemoryEventAccess<L, V> {
-    /// Creates one explicit memory access.
+impl<L, V> MemoryAccess<L, V> {
+    /// Creates a read whose observed value is assigned to `value_defs`.
     #[must_use]
-    pub const fn new(
+    pub fn read(location: L, value_defs: impl IntoIterator<Item = V>) -> Self {
+        Self {
+            location,
+            address_uses: Vec::new(),
+            value_uses: Vec::new(),
+            value_defs: value_defs.into_iter().collect(),
+            kind: MemoryAccessKind::Read,
+            atomicity: MemoryAtomicity::NonAtomic,
+        }
+    }
+
+    /// Creates a write whose replacement comes from `value_uses`.
+    #[must_use]
+    pub fn write(location: L, value_uses: impl IntoIterator<Item = V>) -> Self {
+        Self {
+            location,
+            address_uses: Vec::new(),
+            value_uses: value_uses.into_iter().collect(),
+            value_defs: Vec::new(),
+            kind: MemoryAccessKind::Write,
+            atomicity: MemoryAtomicity::NonAtomic,
+        }
+    }
+
+    /// Creates a read/modify/write whose replacement comes from `value_uses`.
+    ///
+    /// `value_defs` receive the value observed before the replacement is
+    /// committed.
+    #[must_use]
+    pub fn read_modify_write(
         location: L,
-        address_uses: Vec<V>,
-        kind: MemoryAccessKind,
-        atomicity: MemoryAtomicity,
+        value_uses: impl IntoIterator<Item = V>,
+        value_defs: impl IntoIterator<Item = V>,
     ) -> Self {
         Self {
             location,
-            address_uses,
-            kind,
-            atomicity,
+            address_uses: Vec::new(),
+            value_uses: value_uses.into_iter().collect(),
+            value_defs: value_defs.into_iter().collect(),
+            kind: MemoryAccessKind::ReadModifyWrite,
+            atomicity: MemoryAtomicity::NonAtomic,
         }
+    }
+
+    /// Attaches the ordinary values that select the binding or sub-location.
+    #[must_use]
+    pub fn with_address_uses(mut self, address_uses: impl IntoIterator<Item = V>) -> Self {
+        self.address_uses = address_uses.into_iter().collect();
+        self
+    }
+
+    /// Sets whether competing observers see the access as indivisible.
+    #[must_use]
+    pub const fn with_atomicity(mut self, atomicity: MemoryAtomicity) -> Self {
+        self.atomicity = atomicity;
+        self
+    }
+
+    /// Location or conservative region accessed by this event.
+    #[must_use]
+    pub const fn location(&self) -> &L {
+        &self.location
     }
 
     /// Variables whose values select the accessed binding or sub-location.
     #[must_use]
     pub fn address_uses(&self) -> &[V] {
         &self.address_uses
+    }
+
+    /// Ordinary instruction uses whose values are stored by this access.
+    #[must_use]
+    pub fn value_uses(&self) -> &[V] {
+        &self.value_uses
+    }
+
+    /// Ordinary instruction definitions receiving values loaded by this
+    /// access.
+    #[must_use]
+    pub fn value_defs(&self) -> &[V] {
+        &self.value_defs
+    }
+
+    /// Direction of the access.
+    #[must_use]
+    pub const fn kind(&self) -> MemoryAccessKind {
+        self.kind
+    }
+
+    /// Whether competing observers see the access as indivisible.
+    #[must_use]
+    pub const fn atomicity(&self) -> MemoryAtomicity {
+        self.atomicity
     }
 
     /// Whether the access consumes the location's previous value.
@@ -211,7 +295,7 @@ impl<L, V> MemoryEventAccess<L, V> {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MemoryEvent<L, V, F> {
     /// An access to one location or conservative region.
-    Access(MemoryEventAccess<L, V>),
+    Access(MemoryAccess<L, V>),
     /// A consumer-defined memory fence.
     Fence(F),
 }
@@ -260,10 +344,12 @@ impl<L, V, F> MemoryEvent<L, V, F> {
 /// calculation is ordinary value data flow and belongs in the instruction's
 /// [`InstrInfo`] uses. Every variable that selects an
 /// access's binding or sub-location must also appear in that access's
-/// [`MemoryEventAccess::address_uses`]. The location may be a conservative
-/// region rather than a concrete runtime address, but an adapter must not
-/// claim that unequal locations cannot alias unless its location vocabulary
-/// proves that distinction.
+/// [`MemoryAccess::address_uses`]. Values transferred through memory use
+/// [`MemoryAccess::value_uses`] and [`MemoryAccess::value_defs`]; an
+/// adapter may leave either empty when it intentionally exposes only memory
+/// state. The location may be a conservative region rather than a concrete
+/// runtime address, but an adapter must not claim that unequal locations
+/// cannot alias unless its location vocabulary proves that distinction.
 pub trait MemoryEventInfo: InstrInfo {
     /// Consumer-defined location or conservative alias region.
     type Location: Clone + Ord;

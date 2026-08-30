@@ -8,7 +8,7 @@ use crate::{
     ProgramPoint, SsaForm, SsaValue,
 };
 
-use super::{MemoryEvent, MemoryEventAccess, MemoryEventInfo, MemoryTrace};
+use super::{MemoryAccess, MemoryEvent, MemoryEventInfo, MemoryTrace};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum Location {
@@ -78,12 +78,14 @@ fn access(
     kind: MemoryAccessKind,
     atomicity: MemoryAtomicity,
 ) -> MemoryEvent<Location, u8, Fence> {
-    MemoryEvent::Access(MemoryEventAccess::new(
-        location,
-        Vec::new(),
-        kind,
-        atomicity,
-    ))
+    let access = match kind {
+        MemoryAccessKind::Read => MemoryAccess::read(location, Vec::new()),
+        MemoryAccessKind::Write => MemoryAccess::write(location, Vec::new()),
+        MemoryAccessKind::ReadModifyWrite => {
+            MemoryAccess::read_modify_write(location, Vec::new(), Vec::new())
+        }
+    };
+    MemoryEvent::Access(access.with_atomicity(atomicity))
 }
 
 #[test]
@@ -145,14 +147,11 @@ fn read_modify_write_is_one_entry_in_both_direction_queries() {
         }),
         MemoryOperations::READ_MODIFY_WRITE
     );
-    assert!(matches!(
-        trace.entries()[0].event(),
-        MemoryEvent::Access(MemoryEventAccess {
-            kind: MemoryAccessKind::ReadModifyWrite,
-            atomicity: MemoryAtomicity::Atomic,
-            ..
-        })
-    ));
+    let MemoryEvent::Access(access) = trace.entries()[0].event() else {
+        panic!("the trace entry must be a memory access");
+    };
+    assert_eq!(access.kind(), MemoryAccessKind::ReadModifyWrite);
+    assert_eq!(access.atomicity(), MemoryAtomicity::Atomic);
 }
 
 #[test]
@@ -207,12 +206,9 @@ fn access_identifies_its_address_dependencies() {
     let instruction = Instruction::with_data_flow(
         [7, 9],
         [],
-        [MemoryEvent::Access(MemoryEventAccess::new(
-            Location::Object,
-            vec![7],
-            MemoryAccessKind::Read,
-            MemoryAtomicity::NonAtomic,
-        ))],
+        [MemoryEvent::Access(
+            MemoryAccess::read(Location::Object, Vec::new()).with_address_uses([7]),
+        )],
     );
 
     let events: Vec<_> = instruction.memory_events().collect();
@@ -233,12 +229,9 @@ fn trace_resolves_address_dependencies_to_reaching_ssa_values() {
     cfg.block_mut(entry).push(Instruction::with_data_flow(
         [7],
         [],
-        [MemoryEvent::Access(MemoryEventAccess::new(
-            Location::Object,
-            vec![7],
-            MemoryAccessKind::Read,
-            MemoryAtomicity::NonAtomic,
-        ))],
+        [MemoryEvent::Access(
+            MemoryAccess::read(Location::Object, Vec::new()).with_address_uses([7]),
+        )],
     ));
 
     let dominators = DominatorTree::compute(&cfg);

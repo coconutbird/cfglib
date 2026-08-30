@@ -117,6 +117,7 @@ impl<D: VerifyDialect> Function<D> {
         for region in self.cfg().regions() {
             builder.add_region(region.clone())?;
         }
+        builder.copy_cleanups(self.cfg().cleanups())?;
         builder.set_signature(self.signature().clone())?;
         for entry in self.provenance().entries() {
             builder.map_entity(entry.source.clone(), entry.entity)?;

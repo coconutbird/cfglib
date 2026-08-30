@@ -218,6 +218,7 @@ pub(super) fn split_variables<D: VerifyDialect>(source: &Function<D>) -> Result<
     for region in source.cfg.regions() {
         builder.add_region(region.clone())?;
     }
+    builder.copy_cleanups(source.cfg.cleanups())?;
 
     let parameters = source
         .signature

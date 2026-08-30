@@ -320,7 +320,8 @@ inverted — before falling back to a wrapping `logical_not`.
 | Sparse conditional constant propagation | `SccpAnalysis::compute` | SSA-based, marks unreachable edges |
 | Copy and value-alias propagation | `copy_propagation`, `alias_propagation`, `CopySource` trait | Guarded chain resolution and dead transfer removal; pairwise aliases may refine types or metadata without changing runtime values |
 | Memory-event trace | `MemoryTrace::compute`, `MemoryEventInfo` trait | Ordered, location-typed reads, writes, read/modify/write accesses, address-variable dependencies, and fences; instruction summaries distinguish separate read+write from compound modification |
-| Memory SSA | `MemorySSA::compute`, `MemoryAlias` trait | Event-driven SSA per may-alias location class: loop/branch φ-nodes, reaching writes and clobbers, bidirectional def-use chains, transitive readers, and ordinary-SSA address inputs |
+| Memory SSA | `dataflow::memory::MemorySSA::compute`, `MemoryAlias` trait | Event-driven SSA per may-alias location class: loop/branch φ-nodes, reaching writes and clobbers, bidirectional def-use chains, transitive readers, and ordinary-SSA address inputs |
+| Memory value flow | `dataflow::memory::MemoryValueFlow::compute` | One graph over ordinary SSA values, versioned memory states, and exact events; typed address/store/read/write/load and ordinary/memory-phi edges retain the complete transfer path |
 | Abstract interpretation | `abstract_interpret`, `AbstractDomain` trait | Generic abstract domain framework |
 
 ### Higher-level analyses
@@ -414,12 +415,15 @@ SwitchSource              (switch table recovery — associated Target)
 ```
 
 `MemoryEventInfo` is the single instruction-side source of truth for memory.
-It distinguishes read, write, and compound read/modify/write events, retains
-their exact reported locations and ordered fences, and names every native
-variable used to select an address. `MemorySSA` merges locations through the
-caller-provided `MemoryAlias` relation, then exposes loop-correct reaching
-definitions, clobbered states, users, and transitive readers. Returning
-`false` from an alias oracle promises the locations cannot overlap at runtime;
+Directional `MemoryAccess::read`, `write`, and `read_modify_write`
+constructors keep loaded definitions, stored uses, and address uses distinct;
+events also retain exact locations, atomicity, and ordered fences. `MemorySSA`
+in `dataflow::memory` merges locations through the caller-provided
+`MemoryAlias` relation, then exposes loop-correct reaching definitions,
+clobbered states, users, and transitive readers. `MemoryValueFlow` combines it
+with the matching ordinary `SsaForm`, making
+`value -> store -> memory state -> load -> value` explicit. Returning `false`
+from an alias oracle promises the locations cannot overlap at runtime;
 `ConservativeMemoryAlias` is the safe fallback when that cannot be proven.
 
 ## Workspace

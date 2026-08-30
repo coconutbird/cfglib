@@ -286,12 +286,25 @@ fn signature_and_region_survive_construction() {
             parent: None,
         })
         .unwrap();
+    let handler = crate::HandlerRef::new(region, 0);
+    builder.set_cleanup_resume(handler, pad).unwrap();
+    builder
+        .add_continuation(
+            handler,
+            crate::Continuation {
+                reason: crate::CompletionReason::Return,
+                resume: body,
+            },
+        )
+        .unwrap();
 
     let function = builder.finish().unwrap();
     assert_eq!(function.signature().parameters, vec![argument]);
     assert_eq!(function.signature().returns, vec![Type::Integer]);
     assert_eq!(function.cfg().regions().len(), 1);
     assert_eq!(function.cfg().regions()[0].id, region);
+    assert_eq!(function.cfg().cleanups()[0].resume_from, Some(pad));
+    assert_eq!(function.cfg().cleanups()[0].continuations[0].resume, body);
     assert_eq!(function.instructions().count(), 2);
 }
 
