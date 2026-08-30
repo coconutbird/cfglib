@@ -134,4 +134,73 @@ impl<D: Dialect> Function<D> {
         }
         visit(expression);
     }
+
+    /// Whether two expression trees are structurally identical.
+    ///
+    /// The same variable reads, equal constants, and equal operations over
+    /// pairwise structurally identical operands. A missing identity never
+    /// compares equal. Verified functions store operands before parents, so
+    /// the recursion is bounded.
+    #[must_use]
+    pub fn expressions_equal(&self, left: ExpressionId, right: ExpressionId) -> bool {
+        let (Some(left), Some(right)) = (self.expression(left), self.expression(right)) else {
+            return false;
+        };
+        match (left.kind(), right.kind()) {
+            (ExpressionKind::Variable(left), ExpressionKind::Variable(right)) => left == right,
+            (ExpressionKind::Constant(left), ExpressionKind::Constant(right)) => left == right,
+            (
+                ExpressionKind::Operation {
+                    operation: left_operation,
+                    operands: left_operands,
+                },
+                ExpressionKind::Operation {
+                    operation: right_operation,
+                    operands: right_operands,
+                },
+            ) => {
+                left_operation == right_operation
+                    && left_operands.len() == right_operands.len()
+                    && left_operands
+                        .iter()
+                        .zip(right_operands)
+                        .all(|(&left, &right)| self.expressions_equal(left, right))
+            }
+            _ => false,
+        }
+    }
+
+    /// The compound form of one assignment, when it has one.
+    ///
+    /// Recognizes `target = operation(target, operand)` structurally: an
+    /// [`Assign`](super::StatementKind::Assign) whose value is a binary
+    /// operation whose **first** operand is structurally identical to the
+    /// assignment target. Renderers spell the result `target op= operand`
+    /// with the dialect's compound spelling; whether a commutative
+    /// operation with the target second also qualifies stays the caller's
+    /// judgment. Deciding by structure — never by comparing rendered text —
+    /// keeps the rewrite immune to parenthesization and casts.
+    #[must_use]
+    pub fn compound_assignment(
+        &self,
+        statement: StatementId,
+    ) -> Option<(&D::Operation, ExpressionId)> {
+        let statement = self.statement(statement)?;
+        let super::StatementKind::Assign { target, value } = statement.kind() else {
+            return None;
+        };
+        let value = self.expression(*value)?;
+        let ExpressionKind::Operation {
+            operation,
+            operands,
+        } = value.kind()
+        else {
+            return None;
+        };
+        let [first, operand] = operands.as_slice() else {
+            return None;
+        };
+        self.expressions_equal(*first, *target)
+            .then_some((operation, *operand))
+    }
 }

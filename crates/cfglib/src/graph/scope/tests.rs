@@ -1,5 +1,7 @@
 extern crate alloc;
 
+#[cfg(feature = "serde")]
+use alloc::string::String;
 use alloc::vec;
 use core::cmp::Ordering;
 

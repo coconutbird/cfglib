@@ -73,6 +73,10 @@ pub trait DirectedGraphView {
     fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_;
 
     /// Iterate over the incoming neighbors of `node`.
+    ///
+    /// A view that stores only forward adjacency can keep this contract
+    /// honest with [`scan_predecessors`] — a documented O(nodes × edges)
+    /// scan — instead of maintaining a reverse index it never queries.
     fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_;
 }
 
@@ -202,5 +206,53 @@ impl<G: DirectedGraphView> DirectedGraphView for Reversed<'_, G> {
 
     fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
         self.graph.successors(node)
+    }
+}
+
+/// The incoming neighbors of `node` by scanning every node's successors.
+///
+/// The honest [`DirectedGraphView::predecessors`] implementation for a view
+/// that stores only forward adjacency: O(nodes × edges) per query, correct
+/// by construction, and free of a reverse index the consumer never queries.
+/// Views on an algorithm's hot reverse path should maintain real reverse
+/// adjacency instead.
+pub fn scan_predecessors<G: DirectedGraphView>(
+    graph: &G,
+    node: G::NodeId,
+) -> impl Iterator<Item = G::NodeId> + '_ {
+    graph.node_ids().filter(move |&candidate| {
+        graph
+            .successors(candidate)
+            .any(|successor| successor == node)
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    extern crate alloc;
+
+    use alloc::vec::Vec;
+
+    use super::scan_predecessors;
+    use crate::graph::directed::DirectedGraph;
+
+    #[test]
+    fn scanning_matches_stored_reverse_adjacency() {
+        let mut graph = DirectedGraph::new();
+        let a = graph.add_node("a");
+        let b = graph.add_node("b");
+        let c = graph.add_node("c");
+        graph.add_edge(a, c, ());
+        graph.add_edge(b, c, ());
+        graph.add_edge(c, a, ());
+
+        for node in [a, b, c] {
+            let mut scanned: Vec<_> = scan_predecessors(&graph, node).collect();
+            let mut stored: Vec<_> = graph.predecessors(node).collect();
+            scanned.sort_unstable();
+            stored.sort_unstable();
+            assert_eq!(scanned, stored);
+        }
+        assert!(scan_predecessors(&graph, b).next().is_none());
     }
 }

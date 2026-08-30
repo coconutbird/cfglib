@@ -169,6 +169,7 @@ provenance, so target allocation and synthetic temporaries are not mistaken for
 source locations.
 
 | Template constant folding | `VarExpr::fold_constant`, `Shape::holds_words` | Bitwise evaluation of value templates: positional read resolution and shape checking are generic; only the operator semantics hook stays dialect-owned |
+| Whole-place storage planning | `plan_whole_places` | The standard variable-shaped plan: preserved native slots keep their storage, everything else mints dense generated slots, every place spans lane zero |
 
 ### Generic medium-level IR (`ir::mlil`)
 
@@ -256,7 +257,10 @@ execution order, `StatementKind::for_each_expression` visits the statement's
 own operands, `Function::visit_statements` walks statement trees in
 preorder, and `Function::visit_expression_tree` walks one expression tree
 in postorder — so a new statement or node shape extends downstream walkers
-automatically.
+automatically. `Function::expressions_equal` compares expression trees
+structurally, and `Function::compound_assignment` recognizes
+`target = op(target, operand)` for renderers that spell `target op= operand`
+— by structure, never by comparing rendered text.
 
 Above the lift, `recover_structure` (`RecoverDialect`) rebuilds a function
 with source-level shapes restored: `init; while (c) { …; update }` becomes
@@ -283,6 +287,7 @@ inverted — before falling back to a wrapping `logical_not`.
 | Reusable search scratch | `search_with_scratch` + `SearchScratch` | The same search with the marks *and* the call's own buffers — seeds, frontier, adjacency — caller-owned, for a pass whose searches are small enough that the call is the cost; marks and buffers both reset on entry |
 | Disjoint sets | `DisjointSet` (`union` by rank, `union_toward_min` for deterministic minimum representatives, growable via `push`) | The union-find backing phi webs, may-alias classes, and lane webs, usable directly by consumers |
 | Open post-order fold | `open_fold_post_order` + `OpenFold` trait (`FoldEnter::Leaf`/`Fold`, `MarkScope::Shared`/`Isolated`) | Child-answers-to-parent folding over a lazily discovered space: caller-keyed cycle guard (nodes need no `Ord`), per-node mark scoping (exact per-path marking or persistent pruning), early exit, depth bound — C++-style member lookup and type-algebra evaluators without hand-written frame stacks |
+| Forward-only view support | `scan_predecessors` | The honest O(nodes × edges) `predecessors` for views that store only successors, replacing per-consumer scan stubs |
 | Traversal events | `breadth_first_events` → `BfsEvent`; `depth_first_events` → `DfsEvent` | Breadth-first discovery with tree/non-tree edges, or depth-first discover/tree/back/forward-or-cross/finish events in pinned order |
 | Open-graph search | `open_search` + `OpenSearchConfig` | The same disciplines over a lazily discovered node space: successors come from a closure, no dense ids (import/re-export chases, ordered emission walks) |
 | Open-graph events | `open_breadth_first_events` → `OpenBfsEvent`; `open_depth_first_events` → `OpenDfsEvent` | Breadth-first discovery/refusal events or depth-first discover/finish/refusal events over a lazily discovered node space; path policy can revisit a shared node once per route |
@@ -324,6 +329,8 @@ inverted — before falling back to a wrapping `logical_not`.
 | Node-level fixpoint | `solve_node_problem[_from][_with_config]`, `NodeProblem` / `TryNodeProblem` traits | Per-node facts over any graph view (taint, reachability-with-facts) |
 | Edge-sensitive fixpoint | `solve_edge_problem`, `solve_edge_problem_from`, `EdgeProblem` trait | Full or seeded per-edge transfer over any edge view; stable id/data plus physical node pre/post states and deterministic bounded-solve errors |
 | Fallible edge-sensitive fixpoint | `try_solve_edge_problem`, `try_solve_edge_problem_from`, `TryEdgeProblem` trait | Preserves consumer boundary, merge, node-transfer, and edge-transfer errors separately from solver limits |
+| Reachability-lifted edge analysis | `Reachable` + `ReachableEdgeProblem` trait | Verification-style analyses over `Option` facts: `None` is unreached bottom, transfers short-circuit, entry facts start the flow, and each edge chooses pre- or post-state (exceptional edges observe the state the node received) |
+| Dense bit-set facts | `DenseBits` | Set-of-indices lattice element packed 64 per word; `union_with` is the join and reports change for convergence checks |
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
 | Liveness | `Liveness::compute` | Live-in / live-out at each block; `live_before_instructions` / `live_after_instructions` replay the block transfer for instruction-granular sets (dead-store detection) |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |
@@ -380,6 +387,7 @@ fallible pass stops execution.
 | Partial redundancy elimination | `PreAnalysis::compute`, `eliminate_pre` | GVN-based PRE |
 | Graph coloring | `interference_graph`, `color_graph` | Interference builder uses `DirectedGraph`; coloring accepts any graph view |
 | Linearization | `linearize`, `Emitter` trait, `BlockOrder` | Re-serialize CFG to a flat stream; emitters speak `BlockId`, naming is theirs |
+| Width relaxation | `relax_layout` | The assembler fixed point for symbolic layouts: monotone branch widening against caller-resolved labels, offset-dependent (alignment) widths, converged offsets plus the final label context |
 
 ### AST recovery (`ir::ast`)
 

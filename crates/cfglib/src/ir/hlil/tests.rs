@@ -406,6 +406,85 @@ impl LowerDialect for Toy {
 }
 
 #[test]
+fn compound_assignments_are_recognized_structurally() {
+    let mut builder = FunctionBuilder::<Toy>::new("toy::compound".into());
+    let counter = builder
+        .declare_variable(0, Some(7), Some(Type::Integer))
+        .unwrap();
+    let other = builder
+        .declare_variable(0, None, Some(Type::Integer))
+        .unwrap();
+
+    let read = builder
+        .add_expression(ExpressionKind::Variable(counter), Type::Integer)
+        .unwrap();
+    let one = builder
+        .add_expression(ExpressionKind::Constant(1), Type::Integer)
+        .unwrap();
+    let sum = builder
+        .add_expression(
+            ExpressionKind::Operation {
+                operation: Operation::Add,
+                operands: vec![read, one],
+            },
+            Type::Integer,
+        )
+        .unwrap();
+    let target = builder
+        .add_expression(ExpressionKind::Variable(counter), Type::Integer)
+        .unwrap();
+    let compound = builder
+        .add_statement(StatementKind::Assign { target, value: sum }, None)
+        .unwrap();
+
+    // The same shape assigning into a different variable is not compound.
+    let read_other = builder
+        .add_expression(ExpressionKind::Variable(counter), Type::Integer)
+        .unwrap();
+    let two = builder
+        .add_expression(ExpressionKind::Constant(2), Type::Integer)
+        .unwrap();
+    let plain_sum = builder
+        .add_expression(
+            ExpressionKind::Operation {
+                operation: Operation::Add,
+                operands: vec![read_other, two],
+            },
+            Type::Integer,
+        )
+        .unwrap();
+    let other_target = builder
+        .add_expression(ExpressionKind::Variable(other), Type::Integer)
+        .unwrap();
+    let plain = builder
+        .add_statement(
+            StatementKind::Assign {
+                target: other_target,
+                value: plain_sum,
+            },
+            None,
+        )
+        .unwrap();
+    builder.set_body(vec![compound, plain]).unwrap();
+    let function = builder.finish().unwrap();
+    assert!(function.verify().is_ok());
+
+    let (operation, operand) = function
+        .compound_assignment(compound)
+        .expect("counter = counter + 1 is compound");
+    assert_eq!(operation, &Operation::Add);
+    assert_eq!(operand, one);
+    assert!(
+        function.compound_assignment(plain).is_none(),
+        "the first operand reads a different variable than the target"
+    );
+
+    assert!(function.expressions_equal(read, target));
+    assert!(!function.expressions_equal(read, other_target));
+    assert!(!function.expressions_equal(sum, plain_sum));
+}
+
+#[test]
 fn builder_constructs_verifies_and_renders() {
     let mut builder = FunctionBuilder::<Toy>::new("toy::bump".into());
     let counter = builder

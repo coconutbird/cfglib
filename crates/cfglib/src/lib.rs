@@ -217,6 +217,7 @@ pub use cfg::{Cfg, Predecessors, SplitPointError, Successors};
 pub use dataflow::abstract_interpretation::{
     AbstractDomain, AbstractFacts, Lattice, abstract_interpret,
 };
+pub use dataflow::bits::DenseBits;
 pub use dataflow::constant_propagation::{
     ConstFact, ConstPropProblem, ConstValue, ConstantFolder, constant_propagation,
 };
@@ -226,9 +227,9 @@ pub use dataflow::copy_propagation::{
 };
 pub use dataflow::def_use::DefUseChains;
 pub use dataflow::edge_fixpoint::{
-    EdgeFacts, EdgeProblem, TryEdgeProblem, solve_edge_problem, solve_edge_problem_from,
-    solve_edge_problem_from_with_config, solve_edge_problem_with_config, try_solve_edge_problem,
-    try_solve_edge_problem_from, try_solve_edge_problem_from_with_config,
+    EdgeFacts, EdgeProblem, Reachable, ReachableEdgeProblem, TryEdgeProblem, solve_edge_problem,
+    solve_edge_problem_from, solve_edge_problem_from_with_config, solve_edge_problem_with_config,
+    try_solve_edge_problem, try_solve_edge_problem_from, try_solve_edge_problem_from_with_config,
     try_solve_edge_problem_with_config,
 };
 pub use dataflow::fixpoint::{
@@ -332,7 +333,9 @@ pub use graph::verify::{
     SemanticValidator, SemanticVerifyReport, VerifyError, VerifyReport, verify, verify_edge_view,
     verify_view, verify_with,
 };
-pub use graph::view::{DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView};
+pub use graph::view::{
+    DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView, scan_predecessors,
+};
 pub use ir::ast::{
     AstNode, CatchHandler, GotoDiagnostic, GotoReason, LiftReport, LoopKind, SwitchCase, lift,
     lift_borrowed, lift_borrowed_with_report, lift_predicated, lift_with_report,
@@ -412,6 +415,7 @@ pub use transform::dce::{dead_code_elimination, remove_dead_code, remove_dead_co
 pub use transform::duplicate::{
     TailDuplication, duplicate_structuring_tails, duplicate_structuring_tails_with_structure,
 };
+pub use transform::layout::{RelaxError, relax_layout};
 pub use transform::linearize::{BlockOrder, Emitter, LinearInst, linearize};
 pub use transform::loops::{LoopRotation, find_loop_invariants, rotate_loop};
 pub use transform::pass::{

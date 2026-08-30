@@ -23,6 +23,7 @@
 //! the IR adapter; the framework does not impose a numbering scheme.
 
 pub mod abstract_interpretation;
+pub mod bits;
 pub mod constant_propagation;
 pub mod copy_propagation;
 pub mod def_use;

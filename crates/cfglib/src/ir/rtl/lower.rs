@@ -28,8 +28,10 @@ use alloc::string::ToString;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::ir::dialect::Vocabulary;
 use crate::ir::mlil::{
-    Function as MlilFunction, Instruction as MlilInstruction, InstructionId, VariableId,
+    Function as MlilFunction, Instruction as MlilInstruction, InstructionId,
+    Variable as MlilVariable, VariableId,
 };
 use crate::region::{Handler, HandlerBody, HandlerKind, Region};
 use crate::{BlockId, EdgeId};
@@ -66,6 +68,45 @@ impl<D: Dialect> Placement<D> {
     pub fn place(&self, variable: VariableId) -> Option<&Place<D>> {
         self.places.get(&variable.raw())
     }
+}
+
+/// Plans one whole place per MLIL variable, preserving native storage.
+///
+/// The standard plan of a variable-shaped source: `preserved` answers a
+/// variable's retained target storage (a native slot worth keeping through
+/// the round trip), every other variable receives `generated(ordinal)` with
+/// ordinals dense from zero in declaration order (mint fresh slots by adding
+/// a caller-computed base — typically one past the highest preserved slot),
+/// and every place spans exactly lane zero.
+///
+/// # Errors
+///
+/// Propagates `generated`'s error — typically a target storage space
+/// exhausted by the fresh slots.
+pub fn plan_whole_places<M: crate::ir::mlil::Dialect, D: Dialect>(
+    function: &MlilFunction<M>,
+    mut preserved: impl FnMut(&MlilVariable<M>) -> Option<<D as Vocabulary>::NativeVariable>,
+    mut generated: impl FnMut(u64) -> Result<<D as Vocabulary>::NativeVariable>,
+) -> Result<Placement<D>> {
+    let mut placement = Placement::new();
+    let mut ordinal = 0_u64;
+    for variable in function.variables() {
+        let storage = if let Some(storage) = preserved(variable) {
+            storage
+        } else {
+            let storage = generated(ordinal)?;
+            ordinal += 1;
+            storage
+        };
+        placement.assign(
+            variable.id,
+            Place {
+                storage,
+                lanes: vec![0],
+            },
+        );
+    }
+    Ok(placement)
 }
 
 /// The lowering contract from a dialect's MLIL onto target RTL.

@@ -144,6 +144,141 @@ pub trait TryEdgeProblem<G: EdgeGraphView> {
     }
 }
 
+/// An edge analysis whose facts exist only where execution reaches.
+///
+/// Verification-style analyses (stack maps, register frames) have no fact
+/// at all for code no path has reached yet — bottom is *unreached*, not an
+/// empty state. Wrapping an implementation in [`Reachable`] lifts it to a
+/// [`TryEdgeProblem`] over `Option` facts with the standard plumbing
+/// supplied once: `None` is unreached bottom and the identity of every
+/// merge, transfers short-circuit through unreached nodes, entry facts
+/// start the flow, and each edge chooses whether it observes the node's
+/// pre-state — an exceptional edge leaving before the node's effect
+/// commits — or its post-state.
+pub trait ReachableEdgeProblem<G: EdgeGraphView> {
+    /// Lattice element for reached program points.
+    type Fact: Clone + PartialEq;
+
+    /// Consumer error produced by an entry, merge, or transfer operation.
+    type Error;
+
+    /// Analysis direction.
+    fn direction(&self) -> Direction;
+
+    /// The fact `node` starts with before any flow, when it has one.
+    ///
+    /// # Errors
+    ///
+    /// Returns a consumer error when constructing the entry fact fails.
+    fn entry_fact(&self, graph: &G, node: G::NodeId) -> Result<Option<Self::Fact>, Self::Error>;
+
+    /// Merges two reached facts at the physical merge point.
+    ///
+    /// # Errors
+    ///
+    /// Returns a consumer error when the facts are incompatible.
+    fn merge(
+        &self,
+        graph: &G,
+        node: G::NodeId,
+        left: &Self::Fact,
+        right: &Self::Fact,
+    ) -> Result<Self::Fact, Self::Error>;
+
+    /// Transfers one reached fact through `node`.
+    ///
+    /// # Errors
+    ///
+    /// Returns a consumer error when the node rejects the incoming fact.
+    fn transfer(
+        &self,
+        graph: &G,
+        node: G::NodeId,
+        input: &Self::Fact,
+    ) -> Result<Self::Fact, Self::Error>;
+
+    /// Whether `edge` observes the node's pre-state instead of the
+    /// direction-appropriate post-state.
+    ///
+    /// The classic case is an exceptional edge in a forward analysis: it
+    /// leaves before the node's effect commits, so the handler observes the
+    /// state the node received. Defaults to `false`.
+    fn edge_observes_input(
+        &self,
+        _graph: &G,
+        _edge: EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>,
+    ) -> bool {
+        false
+    }
+}
+
+/// The reachability lifting of a [`ReachableEdgeProblem`].
+///
+/// Pass `Reachable(problem)` to [`try_solve_edge_problem`] or its seeded
+/// variants; the resulting facts are `Option`s whose `None` means the
+/// point was never reached.
+#[derive(Debug, Clone, Copy)]
+pub struct Reachable<P>(pub P);
+
+impl<G: EdgeGraphView, P: ReachableEdgeProblem<G>> TryEdgeProblem<G> for Reachable<P> {
+    type Fact = Option<P::Fact>;
+    type Error = P::Error;
+
+    fn direction(&self) -> Direction {
+        self.0.direction()
+    }
+
+    fn bottom(&self, _graph: &G) -> Self::Fact {
+        None
+    }
+
+    fn boundary(&self, graph: &G, node: G::NodeId) -> Result<Option<Self::Fact>, Self::Error> {
+        Ok(self.0.entry_fact(graph, node)?.map(Some))
+    }
+
+    fn meet(
+        &self,
+        graph: &G,
+        node: G::NodeId,
+        left: &Self::Fact,
+        right: &Self::Fact,
+    ) -> Result<Self::Fact, Self::Error> {
+        match (left, right) {
+            (None, None) => Ok(None),
+            (Some(fact), None) | (None, Some(fact)) => Ok(Some(fact.clone())),
+            (Some(left), Some(right)) => self.0.merge(graph, node, left, right).map(Some),
+        }
+    }
+
+    fn transfer_node(
+        &self,
+        graph: &G,
+        node: G::NodeId,
+        flow_fact: &Self::Fact,
+    ) -> Result<Self::Fact, Self::Error> {
+        match flow_fact {
+            None => Ok(None),
+            Some(fact) => self.0.transfer(graph, node, fact).map(Some),
+        }
+    }
+
+    fn transfer_edge(
+        &self,
+        graph: &G,
+        edge: EdgeRef<'_, G::NodeId, G::EdgeId, G::EdgeData>,
+        node_input: &Self::Fact,
+        node_output: &Self::Fact,
+    ) -> Result<Self::Fact, Self::Error> {
+        if self.0.edge_observes_input(graph, edge) {
+            return Ok(node_input.clone());
+        }
+        Ok(match self.0.direction() {
+            Direction::Forward => node_output.clone(),
+            Direction::Backward => node_input.clone(),
+        })
+    }
+}
+
 /// Node and edge facts at a completed fixpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EdgeFacts<F> {

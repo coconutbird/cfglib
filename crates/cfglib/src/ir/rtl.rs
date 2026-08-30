@@ -67,7 +67,9 @@ pub use error::{Error, Result};
 pub use expr::{Expr, Place};
 pub use function::{Function, FunctionBuilder, ProvenanceMap, Signature};
 pub use lift::lift;
-pub use lower::{Lower, LowerContext, LowerEdgeContext, Lowered, Placement, lower};
+pub use lower::{
+    Lower, LowerContext, LowerEdgeContext, Lowered, Placement, lower, plan_whole_places,
+};
 pub use render::{ReadResolver, ResolvedRead, Webs, referenced_webs};
 pub use statement::{Lane, Statement, StatementId, StatementNode};
 pub use template::{LiftedStatement, VarExpr, WebInfo};

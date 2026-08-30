@@ -21,6 +21,7 @@ pub mod contract;
 pub mod critical;
 pub mod dce;
 pub mod duplicate;
+pub mod layout;
 pub mod linearize;
 pub mod loops;
 pub mod pass;
