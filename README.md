@@ -2,7 +2,7 @@
 
 Generic, `no_std` graph and dataflow framework for code intelligence, program analysis, decompilation, and compiler infrastructure.
 
-`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Its generic RTL and MLIL layers combine CFGs with checked construction, exact edge payloads, signatures, exception regions, and many-to-many source provenance; RTL/MLIL bridges recover typed semantic variables from native storage or lower them back while allowing the two levels to use distinct dialect and native-location types. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, location-aware memory SSA, dataflow analyses, value numbering, explicit alias sets, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
+`cfglib` has purpose-built storage for arbitrary directed relations, language-parametric scope graphs, file-incremental stack graphs, and `Cfg<I, E = ()>` graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Its generic RTL and MLIL layers combine CFGs with checked construction, exact edge payloads, signatures, exception regions, and many-to-many source provenance; RTL/MLIL bridges recover typed semantic variables from native storage or lower them back while allowing the two levels to use distinct dialect and native-location types. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, location-aware memory SSA, dataflow analyses, value numbering, explicit alias sets, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
 
 Named transformations compose through `PassPipeline<T, E>`. A pipeline keeps
 the caller's declared order, supports closure-backed or stateful trait passes,
@@ -85,6 +85,48 @@ assert_eq!(
 );
 let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 ```
+
+### Scope graphs
+
+`graph::scope::ScopeGraph<S, L, R, D, Q>` separates language facts from
+language policy. It stores consumer-defined scope metadata, labeled
+scope-to-scope edges, relation-tagged declarations, and references. A `ScopeGraphQuery`
+implementation supplies the path-language state machine, declaration matching,
+label and data orders, optional indexed candidate visitation and decisive-match
+pruning, and—when needed—a full path/data shadowing order. This keeps lexical parents, imports,
+inheritance, namespaces, ordered declarations, accessibility, redirects, and
+opacity in the frontend's vocabulary.
+
+`ScopeResolution::compute` resolves a stored reference.
+`ScopeResolution::compute_from` runs the same algorithm for an ephemeral query,
+which supports completion and speculative refactoring without modifying the
+graph. `ScopeResolutionIndex` resolves all stored references and provides the
+reverse definition-to-reference relation used by rename and find-references.
+Paths are cycle-free, deterministic, and optionally bounded; truncated results
+report which bound was reached. Scope storage supports `serde` when the feature
+is enabled.
+
+### Stack graphs
+
+`graph::stack::StackGraph<F, S, N, E>` implements the standard root,
+exported/internal scope, symbol push/pop, scoped-symbol push/pop, drop-scopes,
+and jump-to-scope nodes. Symbols, file records, node metadata, and edge metadata
+are consumer types.
+Concrete paths maintain symbol and scope stacks transactionally, scoped symbols
+can pause one lookup while another resolves, and edge precedence removes
+shadowed complete paths while retaining genuine ambiguity.
+
+Every ordinary node belongs to one file partition. Direct cross-file edges are
+rejected; independently constructed files compose through the root or exported
+scope stitching endpoints. `StackPartialPathSet` extracts reusable structural
+routes per file, `StackPartialPathDatabase` replaces one file at a time while
+leaving other identities stable, and `StackGraph::clear_file` retires one
+changed partition with node/edge tombstones before it is rebuilt. Then
+`StackResolution::compute_from_partials` replays compatible summaries with the
+same semantics as direct search. Graphs and partial-path databases are
+serializable with `serde`, so unchanged file summaries can be persisted and
+reused. Both direct and stitched indexes expose reverse
+definition-to-reference bindings.
 
 ### Control-flow graph (`Cfg<I>`)
 

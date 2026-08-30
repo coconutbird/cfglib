@@ -9,6 +9,17 @@
 //! structure for dense graphs; [`open_breadth_first_events`] and
 //! [`open_depth_first_events`] provide the corresponding discovery streams
 //! for lazily generated node spaces.
+//! [`graph::scope::ScopeGraph`] stores language-defined scopes, labeled
+//! reachability, relation-tagged declarations, and references.
+//! [`graph::scope::ScopeGraphQuery`] supplies
+//! the path automaton, matching, label/data specificity, or a full path order;
+//! the same resolver handles stored references and ephemeral completion
+//! requests and builds forward/reverse binding indexes.
+//! [`graph::stack::StackGraph`] provides the complementary file-incremental
+//! model with the standard root, scope, symbol push/pop, scoped-symbol,
+//! drop-scopes, and jump-to-scope nodes. It supports concrete direct paths,
+//! edge-precedence shadowing, serializable per-file partial-path databases, and
+//! query-time stitching across independently built file partitions.
 //! [`Cfg<I, E>`] adds basic-block, control-flow, and caller-owned edge metadata
 //! when the graph really is a program CFG, and every
 //! instruction-adjacent axis — variables, constants, operators, effects,
@@ -270,9 +281,22 @@ pub use graph::reverse::reverse_cfg;
 pub use graph::scc::{
     Scc, SccDecomposition, condensation, condensation_of, kosaraju_scc, tarjan_scc,
 };
+pub use graph::scope::{
+    Scope, ScopeDatum, ScopeDatumId, ScopeEdgeId, ScopeGraph, ScopeGraphPathLabel, ScopeGraphQuery,
+    ScopeId, ScopeLinearResolutionError, ScopePath, ScopeQuery, ScopeReference, ScopeReferenceId,
+    ScopeResolution, ScopeResolutionCandidate, ScopeResolutionConfig, ScopeResolutionIndex,
+    ScopeResolutionStats,
+};
 pub use graph::search::{
     BfsEvent, DfsEvent, EpochMarks, SearchConfig, SearchOrder, SearchScratch, Visit, VisitedPolicy,
     breadth_first_events, depth_first_events, search, search_with_marks, search_with_scratch,
+};
+pub use graph::stack::{
+    StackEdge, StackEdgeId, StackFileId, StackGraph, StackGraphError, StackLinearResolutionError,
+    StackNode, StackNodeId, StackNodeKind, StackPartialPath, StackPartialPathConfig,
+    StackPartialPathDatabase, StackPartialPathId, StackPartialPathSet, StackPartialPathStats,
+    StackPath, StackPathError, StackPathStep, StackResolution, StackResolutionIndex,
+    StackReverseIndex, StackScopedSymbol, StackSearchConfig, StackSearchStats,
 };
 pub use graph::structure::{
     BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, detect_loops_tagged,
