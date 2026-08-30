@@ -88,9 +88,14 @@ pub enum AddressFlow<A, K> {
 
 impl<A, K> AddressFlow<A, K> {
     /// Whether the instruction ends its basic block.
+    ///
+    /// Every transfer except a plain fall-through does — including a
+    /// [`Call`](Self::Call): its `Call` and continuation edges leave the
+    /// block's last instruction, so the return site must lead a block of
+    /// its own.
     #[must_use]
     pub const fn ends_basic_block(&self) -> bool {
-        !matches!(self, AddressFlow::FallThrough | AddressFlow::Call { .. })
+        !matches!(self, AddressFlow::FallThrough)
     }
 }
 

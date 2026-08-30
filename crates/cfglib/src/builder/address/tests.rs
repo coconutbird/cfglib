@@ -123,6 +123,28 @@ fn switches_and_calls_produce_keyed_and_continuation_edges() {
 }
 
 #[test]
+fn a_call_ends_its_block_so_the_return_site_gets_both_edges() {
+    // The instruction after the call is a leader only because the call
+    // ends its block; absorbing it would silently drop both call edges.
+    let instructions = vec![
+        inst(0, AddressFlow::Call { target: 2 }),
+        inst(1, AddressFlow::Return),
+        inst(2, AddressFlow::Return),
+    ];
+    let graph = build_address_cfg(instructions, &[], payload).unwrap();
+    assert_ne!(graph.instruction_blocks[&0], graph.instruction_blocks[&1]);
+    let mut edges: Vec<_> = graph.cfg.edges().map(|edge| *edge.payload()).collect();
+    edges.sort_unstable_by_key(|&(source, target, _, role)| (source, target, role));
+    assert_eq!(
+        edges,
+        vec![
+            (0, 1, EdgeKind::CallReturn, "cont"),
+            (0, 2, EdgeKind::Call, "call"),
+        ],
+    );
+}
+
+#[test]
 fn exception_tables_make_protected_instructions_leaders_with_unwind_edges() {
     let instructions = vec![
         inst(0, AddressFlow::FallThrough),
