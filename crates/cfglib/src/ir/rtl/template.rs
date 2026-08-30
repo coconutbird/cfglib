@@ -16,7 +16,7 @@ use crate::ir::dialect::Vocabulary;
 use crate::ir::mlil::VariableId;
 
 use super::dialect::Dialect;
-use super::types::Shape;
+use super::types::{Constraint, Shape};
 
 /// One typed expression over lifted web variables.
 ///
@@ -87,6 +87,62 @@ impl<D: Dialect> VarExpr<D> {
             | Self::Apply { shape, .. }
             | Self::Reinterpret { shape, .. }
             | Self::Compose { shape, .. } => shape.clone(),
+        }
+    }
+
+    /// Evaluates this template to constant lane words, or `None` when any
+    /// part is unknown or malformed.
+    ///
+    /// Reads resolve positionally: `next_read` yields the full constant
+    /// words of the matching pre-order use (or `None` for an unknown
+    /// variable), and the read's own position selection is applied here.
+    /// Operator applications resolve through `fold_operator`, the only
+    /// dialect-owned semantics; every other arm is checked against its
+    /// declared shape so a malformed template folds to `None` rather than
+    /// a wrong-width constant.
+    pub fn fold_constant(
+        &self,
+        next_read: &mut impl FnMut() -> Option<Vec<u64>>,
+        fold_operator: &mut impl FnMut(
+            &D::Operator,
+            &[Vec<u64>],
+            &Shape<D::Constraint>,
+        ) -> Option<Vec<u64>>,
+    ) -> Option<Vec<u64>> {
+        match self {
+            Self::Read { positions, scalar } => {
+                let constant = next_read()?;
+                let words = scalar.word_count();
+                let mut selected = Vec::with_capacity(positions.len().checked_mul(words)?);
+                for &position in positions {
+                    let start = usize::from(position).checked_mul(words)?;
+                    selected.extend_from_slice(constant.get(start..start.checked_add(words)?)?);
+                }
+                Some(selected)
+            }
+            Self::Const { bits, shape } => shape.holds_words(bits).then(|| bits.clone()),
+            Self::Apply {
+                operator,
+                operands,
+                shape,
+            } => {
+                let operands = operands
+                    .iter()
+                    .map(|operand| operand.fold_constant(next_read, fold_operator))
+                    .collect::<Option<Vec<_>>>()?;
+                fold_operator(operator, &operands, shape)
+            }
+            Self::Reinterpret { operand, shape } => {
+                let bits = operand.fold_constant(next_read, fold_operator)?;
+                shape.holds_words(&bits).then_some(bits)
+            }
+            Self::Compose { parts, shape } => {
+                let mut bits = Vec::new();
+                for part in parts {
+                    bits.extend(part.fold_constant(next_read, fold_operator)?);
+                }
+                shape.holds_words(&bits).then_some(bits)
+            }
         }
     }
 }

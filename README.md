@@ -147,6 +147,9 @@ definition-to-reference bindings.
 | Block splitting | `split_block()`, mapped payload-aware variants, and validated multi-point splitting with automatic stable edge transfer |
 | `serde` feature | Optional serialization support |
 
+| Leader-based construction | `build_address_cfg`, `AddressInstruction` / `AddressSpace` traits, `AddressFlow`, `AddressHandler` | Machine/bytecode streams: leaders at targets, after terminators, and at exception boundaries; typed normal + unwind edges through a consumer payload hook; nested regions registered enclosing-first with parents wired |
+| Structured-marker walk driver | `StructuredWalk` + `StructuredSink` | The if/else/loop/break/continue frame bookkeeping for lifts that emit into checked builders (RTL, MLIL) or any block store; typed `StructuredWalkIssue` misuse reporting |
+
 ### Generic register-transfer IR (`ir::rtl`)
 
 `ir::rtl::Function<D>` stores typed expression reads and parallel transfers over
@@ -164,6 +167,8 @@ preserve instruction expansion/fusion provenance, and keep exceptional throw
 sites exact. The consumer explicitly maps native RTL storage into optional MLIL
 provenance, so target allocation and synthetic temporaries are not mistaken for
 source locations.
+
+| Template constant folding | `VarExpr::fold_constant`, `Shape::holds_words` | Bitwise evaluation of value templates: positional read resolution and shape checking are generic; only the operator semantics hook stays dialect-owned |
 
 ### Generic medium-level IR (`ir::mlil`)
 
@@ -277,6 +282,7 @@ inverted — before falling back to a wrapping `logical_not`.
 | Reusable search marks | `search_with_marks` + `EpochMarks` | The same search with its visited marks in a caller-owned epoch-stamped buffer: a per-root pass allocates marks once instead of an O(node count) buffer per root, and each search still starts from a clean set (epoch bump, O(1)) |
 | Reusable search scratch | `search_with_scratch` + `SearchScratch` | The same search with the marks *and* the call's own buffers — seeds, frontier, adjacency — caller-owned, for a pass whose searches are small enough that the call is the cost; marks and buffers both reset on entry |
 | Disjoint sets | `DisjointSet` (`union` by rank, `union_toward_min` for deterministic minimum representatives, growable via `push`) | The union-find backing phi webs, may-alias classes, and lane webs, usable directly by consumers |
+| Open post-order fold | `open_fold_post_order` + `OpenFold` trait (`FoldEnter::Leaf`/`Fold`, `MarkScope::Shared`/`Isolated`) | Child-answers-to-parent folding over a lazily discovered space: caller-keyed cycle guard (nodes need no `Ord`), per-node mark scoping (exact per-path marking or persistent pruning), early exit, depth bound — C++-style member lookup and type-algebra evaluators without hand-written frame stacks |
 | Traversal events | `breadth_first_events` → `BfsEvent`; `depth_first_events` → `DfsEvent` | Breadth-first discovery with tree/non-tree edges, or depth-first discover/tree/back/forward-or-cross/finish events in pinned order |
 | Open-graph search | `open_search` + `OpenSearchConfig` | The same disciplines over a lazily discovered node space: successors come from a closure, no dense ids (import/re-export chases, ordered emission walks) |
 | Open-graph events | `open_breadth_first_events` → `OpenBfsEvent`; `open_depth_first_events` → `OpenDfsEvent` | Breadth-first discovery/refusal events or depth-first discover/finish/refusal events over a lazily discovered node space; path policy can revisit a shared node once per route |
@@ -342,6 +348,8 @@ inverted — before falling back to a wrapping `logical_not`.
 | Value numbering (global) | `ValueNumbering::compute`, `ValueNumberInfo` (associated `Operator`) | Dominator-scoped GVN over any operation identity |
 | Redundancy counting | `ValueNumbering::redundant_count` | From GVN results |
 | Explicit alias sets | `AliasSets::new` / `merge`; `MemoryAlias` trait | Caller-populated union-find classes usable directly as the alias oracle for memory SSA; an unmerged pair is a proof of disjointness |
+| Index-path aliasing | `index_paths_may_overlap` | The `base[i][j]` kernel for alias oracles over indexed storage: unequal arity or unknown components stay conservative, fully known disagreement proves disjointness |
+| Exclusive handler extents | `recover_exclusive_extents[_with]`, `promote_exclusive_extents` | Evidence-reporting sibling of `promote_handler_extents`: blocks exclusively reachable from one handler entry along normal edges, boundary and ambiguity issues, and atomic per-region promotion that refuses overlap |
 | Dead code analysis | `DeadCode::compute` | Liveness-dead instructions (effect-guarded) and unreachable blocks, reported without mutating — the analysis `dead_code_elimination` applies |
 | Purity classification | `cfg_purity`, `block_purity`, `EffectInfo` (associated `Effect`) | Consumer effect vocabularies — machine memory/IO, allocation, panics |
 | Metrics | `GraphMetrics::compute` (any rooted view); `CfgMetrics::compute` | Node/edge counts, cyclomatic complexity, nesting depth, instruction density |

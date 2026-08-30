@@ -36,12 +36,21 @@
 //! breadth-first counterpart of [`open_depth_first_events`] under
 //! [`crate::VisitedPolicy::Path`].
 //!
+//! [`open_fold_post_order`] packages that fold shape completely: an
+//! [`OpenFold`] answers per node (or opens an accumulator), absorbs each
+//! child's answer with early exit, rewrites on the unwind, and controls the
+//! cycle guard itself — which nodes carry a mark key at all, and whether a
+//! node's subtree marks persist ([`MarkScope::Shared`]) or stay per-route
+//! ([`MarkScope::Isolated`]), so both per-path ambiguity detection and
+//! prune-on-revisit evaluators fold without hand-written frame stacks.
+//!
 //! [`follow`] and [`follow_path`] are the degenerate case that shows up just
 //! as often: an out-degree ≤ 1 chase (import alias to import alias, symlink to
 //! symlink, type alias to type alias) which needs a hop bound and a cycle
 //! guard and nothing else.
 
 mod events;
+mod fold;
 mod follow;
 mod paths;
 mod search;
@@ -50,6 +59,7 @@ pub use events::{
     OpenBfsConfig, OpenBfsEvent, OpenDfsConfig, OpenDfsEvent, open_breadth_first_events,
     open_depth_first_events,
 };
+pub use fold::{FoldEnter, MarkScope, OpenFold, OpenFoldConfig, open_fold_post_order};
 pub use follow::{follow, follow_path};
 pub use paths::{OpenPathsConfig, OpenPathsEvent, open_breadth_first_paths};
 pub use search::{OpenSearchConfig, open_search};

@@ -58,6 +58,34 @@ impl<L> MemoryAlias<L> for ConservativeMemoryAlias {
     }
 }
 
+/// Whether two structured index paths may select overlapping sub-locations.
+///
+/// The building block for alias oracles over indexed storage
+/// (`base[i][j]`-shaped locations): `fixed` projects each path component to
+/// its compile-time value when one is known. Paths of unequal arity are
+/// conservatively overlapping; a component whose value is unknown matches
+/// anything; two paths whose known components ever disagree provably select
+/// disjoint storage.
+///
+/// Returning `false` is a proof of disjointness under the caller's promise
+/// that equal-arity paths address the same axes of the same object — the
+/// storage-classification half of the oracle stays consumer-owned.
+pub fn index_paths_may_overlap<T, C: PartialEq>(
+    left: &[T],
+    right: &[T],
+    mut fixed: impl FnMut(&T) -> Option<C>,
+) -> bool {
+    if left.len() != right.len() {
+        return true;
+    }
+    left.iter()
+        .zip(right)
+        .all(|(left, right)| match (fixed(left), fixed(right)) {
+            (Some(left), Some(right)) => left == right,
+            _ => true,
+        })
+}
+
 /// Stable identity of one transitive may-alias class.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct MemoryClassId(usize);

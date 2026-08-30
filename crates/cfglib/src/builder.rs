@@ -1,5 +1,13 @@
 //! CFG builder — converts a flat instruction stream into a [`Cfg`]
 //! using a scope-stack approach for structured control flow.
+//!
+//! Address-shaped streams (machine code, bytecode with branch targets and
+//! exception tables in one address space) build through
+//! [`address::build_address_cfg`] instead, which discovers leaders rather
+//! than consuming structured markers.
+
+pub mod address;
+pub mod structured;
 
 extern crate alloc;
 use alloc::collections::BTreeMap;

@@ -205,6 +205,13 @@ pub use analysis::value_numbering::{
     BlockValueNumbers, ValueNumber, ValueNumberInfo, ValueNumbering,
 };
 pub use block::{BasicBlock, BlockId};
+pub use builder::address::{
+    AddressBuildError, AddressEdgeInfo, AddressEdgeRole, AddressFlow, AddressGraph, AddressHandler,
+    AddressInstruction, AddressSpace, build_address_cfg,
+};
+pub use builder::structured::{
+    StructuredEdge, StructuredSink, StructuredWalk, StructuredWalkIssue,
+};
 pub use builder::{BuildError, CfgBuilder, JumpResolution, resolve_jump_edges};
 pub use cfg::{Cfg, Predecessors, SplitPointError, Successors};
 pub use dataflow::abstract_interpretation::{
@@ -235,7 +242,7 @@ pub use dataflow::memory::{
     ConservativeMemoryAlias, ExactMemoryAlias, MemoryAlias, MemoryClassId, MemoryDefinition,
     MemoryEventSite, MemoryLocationClass, MemoryPhi, MemorySSA, MemorySSAEvent, MemorySsaValue,
     MemoryUse, MemoryValueEdge, MemoryValueFlow, MemoryValueFlowError, MemoryValueNode,
-    MemoryValueRole,
+    MemoryValueRole, index_paths_may_overlap,
 };
 pub use dataflow::node_fixpoint::{
     NodeFacts, NodeProblem, TryNodeProblem, solve_node_problem, solve_node_problem_from,
@@ -283,9 +290,10 @@ pub use graph::interval::{Interval, IntervalAnalysis};
 pub use graph::keyed::KeyedGraph;
 pub use graph::loop_nest::{LoopNestNode, LoopNestingTree};
 pub use graph::open::{
-    OpenBfsConfig, OpenBfsEvent, OpenDfsConfig, OpenDfsEvent, OpenPathsConfig, OpenPathsEvent,
-    OpenSearchConfig, follow, follow_path, open_breadth_first_events, open_breadth_first_paths,
-    open_depth_first_events, open_search,
+    FoldEnter, MarkScope, OpenBfsConfig, OpenBfsEvent, OpenDfsConfig, OpenDfsEvent, OpenFold,
+    OpenFoldConfig, OpenPathsConfig, OpenPathsEvent, OpenSearchConfig, follow, follow_path,
+    open_breadth_first_events, open_breadth_first_paths, open_depth_first_events,
+    open_fold_post_order, open_search,
 };
 pub use graph::pdg::{DependenceKind, DependenceNode, program_dependence_graph};
 pub use graph::reducible::make_reducible;
@@ -381,9 +389,11 @@ pub use memory::{
     MemoryOperations, MemoryTrace, MemoryTraceEntry,
 };
 pub use region::{
-    Cleanup, CompletionReason, Continuation, Handler, HandlerBody, HandlerFilters, HandlerKind,
+    Cleanup, CompletionReason, Continuation, ExclusiveExtent, ExtentIssue, ExtentPromotionDecision,
+    ExtentPromotionStatus, ExtentStatus, Handler, HandlerBody, HandlerFilters, HandlerKind,
     HandlerMetadata, HandlerRef, HandlerTypes, Region, RegionId, RegionIndex,
-    promote_handler_extents,
+    promote_exclusive_extents, promote_handler_extents, recover_exclusive_extents,
+    recover_exclusive_extents_with,
 };
 pub use rewrite::RewriteMap;
 pub use transform::cleanup::{

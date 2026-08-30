@@ -55,7 +55,11 @@ use alloc::vec::Vec;
 
 mod recover;
 
-pub use recover::promote_handler_extents;
+pub use recover::{
+    ExclusiveExtent, ExtentIssue, ExtentPromotionDecision, ExtentPromotionStatus, ExtentStatus,
+    promote_exclusive_extents, promote_handler_extents, recover_exclusive_extents,
+    recover_exclusive_extents_with,
+};
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;

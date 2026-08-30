@@ -10,7 +10,7 @@ mod value;
 pub use ssa::{
     ConservativeMemoryAlias, ExactMemoryAlias, MemoryAlias, MemoryClassId, MemoryDefinition,
     MemoryEventSite, MemoryLocationClass, MemoryPhi, MemorySSA, MemorySSAEvent, MemorySsaValue,
-    MemoryUse,
+    MemoryUse, index_paths_may_overlap,
 };
 pub use value::{
     MemoryValueEdge, MemoryValueFlow, MemoryValueFlowError, MemoryValueNode, MemoryValueRole,

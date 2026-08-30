@@ -258,5 +258,14 @@ impl<C> Shape<C> {
     }
 }
 
+impl<C: Constraint> Shape<C> {
+    /// Whether `bits` holds exactly this shape's constant words —
+    /// [`Constraint::word_count`] words per lane across every lane.
+    #[must_use]
+    pub fn holds_words(&self, bits: &[u64]) -> bool {
+        usize::from(self.lanes).checked_mul(self.scalar.word_count()) == Some(bits.len())
+    }
+}
+
 /// A numeric value shape — [`Shape`] over [`ScalarType`].
 pub type ValueShape = Shape<ScalarType>;
