@@ -228,6 +228,12 @@ impl<N, E> DirectedGraph<N, E> {
         self.nodes.len()
     }
 
+    /// Return whether `node` belongs to this graph.
+    #[must_use]
+    pub fn contains_node(&self, node: NodeId) -> bool {
+        node.index() < self.nodes.len()
+    }
+
     /// Return whether the graph contains no nodes.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -306,6 +312,12 @@ impl<N, E> DirectedGraph<N, E> {
     #[must_use]
     pub fn edge_slot_count(&self) -> usize {
         self.edges.len()
+    }
+
+    /// Return whether `edge` identifies a live edge in this graph.
+    #[must_use]
+    pub fn contains_edge(&self, edge: EdgeId) -> bool {
+        self.edges.get(edge.index()).is_some_and(Option::is_some)
     }
 
     /// Return outgoing edge identities for `node`.

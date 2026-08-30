@@ -1,7 +1,7 @@
 use cfglib::{
     AbstractDomain, Cfg, DirectedGraph, Direction, DominatorTree, EdgeProblem, Lattice, NodeId,
     SolveConfig, SsaForm, TryEdgeProblem, TryNodeProblem, TryProblem, abstract_interpret,
-    copies_by_predecessor, copy_propagation, eliminate_phis, solve_edge_problem,
+    alias_propagation, copies_by_predecessor, copy_propagation, eliminate_phis, solve_edge_problem,
     solve_edge_problem_from, solve_edge_problem_from_with_config, solve_edge_problem_with_config,
     solve_node_problem_from, solve_node_problem_from_with_config, solve_problem_from,
     solve_problem_from_with_config, try_solve_edge_problem, try_solve_edge_problem_from,
@@ -243,6 +243,20 @@ fn register_analyses(suite: &mut BenchmarkSuite<'_>) {
         |(_, stats)| {
             assert_eq!(stats.uses_rewritten, 1);
             assert_eq!(stats.copies_removed, 1);
+        }
+    );
+    benchmark_case!(
+        suite,
+        "api_alias_propagation",
+        covers[alias_propagation],
+        || {
+            let mut candidate = copies_fixture.clone();
+            let stats = alias_propagation(&mut candidate);
+            (candidate, stats)
+        },
+        |(_, stats)| {
+            assert_eq!(stats.uses_rewritten, 1);
+            assert_eq!(stats.aliases_removed, 1);
         }
     );
 

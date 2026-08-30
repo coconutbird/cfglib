@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/cfglib", "crates/cfglib-dxbc"]
+members = ["crates/cfglib"]
 
 [workspace.package]
 version = "0.1.0"
@@ -14,7 +14,6 @@ categories = ["compilers", "no-std"]
 
 [workspace.dependencies]
 cfglib = { version = "0.1.0", path = "crates/cfglib" }
-dxbc = { version = "0.1.0", git = "https://github.com/coconutbird/d3dasm.git", branch = "main", package = "dxbc", default-features = false }
 serde = { version = "1.0.228", default-features = false, features = ["derive", "alloc"] }
 smallvec = { version = "1.15.1", default-features = false }
 

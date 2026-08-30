@@ -1,5 +1,10 @@
 //! Exception-region accessors of [`Cfg`].
 
+extern crate alloc;
+
+use alloc::collections::BTreeSet;
+use alloc::vec::Vec;
+
 use crate::block::BlockId;
 use crate::region::{Handler, HandlerRef, Region, RegionId};
 
@@ -38,6 +43,57 @@ impl<I, E> Cfg<I, E> {
         self.region_mut(handler.region())?
             .handlers
             .get_mut(handler.index())
+    }
+
+    /// Removes one region, leaving an inert tombstone (empty protected
+    /// set, no handlers) so later region identities stay stable.
+    /// Structuring and fidelity reporting ignore inert regions.
+    pub fn remove_region(&mut self, id: RegionId) -> Option<Region> {
+        let slot = self.regions.get_mut(id.index())?;
+        Some(core::mem::replace(
+            slot,
+            Region {
+                id,
+                protected_blocks: BTreeSet::new(),
+                handlers: Vec::new(),
+                parent: None,
+            },
+        ))
+    }
+
+    /// Removes every region none of whose handlers can be entered — each
+    /// handler entry is unreachable from the graph entry, so nothing in
+    /// the protected range raises into it. Frontends that model
+    /// exceptional flow exactly leave such regions behind when a source
+    /// construct's body provably cannot throw (a `try`/`finally` around
+    /// arithmetic); dropping them states the same semantics with plain
+    /// sequential flow. Returns the number of removed regions.
+    pub fn remove_unreachable_regions(&mut self) -> usize {
+        let mut reachable = BTreeSet::new();
+        let mut frontier = alloc::vec![self.entry()];
+        while let Some(block) = frontier.pop() {
+            if !reachable.insert(block) {
+                continue;
+            }
+            frontier.extend(self.successors(block));
+        }
+        let doomed: Vec<RegionId> = self
+            .regions
+            .iter()
+            .filter(|region| {
+                !region.handlers.is_empty()
+                    && region
+                        .handlers
+                        .iter()
+                        .all(|handler| !reachable.contains(&handler.entry))
+            })
+            .map(|region| region.id)
+            .collect();
+        let removed = doomed.len();
+        for id in doomed {
+            self.remove_region(id);
+        }
+        removed
     }
 
     /// Add a region and return its id.

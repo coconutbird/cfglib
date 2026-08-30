@@ -71,6 +71,24 @@ pub enum EdgeKind {
     ExceptionContinue,
 }
 
+impl EdgeKind {
+    /// Whether the edge transfers control exceptionally rather than
+    /// sequentially.
+    ///
+    /// [`ExceptionLeave`](Self::ExceptionLeave) is a normal transfer out
+    /// of a protected region, so it stays sequential.
+    #[must_use]
+    pub const fn is_exceptional(self) -> bool {
+        matches!(
+            self,
+            EdgeKind::ExceptionHandler
+                | EdgeKind::ExceptionUnwind
+                | EdgeKind::ExceptionResume
+                | EdgeKind::ExceptionContinue
+        )
+    }
+}
+
 impl core::fmt::Display for EdgeKind {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let label = match self {

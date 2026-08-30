@@ -17,6 +17,116 @@ use crate::cfg::Cfg;
 use crate::dataflow::{InstrInfo, ProgramPoint, VariableId};
 use crate::graph::dominator::{DominatorChildOrder, DominatorTree};
 use crate::graph::search::EpochMarks;
+use crate::graph::view::{DirectedGraphView, RootedGraphView};
+use crate::kosaraju_scc;
+
+/// Whole-CFG dominance view with a private virtual root connected to the
+/// ordinary entry and every source SCC of otherwise unreachable code.
+struct SsaDominatorView<'a, I, E> {
+    cfg: &'a Cfg<I, E>,
+    roots: Vec<BlockId>,
+}
+
+impl<I, E> SsaDominatorView<'_, I, E> {
+    fn virtual_root(&self) -> usize {
+        self.cfg.block_count()
+    }
+}
+
+impl<I, E> DirectedGraphView for SsaDominatorView<'_, I, E> {
+    type NodeId = usize;
+
+    fn node_count(&self) -> usize {
+        self.cfg.block_count() + 1
+    }
+
+    fn successors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+        let original_count = self.cfg.block_count();
+        let original = (node < original_count).then(|| BlockId::from_index(node));
+        (node == original_count)
+            .then_some(self.roots.as_slice())
+            .into_iter()
+            .flatten()
+            .copied()
+            .map(BlockId::index)
+            .chain(
+                original
+                    .into_iter()
+                    .flat_map(|block| self.cfg.successors(block).map(BlockId::index)),
+            )
+    }
+
+    fn predecessors(&self, node: Self::NodeId) -> impl Iterator<Item = Self::NodeId> + '_ {
+        let original_count = self.cfg.block_count();
+        let original = (node < original_count).then(|| BlockId::from_index(node));
+        let virtual_predecessor = original
+            .filter(|block| self.roots.binary_search(block).is_ok())
+            .map(|_| original_count);
+        virtual_predecessor.into_iter().chain(
+            original
+                .into_iter()
+                .flat_map(|block| self.cfg.predecessors(block).map(BlockId::index)),
+        )
+    }
+}
+
+impl<I, E> RootedGraphView for SsaDominatorView<'_, I, E> {
+    fn root(&self) -> Self::NodeId {
+        self.virtual_root()
+    }
+}
+
+/// Extends ordinary entry-rooted dominance into a forest for disconnected
+/// code while retaining independent version-zero live-ins at every source
+/// component.
+fn complete_dominator_forest<I, E>(
+    cfg: &Cfg<I, E>,
+    dominators: &DominatorTree,
+) -> Option<DominatorTree> {
+    if cfg
+        .blocks()
+        .iter()
+        .all(|block| dominators.is_reachable(block.id()))
+    {
+        return None;
+    }
+
+    let components = kosaraju_scc(cfg);
+    let mut roots = vec![cfg.entry()];
+    for (component_index, component) in components.components.iter().enumerate() {
+        let Some(&first) = component.nodes.iter().next() else {
+            continue;
+        };
+        if dominators.is_reachable(first) {
+            continue;
+        }
+        let has_external_predecessor = component.nodes.iter().copied().any(|block| {
+            cfg.predecessors(block)
+                .any(|predecessor| components.component_index(predecessor) != component_index)
+        });
+        if !has_external_predecessor {
+            roots.push(first);
+        }
+    }
+    roots.sort_unstable();
+    roots.dedup();
+
+    let view = SsaDominatorView { cfg, roots };
+    let complete = DominatorTree::<usize>::compute(&view);
+    let original_count = cfg.block_count();
+    let idom = (0..original_count)
+        .map(|node| {
+            complete
+                .idom(node)
+                .filter(|&parent| parent < original_count)
+                .map(BlockId::from_index)
+        })
+        .collect();
+    let reachable = (0..original_count)
+        .map(|node| complete.is_reachable(node))
+        .collect();
+    Some(DominatorTree::from_forest_parts(idom, reachable))
+}
 
 /// The dominance frontier of every block.
 #[derive(Debug, Clone)]
@@ -486,7 +596,10 @@ impl<V: VariableId> SsaForm<V> {
     /// The algorithm performs phi placement followed by classic dominator-tree
     /// renaming. It is iterative rather than recursive, so deeply nested control
     /// flow does not consume the host call stack. Variables read before any
-    /// dominating definition receive version `0`.
+    /// dominating definition receive version `0`. Disconnected source
+    /// components become independent roots of an internal dominator forest, so
+    /// definitions still flow through unreachable handler/dead-code chains
+    /// without inheriting values from the ordinary entry component.
     ///
     /// # Precondition
     ///
@@ -500,6 +613,8 @@ impl<V: VariableId> SsaForm<V> {
     /// [`split_block`](crate::Cfg::split_block)).
     #[must_use]
     pub fn compute<I: InstrInfo<Variable = V>, E>(cfg: &Cfg<I, E>, dom: &DominatorTree) -> Self {
+        let complete = complete_dominator_forest(cfg, dom);
+        let dom = complete.as_ref().unwrap_or(dom);
         let placements = PhiPlacements::compute(cfg, dom);
         let mut drafts = create_drafts(cfg, &placements);
         let mut max_versions = BTreeMap::new();
@@ -633,5 +748,38 @@ mod tests {
         let ssa = SsaForm::compute(&cfg, &dom);
         assert_eq!(ssa.block(unreachable).instructions.len(), 1);
         assert_eq!(ssa.block(unreachable).instructions[0].defs[0].variable, 3);
+    }
+
+    #[test]
+    fn disconnected_definition_reaches_its_component_successor() {
+        let mut cfg = Cfg::<DfInst>::new();
+        let landing = cfg.new_block();
+        let handler = cfg.new_block();
+        cfg.add_edge(landing, handler, EdgeKind::Fallthrough);
+        cfg.block_mut(landing).push(df_def("caught", 0));
+        cfg.block_mut(handler).push(df_use("handler", 0));
+
+        let dom = DominatorTree::compute(&cfg);
+        let ssa = SsaForm::compute(&cfg, &dom);
+        assert_eq!(
+            ssa.block(handler).instructions[0].uses[0],
+            ssa.block(landing).instructions[0].defs[0]
+        );
+    }
+
+    #[test]
+    fn disconnected_component_does_not_inherit_entry_definitions() {
+        let mut cfg = Cfg::<DfInst>::new();
+        let disconnected = cfg.new_block();
+        let entry = cfg.entry();
+        cfg.block_mut(entry).push(df_def("entry", 0));
+        cfg.block_mut(disconnected).push(df_use("dead", 0));
+
+        let dom = DominatorTree::compute(&cfg);
+        let ssa = SsaForm::compute(&cfg, &dom);
+        assert_eq!(
+            ssa.block(disconnected).instructions[0].uses[0],
+            SsaValue::live_in(0)
+        );
     }
 }

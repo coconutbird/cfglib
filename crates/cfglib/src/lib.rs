@@ -9,11 +9,52 @@
 //! structure for dense graphs; [`open_breadth_first_events`] and
 //! [`open_depth_first_events`] provide the corresponding discovery streams
 //! for lazily generated node spaces.
+//! [`graph::scope::ScopeGraph`] stores language-defined scopes, labeled
+//! reachability, relation-tagged declarations, and references.
+//! [`graph::scope::ScopeGraphQuery`] supplies
+//! the path automaton, matching, label/data specificity, or a full path order;
+//! the same resolver handles stored references and ephemeral completion
+//! requests and builds forward/reverse binding indexes.
+//! [`graph::stack::StackGraph`] provides the complementary file-incremental
+//! model with the standard root, scope, symbol push/pop, scoped-symbol,
+//! drop-scopes, and jump-to-scope nodes. It supports concrete direct paths,
+//! edge-precedence shadowing, serializable per-file partial-path databases, and
+//! query-time stitching across independently built file partitions.
 //! [`Cfg<I, E>`] adds basic-block, control-flow, and caller-owned edge metadata
 //! when the graph really is a program CFG, and every
 //! instruction-adjacent axis — variables, constants, operators, effects,
 //! branch targets, callees — is consumer-typed rather than imposed by the
 //! library.
+//! [`ir::ast`] reconstructs structured control flow over any instruction
+//! payload without changing its semantic level — loops classified as
+//! pre-/post-tested, switch arms with their dispatch edges and default,
+//! breaks and continues derived from natural-loop membership, and a
+//! [`LiftReport`] naming exactly what degraded to gotos.
+//! [`ir::mlil`] layers stable semantic identities, point-specific types,
+//! many-to-many source provenance, checked construction (including
+//! exception regions and signatures), and reusable analyses over that CFG.
+//! [`ir::rtl`] sits below MLIL for machine-shaped languages: each native
+//! instruction becomes one parallel typed transfer over raw storage
+//! lanes, and [`lift_rtl_function`] recovers typed variables (def-use
+//! webs over per-lane SSA) while emitting into an associated, potentially
+//! distinct MLIL dialect. [`lower_rtl_function`] maps that MLIL back through
+//! target placement. Both directions retain signatures, exception regions,
+//! fallibly translated edges, and many-to-many provenance; variable-shaped
+//! languages can skip RTL and build MLIL directly.
+//! [`ir::hlil`] is the structured, expression-oriented level above it:
+//! statement trees with nested typed expression trees, built either
+//! bottom-up by a source frontend ([`HlilFunctionBuilder`]) or lifted from
+//! MLIL ([`lift_hlil_function`]) with effect-ordered single-use inlining,
+//! and lowered back to flat MLIL ([`lower_hlil_function`]) so both
+//! directions of the pipeline meet at either level.
+//! [`PassPipeline`] composes named, ordered, fallible transformations over any
+//! of these IR levels or a consumer-owned compilation context, retaining a
+//! change report and failed-pass identity without imposing dialect policy.
+//! Every level's dialect ([`Vocabulary`], [`ir::rtl::Dialect`],
+//! [`ir::mlil::Dialect`], [`ir::hlil::Dialect`]) keeps operations, types,
+//! effects, edge meaning,
+//! and source coordinates entirely consumer-defined, so one dialect type
+//! serves source lowering and binary lifting alike.
 //!
 //! # Quick start
 //!
@@ -69,12 +110,20 @@
 //!   ├─ CopySource           (optional — copy propagation)
 //!   ├─ ConstantFolder       (optional — constant propagation, Const)
 //!   ├─ ExprInstr            (optional — expression trees, Operator + Const)
-//!   └─ ValueNumberInfo      (optional — value numbering, Operator)
+//!   ├─ ValueNumberInfo      (optional — value numbering, Operator)
+//!   └─ MemoryEventInfo      (optional — memory data flow + fences, Location + Fence)
+//!
+//! MemoryAlias<Location>     (optional may-alias oracle consumed by MemorySSA)
 //!
 //! DisplayInstr              (optional — rendering only: DOT, pseudocode)
 //! CallInfo                  (optional — call graphs, Callee)
 //! SwitchSource              (optional — switch table recovery, Target)
 //! ```
+//!
+//! [`MemoryEventInfo`] is the sole instruction-side memory contract.
+//! [`MemorySSA`] merges its reported locations through a caller-owned
+//! [`MemoryAlias`] relation and provides location-class phis, reaching writes,
+//! clobbers, users, transitive readers, and SSA-resolved address inputs.
 //!
 //! Additionally, [`Problem`] is the trait for pluggable instruction-level
 //! dataflow analyses (run by [`solve_problem`]), [`NodeProblem`] its
@@ -86,7 +135,9 @@
 //! # Contracts
 //!
 //! - Blocks may be empty, may lack explicit terminator instructions, and
-//!   unreachable blocks are legal (dead code after a return/goto).
+//!   unreachable blocks are legal (dead code after a return/goto). SSA treats
+//!   disconnected source components as independent dominator-forest roots, so
+//!   their internal def-use flow remains intact without inheriting entry state.
 //! - [`Cfg::blocks`] iterates in allocation order and [`Cfg::edges`] in
 //!   insertion order; both orders are stable and part of the API.
 //! - [`ProgramPoint`] instruction indices are positions, not identities:
@@ -109,7 +160,6 @@ pub(crate) fn usize_to_f64(value: usize) -> f64 {
 }
 
 pub mod analysis;
-pub mod ast;
 pub mod block;
 pub mod builder;
 pub mod cfg;
@@ -119,6 +169,8 @@ pub mod edge;
 pub mod exception;
 pub mod flow;
 pub mod graph;
+pub mod ir;
+pub mod memory;
 pub mod region;
 pub mod rewrite;
 pub mod transform;
@@ -126,7 +178,7 @@ pub mod transform;
 #[cfg(test)]
 pub(crate) mod test_util;
 
-pub use analysis::alias::{AliasSets, MemoryInfo, MemoryOp};
+pub use analysis::alias::AliasSets;
 pub use analysis::dead_code::DeadCode;
 pub use analysis::expr::{
     BlockExprTrees, ExprInstr, ExprNode, recover_block_expressions, recover_expressions,
@@ -145,7 +197,6 @@ pub use analysis::tail_call::{TailCall, detect_explicit_tail_calls, detect_tail_
 pub use analysis::value_numbering::{
     BlockValueNumbers, ValueNumber, ValueNumberInfo, ValueNumbering,
 };
-pub use ast::{AstNode, CatchHandler, SwitchCase, lift, lift_predicated};
 pub use block::{BasicBlock, BlockId};
 pub use builder::{BuildError, CfgBuilder, JumpResolution, resolve_jump_edges};
 pub use cfg::{Cfg, Predecessors, SplitPointError, Successors};
@@ -155,7 +206,10 @@ pub use dataflow::abstract_interpretation::{
 pub use dataflow::constant_propagation::{
     ConstFact, ConstPropProblem, ConstValue, ConstantFolder, constant_propagation,
 };
-pub use dataflow::copy_propagation::{CopyPropagationStats, CopySource, copy_propagation};
+pub use dataflow::copy_propagation::{
+    AliasPairs, AliasPropagationStats, CopyPropagationStats, CopySource, alias_propagation,
+    copy_propagation,
+};
 pub use dataflow::def_use::DefUseChains;
 pub use dataflow::edge_fixpoint::{
     EdgeFacts, EdgeProblem, TryEdgeProblem, solve_edge_problem, solve_edge_problem_from,
@@ -170,7 +224,6 @@ pub use dataflow::fixpoint::{
     try_solve_problem_with_config,
 };
 pub use dataflow::liveness::{Liveness, LivenessProblem};
-pub use dataflow::memory_ssa::{MemoryAccess, MemoryEffect, MemorySSA, MemoryVersion};
 pub use dataflow::node_fixpoint::{
     NodeFacts, NodeProblem, TryNodeProblem, solve_node_problem, solve_node_problem_from,
     solve_node_problem_from_with_config, solve_node_problem_with_config, try_solve_node_problem,
@@ -228,9 +281,22 @@ pub use graph::reverse::reverse_cfg;
 pub use graph::scc::{
     Scc, SccDecomposition, condensation, condensation_of, kosaraju_scc, tarjan_scc,
 };
+pub use graph::scope::{
+    Scope, ScopeDatum, ScopeDatumId, ScopeEdgeId, ScopeGraph, ScopeGraphPathLabel, ScopeGraphQuery,
+    ScopeId, ScopeLinearResolutionError, ScopePath, ScopeQuery, ScopeReference, ScopeReferenceId,
+    ScopeResolution, ScopeResolutionCandidate, ScopeResolutionConfig, ScopeResolutionIndex,
+    ScopeResolutionStats,
+};
 pub use graph::search::{
     BfsEvent, DfsEvent, EpochMarks, SearchConfig, SearchOrder, SearchScratch, Visit, VisitedPolicy,
     breadth_first_events, depth_first_events, search, search_with_marks, search_with_scratch,
+};
+pub use graph::stack::{
+    StackEdge, StackEdgeId, StackFileId, StackGraph, StackGraphError, StackLinearResolutionError,
+    StackNode, StackNodeId, StackNodeKind, StackPartialPath, StackPartialPathConfig,
+    StackPartialPathDatabase, StackPartialPathId, StackPartialPathSet, StackPartialPathStats,
+    StackPath, StackPathError, StackPathStep, StackResolution, StackResolutionIndex,
+    StackReverseIndex, StackScopedSymbol, StackSearchConfig, StackSearchStats,
 };
 pub use graph::structure::{
     BackEdge, CanonicalLoop, NaturalLoop, canonicalize_loops, detect_loops, detect_loops_tagged,
@@ -246,9 +312,67 @@ pub use graph::verify::{
     verify_view, verify_with,
 };
 pub use graph::view::{DenseNodeId, DirectedGraphView, Reversed, Rooted, RootedGraphView};
+pub use ir::ast::{
+    AstNode, CatchHandler, GotoDiagnostic, GotoReason, LiftReport, LoopKind, SwitchCase, lift,
+    lift_predicated, lift_with_report,
+};
+pub use ir::dialect::Vocabulary;
+pub use ir::hlil::{
+    Dialect as HlilDialect, EntityId as HlilEntityId, Error as HlilError,
+    Expression as HlilExpression, ExpressionId as HlilExpressionId,
+    ExpressionKind as HlilExpressionKind, Function as HlilFunction,
+    FunctionBuilder as HlilFunctionBuilder, Handler as HlilHandler, HandlerKind as HlilHandlerKind,
+    LiftDialect as HlilLiftDialect, LiftMetadata as HlilLiftMetadata, Lifted as HlilLifted,
+    LiftedFunction as HlilLiftedFunction, LowerDialect as HlilLowerDialect,
+    LoweredFunction as HlilLoweredFunction, ProvenanceEntry as HlilProvenanceEntry,
+    ProvenanceMap as HlilProvenanceMap, Result as HlilResult, Signature as HlilSignature,
+    Statement as HlilStatement, StatementId as HlilStatementId, StatementKind as HlilStatementKind,
+    SwitchArm as HlilSwitchArm, Variable as HlilVariable, VariableId as HlilVariableId,
+    VerificationIssue as HlilVerificationIssue, VerificationReport as HlilVerificationReport,
+    VerifyDialect as HlilVerifyDialect, lift_function as lift_hlil_function,
+    lift_function_with_metadata as lift_hlil_function_with_metadata,
+    lift_function_with_structure as lift_hlil_function_with_structure,
+    lower_function as lower_hlil_function,
+};
+pub use ir::mlil::{
+    AnalysisDialect as MlilAnalysisDialect, Dialect as MlilDialect, EntityId as MlilEntityId,
+    Error as MlilError, Function as MlilFunction, FunctionBuilder as MlilFunctionBuilder,
+    Instruction as MlilInstruction, InstructionId as MlilInstructionId,
+    InstructionMetadata as MlilInstructionMetadata, MemoryDialect as MlilMemoryDialect,
+    MemoryPromotion as MlilMemoryPromotion, PromoteDialect as MlilPromoteDialect,
+    PromotionAccess as MlilPromotionAccess, ProvenanceEntry as MlilProvenanceEntry,
+    ProvenanceMap as MlilProvenanceMap, Result as MlilResult, Signature as MlilSignature,
+    TypedVariable as MlilTypedVariable, Variable as MlilVariable, VariableId as MlilVariableId,
+    VariableSplit as MlilVariableSplit, VerificationIssue as MlilVerificationIssue,
+    VerificationReport as MlilVerificationReport, VerifyDialect as MlilVerifyDialect,
+};
+pub use ir::provenance::{ProvenanceEntry, ProvenanceError, ProvenanceMap};
+pub use ir::rtl::{
+    Constraint as RtlConstraint, Dialect as RtlDialect, Edge as RtlEdge,
+    EdgeContext as RtlEdgeContext, Emission as RtlEmission, Error as RtlError, Expr as RtlExpr,
+    Function as RtlFunction, FunctionBuilder as RtlFunctionBuilder, Inference as RtlInference,
+    Lane as RtlLane, Lift as RtlLift, LiftMaps as RtlLiftMaps,
+    LiftedStatement as RtlLiftedStatement, Lifting as RtlLifting, Lower as RtlLower,
+    LowerContext as RtlLowerContext, LowerEdgeContext as RtlLowerEdgeContext,
+    Lowered as RtlLowered, MlilBridge as RtlMlilBridge, Place as RtlPlace,
+    Placement as RtlPlacement, ProvenanceMap as RtlProvenanceMap, ReadResolver as RtlReadResolver,
+    ResolvedRead as RtlResolvedRead, Result as RtlResult, ScalarInference, ScalarType,
+    Shape as RtlShape, Signature as RtlSignature, Statement as RtlStatement,
+    StatementId as RtlStatementId, StatementNode as RtlStatementNode, ValueShape,
+    VarExpr as RtlVarExpr, WebInfo as RtlWebInfo, Webs as RtlWebs, lift as lift_rtl_function,
+    lower as lower_rtl_function, referenced_webs as rtl_referenced_webs,
+};
+pub use ir::signature::Signature;
+pub use memory::{
+    ConservativeMemoryAlias, ExactMemoryAlias, MemoryAccessKind, MemoryAlias, MemoryAtomicity,
+    MemoryClassId, MemoryDefinition, MemoryEvent, MemoryEventAccess, MemoryEventInfo,
+    MemoryEventSite, MemoryLocationClass, MemoryOperations, MemoryPhi, MemorySSA, MemorySSAEvent,
+    MemorySsaValue, MemoryTrace, MemoryTraceEntry, MemoryUse,
+};
 pub use region::{
     Cleanup, CompletionReason, Continuation, Handler, HandlerBody, HandlerFilters, HandlerKind,
     HandlerMetadata, HandlerRef, HandlerTypes, Region, RegionId, RegionIndex,
+    promote_handler_extents,
 };
 pub use rewrite::RewriteMap;
 pub use transform::cleanup::{
@@ -264,6 +388,12 @@ pub use transform::critical::{
     split_critical_edges, split_critical_edges_mapped, split_critical_edges_with,
 };
 pub use transform::dce::{dead_code_elimination, remove_dead_code, remove_dead_code_mapped};
+pub use transform::duplicate::{
+    TailDuplication, duplicate_structuring_tails, duplicate_structuring_tails_with_structure,
+};
 pub use transform::linearize::{BlockOrder, Emitter, LinearInst, linearize};
 pub use transform::loops::{LoopRotation, find_loop_invariants, rotate_loop};
+pub use transform::pass::{
+    Pass, PassChange, PassExecution, PassFailure, PassFn, PassId, PassPipeline, PassReport, pass_fn,
+};
 pub use transform::pre::{PreAnalysis, eliminate_pre};

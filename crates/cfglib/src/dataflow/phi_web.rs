@@ -72,10 +72,57 @@ impl<V: VariableId> PhiWebs<V> {
     /// Compute phi congruence classes from a renamed SSA form.
     #[must_use]
     pub fn compute(ssa: &SsaForm<V>) -> Self {
+        let phis: Vec<&crate::dataflow::ssa::SsaPhi<V>> = ssa.phis().map(|(_, phi)| phi).collect();
+        Self::from_phis(&phis)
+    }
+
+    /// Compute congruence classes over **live** phis only: a phi is live
+    /// when its result reaches an instruction use, directly or through
+    /// other live phis.
+    ///
+    /// Placement is not liveness-pruned, so a join can carry a phi whose
+    /// merged value nothing ever reads; including such a phi would unite
+    /// lifetimes that never actually flow together. Use this form when the
+    /// webs decide variable identity (splitting, coalescing for
+    /// destruction) rather than describing the raw SSA structure.
+    #[must_use]
+    pub fn compute_live(ssa: &SsaForm<V>) -> Self {
+        let mut used: BTreeSet<SsaValue<V>> = ssa
+            .blocks()
+            .iter()
+            .flat_map(|block| block.instructions.iter())
+            .flat_map(|instruction| instruction.uses.iter().cloned())
+            .collect();
+        let phis: Vec<&crate::dataflow::ssa::SsaPhi<V>> = ssa.phis().map(|(_, phi)| phi).collect();
+        let mut live = vec![false; phis.len()];
+        loop {
+            let mut changed = false;
+            for (index, phi) in phis.iter().enumerate() {
+                if !live[index] && used.contains(&phi.result) {
+                    live[index] = true;
+                    for (_, operand) in &phi.operands {
+                        used.insert(operand.clone());
+                    }
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        let live_phis: Vec<&crate::dataflow::ssa::SsaPhi<V>> = phis
+            .into_iter()
+            .zip(&live)
+            .filter_map(|(phi, &live)| live.then_some(phi))
+            .collect();
+        Self::from_phis(&live_phis)
+    }
+
+    fn from_phis(phis: &[&crate::dataflow::ssa::SsaPhi<V>]) -> Self {
         let mut all_values = Vec::new();
         let mut value_to_index = BTreeMap::new();
 
-        for (_, phi) in ssa.phis() {
+        for phi in phis {
             for value in
                 core::iter::once(&phi.result).chain(phi.operands.iter().map(|(_, value)| value))
             {
@@ -88,7 +135,7 @@ impl<V: VariableId> PhiWebs<V> {
         }
 
         let mut union_find = UnionFind::new(all_values.len());
-        for (_, phi) in ssa.phis() {
+        for phi in phis {
             let result_index = value_to_index[&phi.result];
             for (_, operand) in &phi.operands {
                 union_find.union(result_index, value_to_index[operand]);
@@ -134,6 +181,39 @@ mod tests {
         let dom = DominatorTree::compute(&cfg);
         let ssa = SsaForm::compute(&cfg, &dom);
         assert!(PhiWebs::compute(&ssa).webs.is_empty());
+    }
+
+    #[test]
+    fn dead_loop_header_phi_is_excluded_from_live_webs() {
+        // The loop body redefines the variable before any use, so the phi
+        // placed at the header merges a value nothing reads. Live webs must
+        // not unite the pre-loop and in-loop lifetimes through it.
+        let mut cfg = Cfg::<DfInst>::new();
+        let top = cfg.new_block();
+        let header = cfg.new_block();
+        let body = cfg.new_block();
+        let exit = cfg.new_block();
+        cfg.block_mut(top).push(df_def("pre", 0));
+        cfg.block_mut(top).push(df_use("pre_use", 0));
+        cfg.block_mut(body).push(df_def("loop", 0));
+        cfg.block_mut(body).push(df_use("loop_use", 0));
+        cfg.add_edge(cfg.entry(), top, EdgeKind::Fallthrough);
+        cfg.add_edge(top, header, EdgeKind::Fallthrough);
+        cfg.add_edge(header, body, EdgeKind::ConditionalTrue);
+        cfg.add_edge(header, exit, EdgeKind::ConditionalFalse);
+        cfg.add_edge(body, header, EdgeKind::Fallthrough);
+
+        let dom = DominatorTree::compute(&cfg);
+        let ssa = SsaForm::compute(&cfg, &dom);
+        assert_eq!(
+            PhiWebs::compute(&ssa).webs.len(),
+            1,
+            "unpruned placement carries the dead header phi"
+        );
+        assert!(
+            PhiWebs::compute_live(&ssa).webs.is_empty(),
+            "no instruction reads a phi result, so no web is live"
+        );
     }
 
     #[test]

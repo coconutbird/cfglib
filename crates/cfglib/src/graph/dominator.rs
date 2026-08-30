@@ -192,6 +192,13 @@ impl<G: DirectedGraphView> DirectedGraphView for PostDominatorView<'_, G> {
 }
 
 impl<N: DenseNodeId> DominatorTree<N> {
+    /// Constructs an internal dominator forest from already validated dense
+    /// parent and reachability tables.
+    pub(crate) fn from_forest_parts(idom: Vec<Option<N>>, reachable: Vec<bool>) -> Self {
+        debug_assert_eq!(idom.len(), reachable.len());
+        Self { idom, reachable }
+    }
+
     /// Compute the dominator tree of a rooted graph view using the iterative
     /// algorithm by Cooper, Harvey, and Kennedy.
     #[must_use]

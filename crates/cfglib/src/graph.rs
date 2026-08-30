@@ -1,4 +1,4 @@
-//! Graph algorithms — traversals, dominators, structural analysis, and export.
+//! Graph storage and algorithms for code intelligence and program analysis.
 
 pub mod call_graph;
 pub mod cdg;
@@ -19,7 +19,9 @@ pub mod reducible;
 pub mod relax;
 pub mod reverse;
 pub mod scc;
+pub mod scope;
 pub mod search;
+pub mod stack;
 pub mod structure;
 pub mod traverse;
 pub mod verify;

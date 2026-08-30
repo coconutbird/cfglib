@@ -2,7 +2,14 @@
 
 Generic, `no_std` graph and dataflow framework for code intelligence, program analysis, decompilation, and compiler infrastructure.
 
-`cfglib` has two graph storage models: an owned directed multigraph for arbitrary code-intelligence relations, and `Cfg<I, E = ()>` for graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, dataflow analyses, value numbering, alias analysis, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
+`cfglib` has purpose-built storage for arbitrary directed relations, language-parametric scope graphs, file-incremental stack graphs, and `Cfg<I, E = ()>` graphs that genuinely need basic blocks, typed control-flow edges, caller-owned edge metadata, and exception regions. Its generic RTL and MLIL layers combine CFGs with checked construction, exact edge payloads, signatures, exception regions, and many-to-many source provenance; RTL/MLIL bridges recover typed semantic variables from native storage or lower them back while allowing the two levels to use distinct dialect and native-location types. Small read-only node and edge view contracts let consumer-owned stores and zero-copy filtered views reuse the algorithms. Every instruction-adjacent axis is consumer-typed rather than imposed by the library: dataflow variables, constants, expression operators, side-effect vocabularies, branch targets, call targets, and edge provenance all come from the adapter — so x86 registers and flags, shader register components, bytecode locals, compiler IR values, and source-language symbols do not need to be flattened into a library-owned numbering scheme, and string literals or symbol ids flow through the analyses as naturally as machine words and addresses. On top of that it ships a compiler-middle-end toolkit: dominator trees, renamed SSA construction, location-aware memory SSA, dataflow analyses, value numbering, explicit alias sets, loop transforms, dead-code elimination, partial redundancy elimination, graph coloring, and structured AST recovery.
+
+Named transformations compose through `PassPipeline<T, E>`. A pipeline keeps
+the caller's declared order, supports closure-backed or stateful trait passes,
+reports which executions changed the target, and attributes the first failure
+while retaining the completed-prefix report. Pass selection and canonical
+schedules remain consumer policy, so one framework can drive CFG, RTL, MLIL,
+HLIL, or consumer-owned compilation contexts without coupling their dialects.
 
 Everything is `no_std + alloc` and the core graph structure uses `SmallVec` adjacency lists with tombstone-based edge removal for cache-friendly, arena-stable IDs.
 
@@ -79,6 +86,48 @@ assert_eq!(
 let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 ```
 
+### Scope graphs
+
+`graph::scope::ScopeGraph<S, L, R, D, Q>` separates language facts from
+language policy. It stores consumer-defined scope metadata, labeled
+scope-to-scope edges, relation-tagged declarations, and references. A `ScopeGraphQuery`
+implementation supplies the path-language state machine, declaration matching,
+label and data orders, optional indexed candidate visitation and decisive-match
+pruning, and—when needed—a full path/data shadowing order. This keeps lexical parents, imports,
+inheritance, namespaces, ordered declarations, accessibility, redirects, and
+opacity in the frontend's vocabulary.
+
+`ScopeResolution::compute` resolves a stored reference.
+`ScopeResolution::compute_from` runs the same algorithm for an ephemeral query,
+which supports completion and speculative refactoring without modifying the
+graph. `ScopeResolutionIndex` resolves all stored references and provides the
+reverse definition-to-reference relation used by rename and find-references.
+Paths are cycle-free, deterministic, and optionally bounded; truncated results
+report which bound was reached. Scope storage supports `serde` when the feature
+is enabled.
+
+### Stack graphs
+
+`graph::stack::StackGraph<F, S, N, E>` implements the standard root,
+exported/internal scope, symbol push/pop, scoped-symbol push/pop, drop-scopes,
+and jump-to-scope nodes. Symbols, file records, node metadata, and edge metadata
+are consumer types.
+Concrete paths maintain symbol and scope stacks transactionally, scoped symbols
+can pause one lookup while another resolves, and edge precedence removes
+shadowed complete paths while retaining genuine ambiguity.
+
+Every ordinary node belongs to one file partition. Direct cross-file edges are
+rejected; independently constructed files compose through the root or exported
+scope stitching endpoints. `StackPartialPathSet` extracts reusable structural
+routes per file, `StackPartialPathDatabase` replaces one file at a time while
+leaving other identities stable, and `StackGraph::clear_file` retires one
+changed partition with node/edge tombstones before it is rebuilt. Then
+`StackResolution::compute_from_partials` replays compatible summaries with the
+same semantics as direct search. Graphs and partial-path databases are
+serializable with `serde`, so unchanged file summaries can be persisted and
+reused. Both direct and stitched indexes expose reverse
+definition-to-reference bindings.
+
 ### Control-flow graph (`Cfg<I>`)
 
 | Feature | Description |
@@ -97,6 +146,118 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Subgraph extraction | `subgraph()` or `subgraph_mapped()` with dense O(1) block-id remapping and payload cloning |
 | Block splitting | `split_block()`, mapped payload-aware variants, and validated multi-point splitting with automatic stable edge transfer |
 | `serde` feature | Optional serialization support |
+
+### Generic register-transfer IR (`ir::rtl`)
+
+`ir::rtl::Function<D>` stores typed expression reads and parallel transfers over
+consumer-defined native locations. Its checked builder retains stable statement
+identities, ordered parameters and returns, exception regions, exact caller edge
+payloads, and deterministic many-to-many source provenance.
+
+`MlilBridge` associates an RTL dialect with a semantic MLIL dialect without
+requiring the dialect markers or native-location types to match. `lift()` uses
+lane SSA and live phi webs to recover typed semantic variables, then performs
+fallible edge translation only after every statement-to-instruction mapping is
+known. `lower()` applies consumer placement and instruction selection in the
+opposite direction. Both return rewrite maps, translate signatures and regions,
+preserve instruction expansion/fusion provenance, and keep exceptional throw
+sites exact. The consumer explicitly maps native RTL storage into optional MLIL
+provenance, so target allocation and synthetic temporaries are not mistaken for
+source locations.
+
+### Generic medium-level IR (`ir::mlil`)
+
+`ir::mlil::Function<D>` is a verified semantic function over the same payload-aware
+CFG used by the rest of cfglib. The `Dialect` parameter supplies the operation,
+value-type, effect, edge, source-coordinate, variable-role, and native-variable
+types. `AnalysisDialect` adds constant folding, pure-expression, copy, and call
+hooks; `VerifyDialect` appends semantic invariants after cfglib checks the
+generic graph, identities, def/use tables, edge classification, and provenance.
+
+`ir::mlil::FunctionBuilder<D>` assigns dense stable instruction and variable IDs,
+retains source expansion and fusion through `ProvenanceMap<D>`, records the
+ordered parameter/return `Signature<D>` and validated exception regions
+(`add_region`, `HandlerBody::Unknown` allowed), and exposes a function only
+after verification. The resulting function directly provides dominance, SSA,
+def-use, liveness, constant and expression recovery, copy-propagated and
+dead-code-eliminated views, identity-ordered instruction iteration, and
+structured control flow with a fidelity report. SSA stays a derived view over
+the canonical function; SSA-shaped transforms are expressed as
+view-then-rebuild passes — `split_variables()` computes the function's own
+SSA, partitions values into phi webs, and rebuilds the function with one
+variable per lifetime (blocks, edges, instructions, and regions keep their
+identities; both variable mappings are returned), so storage-derived slot
+reuse separates into clean per-lifetime locals before HLIL lifting. The
+partition uses liveness-pruned phi webs, so a dead phi at an unpruned join
+never unites unrelated lifetimes. `with_promoted_handler_extents()` returns
+a derived function whose `HandlerBody::Unknown` extents are promoted to
+their dominated blocks, so extent-dependent consumers (structured `try`
+recovery, HLIL lifting) run while the canonical function keeps stating the
+extents are unknown. `with_duplicated_structuring_tails()` copies small
+shared tails (short-circuit conditions, shared side-exits) until control
+flow tree-structures — a pure unfolding for presentation views, driven by
+the structuring report and refused for loop headers, region members, and
+exceptional flow. `extend_equivalent_coverage()` grows each exception
+region's protected set with provably equivalent coverage — a block that
+cannot throw whose sequential predecessors are all protected joins, to a
+fixpoint — restoring the construct-shaped coverage compilers trim at the
+last throwing instruction. `with_derived_cfg(transform)` is the general
+form of the same door: it clones the function and hands the consumer the
+clone's CFG for dialect-aware presentation surgery (detaching a runtime's
+self-covering cleanup ranges) — the canonical function is never touched.
+
+Memory stays outside variables by contract: anything aliasable lives behind
+dialect load/store operations ordered by their declared effects, while
+variables are unaliasable dataflow-visible storage. `promote_memory()`
+(`PromoteDialect`) moves values across that boundary soundly: the consumer
+classifies which instructions access which statically-fixed locations and
+which disqualify them (address taken, opaque reach), and the library
+rewrites every access of an unaliased location into copies through one
+fresh variable — same identity-preserving rebuild, composing with
+`split_variables` and HLIL lifting (promote, split, lift: frame slots
+become typed locals).
+No language, runtime, calling convention, opcode, or source-location type is
+built into the representation; those remain in the dialect crate.
+
+### Generic high-level IR (`ir::hlil`)
+
+`ir::hlil::Function<D>` is the structured, expression-oriented level above
+MLIL: statements form trees (assignments, `if`, `while`/`do-while`/`loop`/`for`,
+`switch` over constant case values, `try` with typed handler arms, labeled
+statements and `goto` residue, and a dialect-defined `Region` statement for
+shapes like `synchronized`/`using`), while values nest as typed expression
+trees over the dialect's open operation vocabulary. Every expression is one
+typed occurrence with exactly one parent, and verification enforces tree
+shape, label resolution, and transfer contexts.
+
+The level-independent vocabulary (`Vocabulary`: value types, effects, source
+coordinates, variable roles) is shared with `ir::mlil::Dialect`, so one
+consumer dialect type serves both levels. Three doors move functions through
+HLIL:
+
+| Door | Description |
+|---|---|
+| `FunctionBuilder<D>` | Checked bottom-up construction for source-language lowering (`add_expression` / `add_statement` / `set_body`) |
+| `lift_function(&mlil::Function<D>)` | Binary/bytecode lifting: structures control flow via `ir::ast`, recognizes `while`/`do-while` conditions, recovers switch case values from dispatch-edge payloads, structures declared exception regions, empties jump trampolines in its working view (blocks whose every instruction is a dialect-declared pure transfer — `Lifted::ControlFlow`, no definitions, no throw — so `break`/`continue` resolutions forward through them), and inlines single-use definitions into expression trees while provably preserving effect and exception order — with `LiftDialect::evaluation_commutes` letting the dialect widen that order (read-read pairs fold into one expression; the default refuses every pair). Straight-line block runs coalesce into one translation list, so frontends that emit one block per native instruction still inline across the whole linear region, and a single-pair parallel move (a type-refinement pair, a lone phi-copy commit) inlines as a plain copy. `lift_function_with_metadata` can omit instruction correspondence and provenance for semantics-only consumers |
+| `lower_function(&hlil::Function<D>)` | The downward mirror: statements flatten to blocks and edges with lazy join materialization, expression trees linearize into typed temporaries, loops/switches/labels wire their transfers, and declared `try` regions register with known handler extents and unwind edges — producing a verified `mlil::Function` for flat analyses or consumer code generation |
+
+Both level bridges return per-instruction maps between MLIL identities and
+the HLIL entities carrying them, and compose source provenance across the
+translation, so source maps survive in either direction.
+
+Above the lift, `recover_structure` (`RecoverDialect`) rebuilds a function
+with source-level shapes restored: `init; while (c) { …; update }` becomes
+a `for` statement, assigning and returning diamonds become the dialect's
+`select` expression (evaluating one arm, like `?:`), and paired enter/exit
+protocols with their exceptional cleanup handlers become `Region`
+statements (`synchronized`, `lock`) — each recovery opt-in per dialect
+hook, each a pure re-expression, and each remappable through the returned
+identity maps (`LiftedFunction::with_recovered_structure` composes it with
+the lift's instruction table). `RecoverDialect::single_expression_operation`
+keeps operations that expand into statement sequences out of `for` clauses
+and selection arms. Exit-on-true loop conditions negate exactly
+through `LiftDialect::negate_operation` — a comparison with its relation
+inverted — before falling back to a wrapping `logical_not`.
 
 ### Graph algorithms
 
@@ -151,14 +312,15 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
 | Liveness | `Liveness::compute` | Live-in / live-out at each block |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |
-| SSA construction | `SsaForm::compute` | IDF phi placement plus full dominator-tree renaming |
+| SSA construction | `SsaForm::compute` | IDF phi placement plus full dominator-forest renaming, including disconnected handler/dead-code components |
 | Phi placement | `PhiPlacements::compute` | Structural IDF phase for consumers that only need placement |
 | SSA deconstruction | `eliminate_phis`, `copies_by_predecessor` | φ-to-copy lowering |
 | Phi webs | `PhiWebs::compute` | Congruence classes for register coalescing |
 | Constant propagation | `constant_propagation`, `ConstantFolder` (associated `Const`) | Top/Const/Bottom lattice over a consumer constant domain — machine words, strings, bools, float bits |
 | Sparse conditional constant propagation | `SccpAnalysis::compute` | SSA-based, marks unreachable edges |
-| Copy propagation | `copy_propagation`, `CopySource` trait | Chain resolution + dead copy removal |
-| Memory SSA | `MemorySSA::compute`, `MemoryEffect` trait | Memory versioning with φ-nodes |
+| Copy and value-alias propagation | `copy_propagation`, `alias_propagation`, `CopySource` trait | Guarded chain resolution and dead transfer removal; pairwise aliases may refine types or metadata without changing runtime values |
+| Memory-event trace | `MemoryTrace::compute`, `MemoryEventInfo` trait | Ordered, location-typed reads, writes, read/modify/write accesses, address-variable dependencies, and fences; instruction summaries distinguish separate read+write from compound modification |
+| Memory SSA | `MemorySSA::compute`, `MemoryAlias` trait | Event-driven SSA per may-alias location class: loop/branch φ-nodes, reaching writes and clobbers, bidirectional def-use chains, transitive readers, and ordinary-SSA address inputs |
 | Abstract interpretation | `abstract_interpret`, `AbstractDomain` trait | Generic abstract domain framework |
 
 ### Higher-level analyses
@@ -169,7 +331,7 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Value numbering (local) | `BlockValueNumbers::compute` | Per-block hash-consing |
 | Value numbering (global) | `ValueNumbering::compute`, `ValueNumberInfo` (associated `Operator`) | Dominator-scoped GVN over any operation identity |
 | Redundancy counting | `ValueNumbering::redundant_count` | From GVN results |
-| Alias analysis | `AliasSets::compute`, `MemoryInfo` trait | Union-find based alias sets |
+| Explicit alias sets | `AliasSets::new` / `merge`; `MemoryAlias` trait | Caller-populated union-find classes usable directly as the alias oracle for memory SSA; an unmerged pair is a proof of disjointness |
 | Dead code analysis | `DeadCode::compute` | Liveness-dead instructions (effect-guarded) and unreachable blocks, reported without mutating — the analysis `dead_code_elimination` applies |
 | Purity classification | `cfg_purity`, `block_purity`, `EffectInfo` (associated `Effect`) | Consumer effect vocabularies — machine memory/IO, allocation, panics |
 | Metrics | `GraphMetrics::compute` (any rooted view); `CfgMetrics::compute` | Node/edge counts, cyclomatic complexity, nesting depth, instruction density |
@@ -179,6 +341,11 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Switch table recovery | `detect_switch_tables` (`SwitchSource`), `recover_switch_tables` | Consumer-typed targets: addresses, syntax nodes; dispatch → structured switch |
 
 ### Transforms
+
+`PassPipeline` composes heterogeneous named passes over any caller-owned target.
+`pass_fn` adapts a closure; implementing `Pass` supports stateful reusable
+passes. Schedules retain insertion order and report the completed prefix when a
+fallible pass stops execution.
 
 | Transform | Function | Description |
 |---|---|---|
@@ -196,17 +363,23 @@ let dominators = DominatorTree::compute(&Rooted::new(&graph, source));
 | Graph coloring | `interference_graph`, `color_graph` | Interference builder uses `DirectedGraph`; coloring accepts any graph view |
 | Linearization | `linearize`, `Emitter` trait, `BlockOrder` | Re-serialize CFG to a flat stream; emitters speak `BlockId`, naming is theirs |
 
-### AST recovery
+### AST recovery (`ir::ast`)
+
+`ir::ast` structures control flow without changing the semantic level of its
+generic instruction payload.
 
 | Feature | Description |
 |---|---|
 | `lift()` → `AstNode<I>` | Recover structured control flow from a CFG |
+| `lift_with_report()` | The same tree plus a `LiftReport`: every emitted goto with its reason, swept blocks, unstructured regions, unresolved labels — per-construct degradation instead of guessing from the tree |
 | `lift_predicated()` | Additionally regionize `Predicated` instruction runs into `Guarded` nodes (ARM IT, GPU wavefront, CMOV) |
-| If/then/else | Diamond and triangle patterns |
-| Loops | While, do-while, infinite; with `break` and `continue` |
-| Switch/case | Multi-way branches with fallthrough |
+| If/then/else | Diamond and triangle patterns; arms stop exactly at the post-dominator merge |
+| Loops | `LoopKind` classifies pre-tested (`While` with condition witness and polarity), post-tested (`DoWhile` with latch), and endless loops from natural-loop membership |
+| Break/continue | Derived from loop follows and continue points — including machine-shaped CFGs — with labeled multi-level forms wrapping the target loop in a `Label` |
+| Switch/case | Case arms carry their dispatch `EdgeId`s (case keys stay on caller edge payloads) and the explicit default arm is captured |
 | Try/catch/finally | From region metadata; unknown or malformed handler extents degrade to explicit `Goto`/`Label` flow — reachable code is never dropped |
-| Label/goto | Fallback for irreducible control flow |
+| Label/goto | Exact post-pass labeling: only blocks a goto actually targets are wrapped |
+| Traversal | `visit`, `for_each_instruction`, and `map_instructions` — the re-leveling hook from opaque payloads to another representation |
 | Pseudocode | `to_pseudocode` via `DisplayInstr` — rendering never requires flow classification |
 
 ## Extension contracts
@@ -229,20 +402,41 @@ InstrInfo<Variable = V>   (optional — native IR variables, defs/uses)
 ├── ConstantFolder        (constant propagation, SCCP — associated Const)
 ├── ExprInstr             (expression trees — associated Operator, Const)
 ├── ValueNumberInfo       (value numbering, PRE — associated Operator)
-├── MemoryInfo            (alias analysis)
-└── MemoryEffect          (memory SSA)
+└── MemoryEventInfo       (locations, address uses, access kinds, and fences — associated Location, Fence)
+
+MemoryAlias<Location>     (optional may-alias oracle consumed by MemorySSA)
 
 DisplayInstr              (rendering only — DOT, pseudocode)
 CallInfo                  (call graphs, explicit tail calls — associated Callee)
 SwitchSource              (switch table recovery — associated Target)
 ```
 
+`MemoryEventInfo` is the single instruction-side source of truth for memory.
+It distinguishes read, write, and compound read/modify/write events, retains
+their exact reported locations and ordered fences, and names every native
+variable used to select an address. `MemorySSA` merges locations through the
+caller-provided `MemoryAlias` relation, then exposes loop-correct reaching
+definitions, clobbered states, users, and transitive readers. Returning
+`false` from an alias oracle promises the locations cannot overlap at runtime;
+`ConservativeMemoryAlias` is the safe fallback when that cannot be proven.
+
 ## Workspace
 
 | Crate | Description |
 |---|---|
-| **cfglib** | Generic graph, CFG, SSA, and dataflow framework |
-| **cfglib-dxbc** | SM4/SM5 CFG and component-granular SSA adapter over `dxbc` |
+| **cfglib** | Generic graph, CFG, dialect-driven RTL/MLIL/HLIL, SSA, and dataflow framework |
+
+Adapters live with the language they adapt, next to their decoders and
+test corpora: the SM4/SM5 decompiler — whose `cfg` module also exposes a
+raw CFG + component-granular SSA adapter — is in
+[d3dasm](https://github.com/coconutbird/d3dasm); the Java/DEX decompiler
+is in cafe. A language picks its entry level: machine-shaped languages
+build `ir::rtl` functions (typed parallel transfers over raw storage,
+lifted into typed MLIL variables through per-lane SSA webs), while
+variable-shaped languages build MLIL directly. cfglib deliberately
+defines no generic LLIL — low-level IRs are language-owned, and the
+minimal traits they share (`FlowControl`, `InstrInfo`, `Cfg`, `SsaForm`)
+are their common surface.
 
 ## Adapting a language, IR, or existing graph
 
@@ -283,12 +477,11 @@ let ssa = SsaForm::compute(&cfg, &dominators);
 
 `SsaForm<V>` is a non-mutating view over the source CFG. It stores renamed phi results, operands, instruction uses, and instruction definitions as `SsaValue<V>`, while each `SsaInstruction` keeps a `ProgramPoint` back to the native instruction. Version `0` denotes a live-in or otherwise undefined incoming value.
 
-`cfglib-dxbc` is the concrete shader-bytecode adapter. It derives native
-register-component identities from decoded masks and swizzles, retains relative
-index expressions, classifies multi-result and UAV read-modify-write operations,
-and reports observable shader effects through its own `Sm4Effect` vocabulary.
-Its `dxbc` dependency comes directly from the `d3dasm` Git repository's
-`main` branch, so builds track that branch's head.
+The concrete shader-bytecode adapter (the d3dasm decompiler's `cfg`
+module) derives native register-component identities from decoded masks
+and swizzles, retains relative index expressions, classifies multi-result
+and UAV read-modify-write operations, and reports observable shader effects
+through its own `Sm4Effect` vocabulary.
 
 The `tests/source-cfg.rs` integration test is the executable specification of
 the source-language side: interned symbol variables, string/bool constants

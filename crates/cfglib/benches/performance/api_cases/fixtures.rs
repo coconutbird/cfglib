@@ -3,22 +3,8 @@ use std::collections::BTreeMap;
 
 use cfglib::{
     CallInfo, Cfg, ConstantFolder, CopySource, DisplayInstr, EdgeKind, EffectInfo, ExprInstr,
-    FlowControl, FlowEffect, InstrInfo, JumpTargets, MemoryEffect, MemoryInfo, MemoryOp,
-    Predicated, SwitchSource, ValueNumberInfo,
+    FlowControl, FlowEffect, InstrInfo, JumpTargets, Predicated, SwitchSource, ValueNumberInfo,
 };
-
-#[derive(Clone, Copy, Debug)]
-pub(super) struct ApiMemoryEffect {
-    reads: bool,
-    writes: bool,
-}
-
-impl ApiMemoryEffect {
-    const NONE: Self = Self {
-        reads: false,
-        writes: false,
-    };
-}
 
 #[derive(Clone, Debug)]
 pub(super) struct ApiInst {
@@ -35,8 +21,6 @@ pub(super) struct ApiInst {
     pub(super) jump_target: Option<u32>,
     pub(super) label: Option<u32>,
     pub(super) switch_targets: Option<(Vec<u32>, Option<u32>)>,
-    pub(super) memory_effect: ApiMemoryEffect,
-    pub(super) memory_ops: Vec<(u32, MemoryOp)>,
 }
 
 impl ApiInst {
@@ -55,8 +39,6 @@ impl ApiInst {
             jump_target: None,
             label: None,
             switch_targets: None,
-            memory_effect: ApiMemoryEffect::NONE,
-            memory_ops: Vec::new(),
         }
     }
 
@@ -203,22 +185,6 @@ impl SwitchSource for ApiInst {
 
     fn switch_targets(&self) -> Option<(Vec<Self::Target>, Option<Self::Target>)> {
         self.switch_targets.clone()
-    }
-}
-
-impl MemoryEffect for ApiInst {
-    fn reads_memory(&self) -> bool {
-        self.memory_effect.reads
-    }
-
-    fn writes_memory(&self) -> bool {
-        self.memory_effect.writes
-    }
-}
-
-impl MemoryInfo for ApiInst {
-    fn memory_ops(&self) -> &[(Self::Variable, MemoryOp)] {
-        &self.memory_ops
     }
 }
 

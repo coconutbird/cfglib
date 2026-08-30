@@ -83,12 +83,12 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
 
 - Module files use the named-file style — `parent.rs` beside a `parent/`
   directory. `mod.rs` is forbidden (enforced by the policy script).
-- Top-level namespace modules (`analysis`, `dataflow`, `graph`, `transform`)
+- Top-level namespace modules (`analysis`, `dataflow`, `graph`, `ir`, `transform`)
   declare `pub mod` children and hoist nothing; the crate root is the single
   flat facade that re-exports every public item, one `pub use` per module,
-  alphabetized. Domain modules with a narrow API (`cfg`, `ast`, `exception`,
-  and split coordinators such as `graph/search/events`) keep children private
-  and re-export their public surface.
+  alphabetized. Domain modules with a narrow API (`cfg`, `exception`, `ir::ast`,
+  `ir::mlil`, and split coordinators such as `graph/search/events`) keep
+  children private and re-export their public surface.
 - Compound words in file and identifier names are underscore-separated and
   spelled in full (`constant_propagation`, `value_numbering`, `call_graph`);
   domain-standard acronyms (`ssa`, `scc`, `sccp`, `dce`, `pre`, `cdg`, `pdg`,
@@ -108,6 +108,9 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
   exists without one; a transform whose only form returns a map takes no
   suffix. Passes that only add blocks or edges return the new identities
   directly instead of a map.
+- Generic pass composition owns only stable identity, declared order, change
+  reporting, and fallible execution. Consumers own pass selection, dependency
+  order, dialect semantics, and any analysis-cache invalidation policy.
 - Every fixpoint solver carries the identical facility matrix — full solve,
   `_from` seeding, `_with_config` bounds, and fallible `try_` counterparts —
   built as a fallible core with infallible wrappers, sharing `SolveConfig`,
@@ -136,6 +139,16 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
   no more restrictive than necessary.
 - Preserve this workspace's `no_std` plus `alloc` compatibility unless the task
   explicitly changes that contract.
+- Keep `ir::rtl`, `ir::mlil`, and `ir::hlil` language-neutral. The library owns
+  generic function, instruction, statement, expression, variable, provenance,
+  checked-construction, structuring, and analysis integration, while a
+  consumer-defined dialect owns operations, constants, value types, effects,
+  edge payloads, source coordinates, native-variable provenance, constant
+  folding, call targets, and semantic verification. The level-independent
+  vocabulary lives once in `ir::dialect::Vocabulary`; `ir::rtl::MlilBridge`
+  relates distinct storage and semantic dialects, while
+  `ir::hlil::LiftDialect` relates MLIL and HLIL. Do not add language-, VM-, ABI-,
+  or ISA-specific variants to any generic layer.
 - Avoid unnecessary cloning, allocation, collection, dynamic dispatch, and generic
   indirection. Optimize for a clear ownership story before micro-optimizing.
 - Return structured errors for recoverable failures. Do not panic in public APIs
@@ -172,6 +185,9 @@ with `uv run --no-project python scripts/check_repository_policy.py`.
 - Test behavior and invariants rather than implementation details.
 - Cover meaningful edge cases, failure paths, and interactions with exceptional
   control flow where relevant.
+- Exercise generic RTL/MLIL with distinct non-production toy dialects so bridge
+  storage, edge translation, provenance, and analyses cannot accidentally
+  depend on one consumer's semantic vocabulary or native-location type.
 - Keep tests deterministic, focused, and readable. Use table-driven tests only when
   the cases share the same semantics and setup.
 - Do not remove or weaken a test merely to make a change pass.

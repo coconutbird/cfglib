@@ -71,5 +71,5 @@ jobs:
 
       - name: Check no_std build
         run: >-
-          cargo check -p cfglib -p cfglib-dxbc --all-features
+          cargo check -p cfglib --all-features
           --target thumbv7em-none-eabi

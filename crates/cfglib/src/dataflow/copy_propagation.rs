@@ -2,6 +2,8 @@
 //!
 //! Identifies instructions that are simple copies (`dst = src`) and
 //! replaces all uses of `dst` with `src`, then removes the dead copy.
+//! [`alias_propagation`] applies the same guarded substitution to pairwise
+//! value aliases whose types or other non-runtime metadata may differ.
 //!
 //! The consumer implements [`CopySource`] to tell the analysis which
 //! instructions are copies and how to rewrite operands.
@@ -18,6 +20,9 @@ use super::def_use::DefUseChains;
 use crate::block::BlockId;
 use crate::cfg::Cfg;
 
+/// Borrowed pairwise alias definitions and their corresponding value sources.
+pub type AliasPairs<'a, V> = (&'a [V], &'a [V]);
+
 /// Trait for instructions that can be identified as copies.
 ///
 /// A **copy** is an instruction with exactly one def and one use,
@@ -28,7 +33,26 @@ pub trait CopySource: InstrInfo {
     ///
     /// Return `None` if the instruction is not a copy (has side effects,
     /// multiple defs, computation, etc.).
+    /// The returned destination and source must be the sole entries exposed by
+    /// [`InstrInfo::defs`] and [`InstrInfo::uses`], respectively.
     fn as_copy(&self) -> Option<(Self::Variable, Self::Variable)>;
+
+    /// Returns pairwise runtime-value aliases as `(definitions, uses)`.
+    ///
+    /// Each definition at position `i` must receive exactly the runtime value
+    /// read from use `i`; value types and other non-runtime metadata may differ.
+    /// All reads occur before any write. The default exposes an ordinary copy
+    /// as a one-pair alias set.
+    ///
+    /// Consumers should override this for type refinements, parallel copy
+    /// commits, or equivalent value-preserving operations. Returning `Some`
+    /// promises that the instruction cannot throw, alter control flow, or have
+    /// any observable effect beyond those definitions. Returning an empty or
+    /// arity-mismatched pair is ignored.
+    fn as_aliases(&self) -> Option<AliasPairs<'_, Self::Variable>> {
+        (self.as_copy().is_some() && self.defs().len() == 1 && self.uses().len() == 1)
+            .then(|| (self.defs(), self.uses()))
+    }
 
     /// Rewrite a use of `old` to `new` in this instruction.
     ///
@@ -45,89 +69,258 @@ pub struct CopyPropagationStats {
     pub copies_removed: usize,
 }
 
-/// Run copy propagation on the CFG.
-///
-/// 1. Build def-use chains.
-/// 2. Find all copy instructions (`dst = src`).
-/// 3. For each copy, replace all uses of `dst` with `src`.
-/// 4. Remove dead copies (whose defs have no remaining uses).
-///
-/// Returns the number of rewrites and removals.
-pub fn copy_propagation<I: CopySource + Clone, E>(cfg: &mut Cfg<I, E>) -> CopyPropagationStats {
-    // Phase 1: identify copies and build a substitution map.
-    // We iterate to a fixpoint in case of copy chains: a = b; c = a → c = b.
-    let mut substitutions: BTreeMap<I::Variable, I::Variable> = BTreeMap::new();
+/// Result of pairwise value-alias propagation.
+#[derive(Debug, Clone)]
+pub struct AliasPropagationStats {
+    /// Number of uses rewritten.
+    pub uses_rewritten: usize,
+    /// Number of dead alias instructions removed.
+    pub aliases_removed: usize,
+}
 
+#[derive(Clone, Copy)]
+enum Propagation {
+    Copies,
+    Aliases,
+}
+
+#[derive(Clone)]
+struct Substitution<V> {
+    source: V,
+    definition: super::ProgramPoint,
+}
+
+fn pairs<I: CopySource>(
+    instruction: &I,
+    propagation: Propagation,
+) -> Option<AliasPairs<'_, I::Variable>> {
+    let (definitions, uses) = match propagation {
+        Propagation::Copies => {
+            instruction.as_copy()?;
+            (instruction.defs(), instruction.uses())
+        }
+        Propagation::Aliases => instruction.as_aliases()?,
+    };
+    (!definitions.is_empty() && definitions.len() == uses.len()).then_some((definitions, uses))
+}
+
+/// The provably value-preserving substitutions of the selected transfers,
+/// with chains resolved: each admitted `dst → src` satisfies the
+/// sole-definition, stable-source, and dominated-uses guards, and
+/// soundness composes across links — each link's source is stable at and
+/// below its transfer, and dominance is transitive.
+fn sound_substitutions<I: CopySource, E>(
+    cfg: &Cfg<I, E>,
+    propagation: Propagation,
+) -> BTreeMap<I::Variable, Substitution<I::Variable>> {
+    let mut def_sites: BTreeMap<I::Variable, Vec<super::ProgramPoint>> = BTreeMap::new();
+    let mut use_sites: BTreeMap<I::Variable, Vec<super::ProgramPoint>> = BTreeMap::new();
     for block in cfg.blocks() {
-        for inst in block.instructions() {
-            if let Some((dst, src)) = inst.as_copy() {
-                // Resolve through existing substitutions for chains.
-                let mut resolved = src;
-                let mut seen = alloc::collections::BTreeSet::new();
-                while let Some(next) = substitutions.get(&resolved).cloned() {
-                    if !seen.insert(next.clone()) {
-                        break; // cycle guard
-                    }
-                    resolved = next;
+        for (inst_idx, inst) in block.instructions().iter().enumerate() {
+            let point = super::ProgramPoint {
+                block: block.id(),
+                inst_idx,
+            };
+            for def in inst.defs() {
+                def_sites.entry(def.clone()).or_default().push(point);
+            }
+            for used in inst.uses() {
+                use_sites.entry(used.clone()).or_default().push(point);
+            }
+        }
+    }
+    let dom = crate::DominatorTree::compute(cfg);
+    let point_dominates = |a: super::ProgramPoint, b: super::ProgramPoint| {
+        if a.block == b.block {
+            a.inst_idx < b.inst_idx
+        } else {
+            dom.dominates(a.block, b.block)
+        }
+    };
+
+    let mut substitutions = BTreeMap::new();
+    for block in cfg.blocks() {
+        for (inst_idx, inst) in block.instructions().iter().enumerate() {
+            let Some((definitions, uses)) = pairs(inst, propagation) else {
+                continue;
+            };
+            if !dom.is_reachable(block.id()) {
+                continue;
+            }
+            let alias_point = super::ProgramPoint {
+                block: block.id(),
+                inst_idx,
+            };
+            for (dst, src) in definitions.iter().cloned().zip(uses.iter().cloned()) {
+                if dst == src {
+                    continue;
                 }
-                substitutions.insert(dst, resolved);
+                // The alias must be the sole definition of `dst`.
+                if def_sites.get(&dst).is_none_or(|sites| sites.len() != 1) {
+                    continue;
+                }
+                // `src` must hold one stable value wherever `dst` is read.
+                match def_sites.get(&src).map(Vec::as_slice) {
+                    None | Some([]) => {}
+                    Some([site]) if point_dominates(*site, alias_point) => {}
+                    Some(_) => continue,
+                }
+                // Every use of `dst` must see this alias. A same-instruction
+                // use reads the pairwise transfer's pre-state and is left
+                // untouched during rewriting below.
+                let dominated = use_sites.get(&dst).is_none_or(|sites| {
+                    sites
+                        .iter()
+                        .all(|&site| site == alias_point || point_dominates(alias_point, site))
+                });
+                if !dominated {
+                    continue;
+                }
+                substitutions.insert(
+                    dst,
+                    Substitution {
+                        source: src,
+                        definition: alias_point,
+                    },
+                );
             }
         }
     }
 
+    let targets: Vec<I::Variable> = substitutions.keys().cloned().collect();
+    for dst in targets {
+        let mut resolved = substitutions[&dst].source.clone();
+        let definition = substitutions[&dst].definition;
+        let mut seen = alloc::collections::BTreeSet::new();
+        while let Some(next) = substitutions.get(&resolved) {
+            if !seen.insert(next.source.clone()) {
+                break; // cycle guard
+            }
+            resolved = next.source.clone();
+        }
+        substitutions.insert(
+            dst,
+            Substitution {
+                source: resolved,
+                definition,
+            },
+        );
+    }
+    substitutions
+}
+
+struct PropagationStats {
+    uses_rewritten: usize,
+    instructions_removed: usize,
+}
+
+fn propagate<I: CopySource + Clone, E>(
+    cfg: &mut Cfg<I, E>,
+    propagation: Propagation,
+) -> PropagationStats {
+    let substitutions = sound_substitutions(cfg, propagation);
     if substitutions.is_empty() {
-        return CopyPropagationStats {
+        return PropagationStats {
             uses_rewritten: 0,
-            copies_removed: 0,
+            instructions_removed: 0,
         };
     }
-
-    // Phase 2: rewrite uses across all blocks.
-    let mut uses_rewritten = 0;
     let block_ids: Vec<BlockId> = cfg
         .blocks()
         .iter()
         .map(super::super::block::BasicBlock::id)
         .collect();
-
+    let mut uses_rewritten = 0;
     for &bid in &block_ids {
-        let insts = cfg.block_mut(bid).instructions_mut();
-        for inst in insts.iter_mut() {
-            for (old, new) in &substitutions {
-                if inst.uses().contains(old) {
-                    inst.rewrite_use(old, new);
+        for (inst_idx, inst) in cfg.block_mut(bid).instructions_mut().iter_mut().enumerate() {
+            let point = super::ProgramPoint {
+                block: bid,
+                inst_idx,
+            };
+            for (old, substitution) in &substitutions {
+                if substitution.definition != point && inst.uses().contains(old) {
+                    inst.rewrite_use(old, &substitution.source);
                     uses_rewritten += 1;
                 }
             }
         }
     }
 
-    // Phase 3: remove dead copies using fresh def-use analysis.
     let chains = DefUseChains::compute(cfg);
-    let mut copies_removed = 0;
-
+    let mut instructions_removed = 0;
     for &bid in &block_ids {
         let insts = cfg.block(bid).instructions().to_vec();
         let mut new_insts = Vec::with_capacity(insts.len());
-        for (idx, inst) in insts.into_iter().enumerate() {
-            if inst.as_copy().is_some() {
-                let def_site = super::ProgramPoint {
-                    block: bid,
-                    inst_idx: idx,
-                };
-                if chains.uses_of(def_site).is_empty() {
-                    copies_removed += 1;
-                    continue; // drop the dead copy
-                }
+        for (inst_idx, inst) in insts.into_iter().enumerate() {
+            let def_site = super::ProgramPoint {
+                block: bid,
+                inst_idx,
+            };
+            if pairs(&inst, propagation).is_some() && chains.uses_of(def_site).is_empty() {
+                instructions_removed += 1;
+                continue;
             }
             new_insts.push(inst);
         }
         *cfg.block_mut(bid).instructions_mut() = new_insts;
     }
-
-    CopyPropagationStats {
+    PropagationStats {
         uses_rewritten,
-        copies_removed,
+        instructions_removed,
+    }
+}
+
+/// Run copy propagation on the CFG.
+///
+/// 1. Build def and use site maps plus the dominator tree.
+/// 2. Find copy instructions (`dst = src`) that are **provably
+///    value-preserving**: the copy is `dst`'s only definition, it
+///    dominates every use of `dst`, and `src` is stable — either never
+///    defined in the graph (entry state: a parameter, an environment
+///    value) or defined exactly once at a site dominating the copy.
+/// 3. Replace the dominated uses of each such `dst` with `src`,
+///    resolving copy chains (`a = b; c = a` → uses of `c` read `b`).
+/// 4. Remove dead copies (whose defs have no remaining uses).
+///
+/// Multi-definition variables — reused storage slots, loop-carried
+/// values — never propagate: the guards make the pass sound on any
+/// well-formed graph, not only single-assignment form, at the cost of
+/// leaving such copies in place. Single-assignment input satisfies every
+/// guard, so SSA consumers see the previous behavior unchanged.
+///
+/// Dominance is judged at block granularity, which relies on the
+/// standard well-formedness assumption that every use is reached only
+/// after its definition executed (verifier-checked bytecode and
+/// compiler-produced graphs guarantee this). A path that entered the
+/// copy's block but left through a mid-block exceptional exit before the
+/// copy cannot reach a use of the destination: the copy is the
+/// destination's only definition, so such a use would read an
+/// unassigned variable.
+///
+/// Returns the number of rewrites and removals.
+pub fn copy_propagation<I: CopySource + Clone, E>(cfg: &mut Cfg<I, E>) -> CopyPropagationStats {
+    let stats = propagate(cfg, Propagation::Copies);
+    CopyPropagationStats {
+        uses_rewritten: stats.uses_rewritten,
+        copies_removed: stats.instructions_removed,
+    }
+}
+
+/// Propagates runtime-value aliases, including pairwise refinements.
+///
+/// This is the presentation-safe counterpart to [`copy_propagation`] for
+/// instructions whose definitions retain each corresponding use's runtime
+/// value while changing type or other analysis metadata. It applies the same
+/// sole-definition, stable-source, and dominance guards, leaves simultaneous
+/// pre-state reads untouched, and removes an alias instruction only when none
+/// of its definitions remain live.
+///
+/// Returns the number of rewritten uses and removed alias instructions.
+pub fn alias_propagation<I: CopySource + Clone, E>(cfg: &mut Cfg<I, E>) -> AliasPropagationStats {
+    let stats = propagate(cfg, Propagation::Aliases);
+    AliasPropagationStats {
+        uses_rewritten: stats.uses_rewritten,
+        aliases_removed: stats.instructions_removed,
     }
 }
 
@@ -135,8 +328,47 @@ pub fn copy_propagation<I: CopySource + Clone, E>(cfg: &mut Cfg<I, E>) -> CopyPr
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
+    use crate::dataflow::InstrInfo;
     use crate::edge::EdgeKind;
     use crate::test_util::{DfInst, df_copy, df_def, df_use};
+    use alloc::vec;
+
+    #[derive(Debug, Clone)]
+    struct AliasInst {
+        uses: Vec<u16>,
+        defs: Vec<u16>,
+        alias: bool,
+    }
+
+    impl InstrInfo for AliasInst {
+        type Variable = u16;
+
+        fn uses(&self) -> &[Self::Variable] {
+            &self.uses
+        }
+
+        fn defs(&self) -> &[Self::Variable] {
+            &self.defs
+        }
+    }
+
+    impl CopySource for AliasInst {
+        fn as_copy(&self) -> Option<(Self::Variable, Self::Variable)> {
+            None
+        }
+
+        fn as_aliases(&self) -> Option<AliasPairs<'_, Self::Variable>> {
+            self.alias.then_some((&self.defs, &self.uses))
+        }
+
+        fn rewrite_use(&mut self, old: &Self::Variable, new: &Self::Variable) {
+            for used in &mut self.uses {
+                if used == old {
+                    *used = *new;
+                }
+            }
+        }
+    }
 
     #[test]
     fn simple_copy_propagation() {
@@ -177,5 +409,117 @@ mod tests {
         let insts = cfg.block(cfg.entry()).instructions();
         let last = insts.last().unwrap();
         assert_eq!(last.uses[0], 0);
+    }
+
+    #[test]
+    fn a_redefined_source_never_propagates() {
+        // def r0; copy r1 = r0; def r0; use r1 — the copy captured the
+        // FIRST r0, so rewriting the use would read the second.
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
+            df_def("def_r0", 0),
+            df_copy("mov", 1, 0),
+            df_def("redef_r0", 0),
+            df_use("use_r1", 1),
+        ]);
+
+        let result = copy_propagation(&mut cfg);
+        assert_eq!(result.uses_rewritten, 0);
+        assert_eq!(result.copies_removed, 0);
+        let insts = cfg.block(cfg.entry()).instructions();
+        assert_eq!(insts.last().unwrap().uses[0], 1);
+    }
+
+    #[test]
+    fn a_non_dominating_copy_never_propagates() {
+        // entry branches; only one arm copies r1 = r0; the merge reads
+        // r1 — the copy does not dominate the use.
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        let arm = cfg.new_block();
+        let other = cfg.new_block();
+        let merge = cfg.new_block();
+        cfg.block_mut(cfg.entry())
+            .instructions_mut()
+            .push(df_def("def_r0", 0));
+        cfg.block_mut(arm)
+            .instructions_mut()
+            .push(df_copy("mov", 1, 0));
+        cfg.block_mut(merge)
+            .instructions_mut()
+            .push(df_use("use_r1", 1));
+        cfg.add_edge(cfg.entry(), arm, EdgeKind::ConditionalTrue);
+        cfg.add_edge(cfg.entry(), other, EdgeKind::ConditionalFalse);
+        cfg.add_edge(arm, merge, EdgeKind::Fallthrough);
+        cfg.add_edge(other, merge, EdgeKind::Fallthrough);
+
+        let result = copy_propagation(&mut cfg);
+        assert_eq!(result.uses_rewritten, 0);
+        let insts = cfg.block(merge).instructions();
+        assert_eq!(insts[0].uses[0], 1);
+    }
+
+    #[test]
+    fn an_undefined_source_is_entry_state_and_propagates() {
+        // r7 has no definition in the graph (a parameter): the copy's
+        // dominated uses may read it directly.
+        let mut cfg: Cfg<DfInst> = Cfg::new();
+        cfg.block_mut(cfg.entry())
+            .instructions_mut()
+            .extend([df_copy("mov", 1, 7), df_use("use_r1", 1)]);
+
+        let result = copy_propagation(&mut cfg);
+        assert_eq!(result.uses_rewritten, 1);
+        assert_eq!(result.copies_removed, 1);
+        let insts = cfg.block(cfg.entry()).instructions();
+        assert_eq!(insts.last().unwrap().uses[0], 7);
+    }
+
+    #[test]
+    fn pairwise_aliases_propagate_without_runtime_assignments() {
+        let mut cfg: Cfg<AliasInst> = Cfg::new();
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
+            AliasInst {
+                uses: vec![7, 8],
+                defs: vec![1, 2],
+                alias: true,
+            },
+            AliasInst {
+                uses: vec![1, 2],
+                defs: Vec::new(),
+                alias: false,
+            },
+        ]);
+
+        let result = alias_propagation(&mut cfg);
+
+        assert_eq!(result.uses_rewritten, 2);
+        assert_eq!(result.aliases_removed, 1);
+        let instructions = cfg.block(cfg.entry()).instructions();
+        assert_eq!(instructions.len(), 1);
+        assert_eq!(instructions[0].uses, [7, 8]);
+    }
+
+    #[test]
+    fn pairwise_aliases_preserve_same_instruction_pre_state_reads() {
+        let mut cfg: Cfg<AliasInst> = Cfg::new();
+        cfg.block_mut(cfg.entry()).instructions_mut().extend([
+            AliasInst {
+                uses: vec![0, 1],
+                defs: vec![1, 2],
+                alias: true,
+            },
+            AliasInst {
+                uses: vec![2],
+                defs: Vec::new(),
+                alias: false,
+            },
+        ]);
+
+        let result = alias_propagation(&mut cfg);
+
+        assert_eq!(result.uses_rewritten, 0);
+        assert_eq!(result.aliases_removed, 0);
+        let alias = &cfg.block(cfg.entry()).instructions()[0];
+        assert_eq!(alias.uses, [0, 1]);
     }
 }

@@ -1,33 +1,22 @@
-//! Alias analysis — Steensgaard-style unification-based points-to analysis.
+//! Explicit may-alias equivalence classes.
 //!
-//! Groups memory locations into alias sets using union-find. Two locations
-//! are in the same alias set if they may refer to the same memory.
+//! Consumers can populate [`AliasSets`] from language-specific points-to or
+//! binding information and pass it directly to [`MemorySSA`](crate::MemorySSA).
 
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::cmp::Ordering;
 
-use crate::cfg::Cfg;
-use crate::dataflow::{InstrInfo, VariableId};
+use crate::dataflow::VariableId;
+use crate::memory::MemoryAlias;
 
-/// A memory access kind for alias analysis.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryOp {
-    /// A load from a memory location.
-    Load,
-    /// A store to a memory location.
-    Store,
-}
-
-/// Trait for instructions that access memory.
-pub trait MemoryInfo: InstrInfo {
-    /// Memory accesses performed by this instruction.
-    /// Returns `(base_variable, op)` pairs.
-    fn memory_ops(&self) -> &[(Self::Variable, MemoryOp)];
-}
-
-/// Union-Find structure for alias set computation.
+/// Caller-populated may-alias equivalence classes.
+///
+/// Equal locations always alias. Unequal locations alias only after they have
+/// been joined with [`AliasSets::merge`], directly or transitively. Passing an
+/// instance to [`MemorySSA`](crate::MemorySSA) therefore promises that every
+/// unmerged pair is disjoint.
 #[derive(Debug, Clone)]
 pub struct AliasSets<V> {
     parent: Vec<usize>,
@@ -60,6 +49,11 @@ impl<V: VariableId> AliasSets<V> {
         id
     }
 
+    /// Registers one location as a singleton alias set.
+    pub fn insert(&mut self, variable: V) {
+        self.get_or_insert(variable);
+    }
+
     fn find(&mut self, mut x: usize) -> usize {
         while self.parent[x] != x {
             self.parent[x] = self.parent[self.parent[x]]; // path compression
@@ -84,21 +78,33 @@ impl<V: VariableId> AliasSets<V> {
         }
     }
 
-    /// Check if two variables may alias.
-    pub fn may_alias(&mut self, left: &V, right: &V) -> bool {
+    fn representative(&self, mut id: usize) -> usize {
+        while self.parent[id] != id {
+            id = self.parent[id];
+        }
+        id
+    }
+
+    /// Checks whether two locations are in the same may-alias class.
+    #[must_use]
+    pub fn may_alias(&self, left: &V, right: &V) -> bool {
+        if left == right {
+            return true;
+        }
         let Some(&left_id) = self.variable_to_id.get(left) else {
             return false;
         };
         let Some(&right_id) = self.variable_to_id.get(right) else {
             return false;
         };
-        self.find(left_id) == self.find(right_id)
+        self.representative(left_id) == self.representative(right_id)
     }
 
-    /// Get the alias-set representative for a variable.
-    pub fn alias_set(&mut self, variable: &V) -> Option<&V> {
+    /// Gets the alias-set representative for a registered location.
+    #[must_use]
+    pub fn alias_set(&self, variable: &V) -> Option<&V> {
         let &id = self.variable_to_id.get(variable)?;
-        let representative = self.find(id);
+        let representative = self.representative(id);
         self.id_to_variable.get(representative)
     }
 
@@ -109,12 +115,13 @@ impl<V: VariableId> AliasSets<V> {
         self.union(left_id, right_id);
     }
 
-    /// Number of distinct alias sets.
-    pub fn set_count(&mut self) -> usize {
+    /// Returns the number of registered alias sets.
+    #[must_use]
+    pub fn set_count(&self) -> usize {
         let n = self.parent.len();
         let mut roots = alloc::collections::BTreeSet::new();
         for i in 0..n {
-            roots.insert(self.find(i));
+            roots.insert(self.representative(i));
         }
         roots.len()
     }
@@ -126,49 +133,9 @@ impl<V: VariableId> Default for AliasSets<V> {
     }
 }
 
-impl<V: VariableId> AliasSets<V> {
-    /// Run Steensgaard-style alias analysis on a CFG.
-    ///
-    /// Unifies locations that are stored to/loaded from the same base.
-    /// This is a flow-insensitive, context-insensitive analysis.
-    #[must_use]
-    pub fn compute<I: MemoryInfo + InstrInfo<Variable = V>>(cfg: &Cfg<I>) -> Self {
-        let mut sets = AliasSets::new();
-
-        // Register all locations.
-        for block in cfg.blocks() {
-            for inst in block.instructions() {
-                for d in inst.defs() {
-                    sets.get_or_insert(d.clone());
-                }
-                for u in inst.uses() {
-                    sets.get_or_insert(u.clone());
-                }
-            }
-        }
-
-        // Unify locations involved in the same memory operations.
-        for block in cfg.blocks() {
-            for inst in block.instructions() {
-                let ops = inst.memory_ops();
-                if ops.len() >= 2 {
-                    let first = &ops[0].0;
-                    for (variable, _) in &ops[1..] {
-                        sets.merge(first.clone(), variable.clone());
-                    }
-                }
-                // Also unify defs with store targets.
-                for (memory_variable, op) in ops {
-                    if *op == MemoryOp::Store {
-                        for d in inst.defs() {
-                            sets.merge(memory_variable.clone(), d.clone());
-                        }
-                    }
-                }
-            }
-        }
-
-        sets
+impl<V: VariableId> MemoryAlias<V> for AliasSets<V> {
+    fn may_alias(&self, left: &V, right: &V) -> bool {
+        Self::may_alias(self, left, right)
     }
 }
 
@@ -188,8 +155,8 @@ mod tests {
     #[test]
     fn unrelated_not_aliased() {
         let mut sets = AliasSets::new();
-        sets.get_or_insert(0_u16);
-        sets.get_or_insert(1_u16);
+        sets.insert(0_u16);
+        sets.insert(1_u16);
         assert!(!sets.may_alias(&0, &1));
     }
 
@@ -204,9 +171,9 @@ mod tests {
     #[test]
     fn num_sets_correct() {
         let mut sets = AliasSets::new();
-        sets.get_or_insert(0_u16);
-        sets.get_or_insert(1_u16);
-        sets.get_or_insert(2_u16);
+        sets.insert(0_u16);
+        sets.insert(1_u16);
+        sets.insert(2_u16);
         assert_eq!(sets.set_count(), 3);
         sets.merge(0, 1);
         assert_eq!(sets.set_count(), 2);
