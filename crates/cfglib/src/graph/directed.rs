@@ -13,40 +13,19 @@ use core::ops::Index;
 use smallvec::SmallVec;
 
 use crate::graph::view::{DenseNodeId, DirectedGraphView};
+use crate::identity::define_dense_id;
 
-/// Dense identity of a node in a [`DirectedGraph`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct NodeId(u32);
-
-impl NodeId {
+define_dense_id! {
+    /// Dense identity of a node in a [`DirectedGraph`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct NodeId(u32);
+    display = "n";
     /// Construct an identity from a dense zero-based index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("node index exceeds u32::MAX"))
-    }
-
-    /// Construct an identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return this identity's dense zero-based index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl core::fmt::Display for NodeId {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "n{}", self.0)
-    }
+    from_index = "node index exceeds u32::MAX";
 }
 
 impl DenseNodeId for NodeId {
@@ -59,43 +38,20 @@ impl DenseNodeId for NodeId {
     }
 }
 
-/// Opaque identifier for an edge within a graph arena.
-///
-/// Shared by [`DirectedGraph`] and [`Cfg`](crate::Cfg): both arenas mint
-/// dense edge identities that stay stable across tombstoned removals.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct EdgeId(pub(crate) u32);
-
-impl EdgeId {
+define_dense_id! {
+    /// Opaque identifier for an edge within a graph arena.
+    ///
+    /// Shared by [`DirectedGraph`] and [`Cfg`](crate::Cfg): both arenas mint
+    /// dense edge identities that stay stable across tombstoned removals.
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct EdgeId(pub(crate) u32);
+    display = "e";
     /// Create an `EdgeId` from a dense zero-based index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("edge index exceeds u32::MAX"))
-    }
-
-    /// Construct an identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Returns the raw index.
-    #[inline]
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl core::fmt::Display for EdgeId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "e{}", self.0)
-    }
+    from_index = "edge index exceeds u32::MAX";
 }
 
 /// A directed edge carrying a consumer-defined payload.

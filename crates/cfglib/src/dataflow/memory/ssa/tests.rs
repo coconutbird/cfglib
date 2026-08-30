@@ -3,10 +3,11 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::test_util::MemInst;
 use crate::{
-    Cfg, DominatorTree, EdgeKind, ExactMemoryAlias, InstrInfo, MemoryAccess, MemoryAccessKind,
-    MemoryDefinition, MemoryEvent, MemoryEventInfo, MemoryEventSite, MemorySSA, MemorySSAEvent,
-    MemoryUse, ProgramPoint, SsaForm,
+    Cfg, DominatorTree, EdgeKind, ExactMemoryAlias, MemoryAccess, MemoryAccessKind,
+    MemoryDefinition, MemoryEvent, MemoryEventSite, MemorySSA, MemorySSAEvent, MemoryUse,
+    ProgramPoint, SsaForm,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -21,55 +22,20 @@ enum Fence {
     Group,
 }
 
-#[derive(Debug, Clone)]
-struct Instruction {
-    uses: Vec<u8>,
-    defs: Vec<u8>,
-    events: Vec<MemoryEvent<Location, u8, Fence>>,
-}
+type Instruction = MemInst<Location, Fence>;
 
-impl Instruction {
+/// Test-specific constructors over the shared memory mock.
+impl MemInst<Location, Fence> {
     fn plain(uses: Vec<u8>, defs: Vec<u8>) -> Self {
-        Self {
-            uses,
-            defs,
-            events: Vec::new(),
-        }
+        Self::with_data_flow(uses, defs, [])
     }
 
     fn with_events(events: Vec<MemoryEvent<Location, u8, Fence>>) -> Self {
-        Self {
-            uses: Vec::new(),
-            defs: Vec::new(),
-            events,
-        }
+        Self::new(events)
     }
 
     fn access(location: Location, kind: MemoryAccessKind) -> Self {
         Self::with_events(vec![memory_access(location, Vec::new(), kind)])
-    }
-}
-
-impl InstrInfo for Instruction {
-    type Variable = u8;
-
-    fn uses(&self) -> &[Self::Variable] {
-        &self.uses
-    }
-
-    fn defs(&self) -> &[Self::Variable] {
-        &self.defs
-    }
-}
-
-impl MemoryEventInfo for Instruction {
-    type Location = Location;
-    type Fence = Fence;
-
-    fn memory_events(
-        &self,
-    ) -> impl Iterator<Item = MemoryEvent<Self::Location, Self::Variable, Self::Fence>> {
-        self.events.iter().cloned()
     }
 }
 

@@ -2,7 +2,6 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::vec::Vec;
 
@@ -69,18 +68,13 @@ impl<D: Dialect> FunctionBuilder<D> {
     ///
     /// Returns an error when a parameter is undeclared or repeated.
     pub fn set_signature(&mut self, signature: Signature<D>) -> Result<()> {
-        let mut seen = BTreeSet::new();
-        for &parameter in &signature.parameters {
-            if parameter.index() >= self.variables.len() {
-                return Err(Error::InvalidConstruction(format!(
-                    "signature names undeclared parameter {parameter}"
-                )));
-            }
-            if !seen.insert(parameter) {
-                return Err(Error::InvalidConstruction(format!(
-                    "signature repeats parameter {parameter}"
-                )));
-            }
+        let declared = self.variables.len();
+        if let Some(issue) = signature
+            .parameter_issues(|parameter| parameter.index() < declared)
+            .into_iter()
+            .next()
+        {
+            return Err(Error::InvalidConstruction(issue));
         }
         self.signature = signature;
         Ok(())

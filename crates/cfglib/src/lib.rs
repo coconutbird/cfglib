@@ -174,11 +174,13 @@ pub mod edge;
 pub mod exception;
 pub mod flow;
 pub mod graph;
+mod identity;
 pub mod ir;
 pub mod memory;
 pub mod region;
 pub mod rewrite;
 pub mod transform;
+pub mod union_find;
 
 #[cfg(test)]
 pub(crate) mod test_util;
@@ -223,8 +225,8 @@ pub use dataflow::edge_fixpoint::{
     try_solve_edge_problem_with_config,
 };
 pub use dataflow::fixpoint::{
-    Direction, Facts, Problem, SolveConfig, SolveError, TryProblem, TrySolveError, solve_problem,
-    solve_problem_from, solve_problem_from_with_config, solve_problem_with_config,
+    Direction, Facts, Problem, SolveConfig, SolveError, TryProblem, TrySolveError, meet_options,
+    solve_problem, solve_problem_from, solve_problem_from_with_config, solve_problem_with_config,
     try_solve_problem, try_solve_problem_from, try_solve_problem_from_with_config,
     try_solve_problem_with_config,
 };
@@ -406,3 +408,4 @@ pub use transform::pass::{
     Pass, PassChange, PassExecution, PassFailure, PassFn, PassId, PassPipeline, PassReport, pass_fn,
 };
 pub use transform::pre::{PreAnalysis, eliminate_pre};
+pub use union_find::DisjointSet;

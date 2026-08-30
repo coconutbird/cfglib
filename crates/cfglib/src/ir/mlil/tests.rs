@@ -7,6 +7,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::ir::dialect::Vocabulary;
+use crate::test_util::toy::{self, Span};
 use crate::{ConstValue, EdgeKind, FlowEffect};
 
 use super::{
@@ -47,12 +48,6 @@ enum Edge {
     Unwind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Span {
-    start: u32,
-    end: u32,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ToyDialect;
 
@@ -66,11 +61,11 @@ impl Vocabulary for ToyDialect {
     type NativeVariable = u8;
 
     fn span_is_empty(span: &Self::SourceSpan) -> bool {
-        span.start >= span.end
+        toy::span_is_empty(*span)
     }
 
     fn span_contains(span: &Self::SourceSpan, point: &Self::SourcePoint) -> bool {
-        span.start <= *point && *point < span.end
+        toy::span_contains(*span, *point)
     }
 }
 

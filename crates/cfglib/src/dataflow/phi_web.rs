@@ -4,53 +4,12 @@
 //! coalescing and register allocation.
 
 extern crate alloc;
+use crate::dataflow::VariableId;
+use crate::dataflow::ssa::{SsaForm, SsaValue};
+use crate::union_find::DisjointSet;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec;
 use alloc::vec::Vec;
-use core::cmp::Ordering;
-
-use crate::dataflow::VariableId;
-use crate::dataflow::ssa::{SsaForm, SsaValue};
-
-#[derive(Debug, Clone)]
-struct UnionFind {
-    parent: Vec<usize>,
-    rank: Vec<usize>,
-}
-
-impl UnionFind {
-    fn new(len: usize) -> Self {
-        Self {
-            parent: (0..len).collect(),
-            rank: vec![0; len],
-        }
-    }
-
-    fn find(&mut self, mut index: usize) -> usize {
-        while self.parent[index] != index {
-            self.parent[index] = self.parent[self.parent[index]];
-            index = self.parent[index];
-        }
-        index
-    }
-
-    fn union(&mut self, left: usize, right: usize) {
-        let left_root = self.find(left);
-        let right_root = self.find(right);
-        if left_root == right_root {
-            return;
-        }
-
-        match self.rank[left_root].cmp(&self.rank[right_root]) {
-            Ordering::Less => self.parent[left_root] = right_root,
-            Ordering::Greater => self.parent[right_root] = left_root,
-            Ordering::Equal => {
-                self.parent[right_root] = left_root;
-                self.rank[left_root] += 1;
-            }
-        }
-    }
-}
 
 /// A congruence class of SSA values connected by phis.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,7 +93,7 @@ impl<V: VariableId> PhiWebs<V> {
             }
         }
 
-        let mut union_find = UnionFind::new(all_values.len());
+        let mut union_find = DisjointSet::new(all_values.len());
         for phi in phis {
             let result_index = value_to_index[&phi.result];
             for (_, operand) in &phi.operands {

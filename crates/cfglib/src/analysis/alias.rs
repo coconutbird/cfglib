@@ -6,10 +6,10 @@
 extern crate alloc;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::cmp::Ordering;
 
 use crate::dataflow::VariableId;
 use crate::dataflow::memory::MemoryAlias;
+use crate::union_find::DisjointSet;
 
 /// Caller-populated may-alias equivalence classes.
 ///
@@ -19,8 +19,7 @@ use crate::dataflow::memory::MemoryAlias;
 /// unmerged pair is disjoint.
 #[derive(Debug, Clone)]
 pub struct AliasSets<V> {
-    parent: Vec<usize>,
-    rank: Vec<usize>,
+    sets: DisjointSet,
     variable_to_id: BTreeMap<V, usize>,
     id_to_variable: Vec<V>,
 }
@@ -30,8 +29,7 @@ impl<V: VariableId> AliasSets<V> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            parent: Vec::new(),
-            rank: Vec::new(),
+            sets: DisjointSet::default(),
             variable_to_id: BTreeMap::new(),
             id_to_variable: Vec::new(),
         }
@@ -41,9 +39,7 @@ impl<V: VariableId> AliasSets<V> {
         if let Some(&id) = self.variable_to_id.get(&variable) {
             return id;
         }
-        let id = self.parent.len();
-        self.parent.push(id);
-        self.rank.push(0);
+        let id = self.sets.push();
         self.variable_to_id.insert(variable.clone(), id);
         self.id_to_variable.push(variable);
         id
@@ -52,37 +48,6 @@ impl<V: VariableId> AliasSets<V> {
     /// Registers one location as a singleton alias set.
     pub fn insert(&mut self, variable: V) {
         self.get_or_insert(variable);
-    }
-
-    fn find(&mut self, mut x: usize) -> usize {
-        while self.parent[x] != x {
-            self.parent[x] = self.parent[self.parent[x]]; // path compression
-            x = self.parent[x];
-        }
-        x
-    }
-
-    fn union(&mut self, a: usize, b: usize) {
-        let ra = self.find(a);
-        let rb = self.find(b);
-        if ra == rb {
-            return;
-        }
-        match self.rank[ra].cmp(&self.rank[rb]) {
-            Ordering::Less => self.parent[ra] = rb,
-            Ordering::Greater => self.parent[rb] = ra,
-            Ordering::Equal => {
-                self.parent[rb] = ra;
-                self.rank[ra] += 1;
-            }
-        }
-    }
-
-    fn representative(&self, mut id: usize) -> usize {
-        while self.parent[id] != id {
-            id = self.parent[id];
-        }
-        id
     }
 
     /// Checks whether two locations are in the same may-alias class.
@@ -97,31 +62,29 @@ impl<V: VariableId> AliasSets<V> {
         let Some(&right_id) = self.variable_to_id.get(right) else {
             return false;
         };
-        self.representative(left_id) == self.representative(right_id)
+        self.sets.root(left_id) == self.sets.root(right_id)
     }
 
     /// Gets the alias-set representative for a registered location.
     #[must_use]
     pub fn alias_set(&self, variable: &V) -> Option<&V> {
         let &id = self.variable_to_id.get(variable)?;
-        let representative = self.representative(id);
-        self.id_to_variable.get(representative)
+        self.id_to_variable.get(self.sets.root(id))
     }
 
     /// Merge two variables into the same alias set.
     pub fn merge(&mut self, left: V, right: V) {
         let left_id = self.get_or_insert(left);
         let right_id = self.get_or_insert(right);
-        self.union(left_id, right_id);
+        self.sets.union(left_id, right_id);
     }
 
     /// Returns the number of registered alias sets.
     #[must_use]
     pub fn set_count(&self) -> usize {
-        let n = self.parent.len();
         let mut roots = alloc::collections::BTreeSet::new();
-        for i in 0..n {
-            roots.insert(self.representative(i));
+        for id in 0..self.sets.len() {
+            roots.insert(self.sets.root(id));
         }
         roots.len()
     }

@@ -7,6 +7,14 @@
 
 extern crate alloc;
 use alloc::borrow::Cow;
+use alloc::string::String;
+
+/// Appends `depth` levels of four-space indentation.
+pub(crate) fn write_indent(out: &mut String, depth: usize) {
+    for _ in 0..depth {
+        out.push_str("    ");
+    }
+}
 
 /// Opt-in, display-only rendering of instructions.
 ///

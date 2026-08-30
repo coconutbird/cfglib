@@ -5,6 +5,8 @@ extern crate alloc;
 use alloc::string::String;
 use core::fmt::{self, Write as _};
 
+use crate::display::write_indent;
+
 use super::statement::HandlerKind;
 use super::{Dialect, ExpressionId, ExpressionKind, Function, StatementId, StatementKind};
 
@@ -274,11 +276,5 @@ impl<D: Dialect> Function<D> {
                 out.push_str("}\n");
             }
         }
-    }
-}
-
-fn write_indent(out: &mut String, depth: usize) {
-    for _ in 0..depth {
-        out.push_str("    ");
     }
 }

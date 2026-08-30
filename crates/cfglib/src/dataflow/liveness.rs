@@ -44,21 +44,20 @@ impl<I: InstrInfo, E> Problem<I, E> for LivenessProblem {
     /// set of variables live at the block's entry.
     fn transfer(&self, cfg: &Cfg<I, E>, block: BlockId, live_out: &Self::Fact) -> Self::Fact {
         let mut live = live_out.clone();
-        let insts = cfg.block(block).instructions();
-
-        // Walk backwards through the block.
-        for inst in insts.iter().rev() {
-            // Kill: variables defined here are no longer live above.
-            for loc in inst.defs() {
-                live.remove(loc);
-            }
-            // Gen: variables used here are live above.
-            for variable in inst.uses() {
-                live.insert(variable.clone());
-            }
+        for inst in cfg.block(block).instructions().iter().rev() {
+            backward_transfer(&mut live, inst);
         }
-
         live
+    }
+}
+
+/// One instruction's backward step: kill its defs, then gen its uses.
+fn backward_transfer<I: InstrInfo>(live: &mut BTreeSet<I::Variable>, instruction: &I) {
+    for variable in instruction.defs() {
+        live.remove(variable);
+    }
+    for variable in instruction.uses() {
+        live.insert(variable.clone());
     }
 }
 
@@ -130,6 +129,52 @@ impl<V: VariableId> Liveness<V> {
     #[must_use]
     pub fn is_live_out(&self, variable: &V, block: BlockId) -> bool {
         self.live_out(block).contains(variable)
+    }
+
+    /// Variables live immediately **before** each instruction of `block`.
+    ///
+    /// Element `i` is the live set at the point just before instruction `i`;
+    /// for a non-empty block the first element equals
+    /// [`live_in`](Self::live_in). Computed on demand by replaying the
+    /// block's backward transfer from [`live_out`](Self::live_out), exactly
+    /// as the block-level fixpoint did.
+    #[must_use]
+    pub fn live_before_instructions<I: InstrInfo<Variable = V>, E>(
+        &self,
+        cfg: &Cfg<I, E>,
+        block: BlockId,
+    ) -> alloc::vec::Vec<BTreeSet<V>> {
+        let instructions = cfg.block(block).instructions();
+        let mut sets = alloc::vec![BTreeSet::new(); instructions.len()];
+        let mut live = self.live_out(block).clone();
+        for (index, instruction) in instructions.iter().enumerate().rev() {
+            backward_transfer(&mut live, instruction);
+            sets[index].clone_from(&live);
+        }
+        sets
+    }
+
+    /// Variables live immediately **after** each instruction of `block`.
+    ///
+    /// Element `i` is the live set at the point just after instruction `i`;
+    /// for a non-empty block the last element equals
+    /// [`live_out`](Self::live_out). A definition at instruction `i` whose
+    /// variable is absent from element `i` is a dead store within this
+    /// analysis's precision.
+    #[must_use]
+    pub fn live_after_instructions<I: InstrInfo<Variable = V>, E>(
+        &self,
+        cfg: &Cfg<I, E>,
+        block: BlockId,
+    ) -> alloc::vec::Vec<BTreeSet<V>> {
+        let instructions = cfg.block(block).instructions();
+        let mut sets = alloc::vec![BTreeSet::new(); instructions.len()];
+        let mut live = self.live_out(block).clone();
+        for (index, instruction) in instructions.iter().enumerate().rev() {
+            sets[index].clone_from(&live);
+            backward_transfer(&mut live, instruction);
+        }
+        sets
     }
 
     /// All variables that are live somewhere in the program.
@@ -237,6 +282,29 @@ mod tests {
             live.is_live_in(&0, cfg.entry()),
             "r0 used but not defined in self-loop"
         );
+    }
+
+    #[test]
+    fn instruction_granular_sets_refine_the_block_facts() {
+        // bb0: def r0; use r0; def r0
+        // The final def is a dead store: r0 is not live after it. The first
+        // def is live until the use consumes it.
+        let cfg =
+            CfgBuilder::build(vec![def("first", 0), use_("read", 0), def("dead", 0)]).unwrap();
+        let live = Liveness::compute(&cfg);
+        let entry = cfg.entry();
+
+        let before = live.live_before_instructions(&cfg, entry);
+        let after = live.live_after_instructions(&cfg, entry);
+        assert_eq!(before.len(), 3);
+        assert_eq!(after.len(), 3);
+
+        assert_eq!(before[0], live.live_in(entry).clone());
+        assert_eq!(after[2], live.live_out(entry).clone());
+
+        assert!(after[0].contains(&0), "the first def feeds the use");
+        assert!(before[1].contains(&0), "the use reads a live value");
+        assert!(!after[2].contains(&0), "the final def is a dead store");
     }
 
     #[test]

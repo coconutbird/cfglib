@@ -206,6 +206,52 @@ impl<I> AstNode<I> {
         matches!(self, AstNode::Sequence { body } if body.is_empty())
     }
 
+    /// Every child node sequence of this node, in execution order.
+    ///
+    /// Leaf nodes yield nothing. `Switch` yields each case arm and then the
+    /// default; `TryCatch` yields the protected body, each handler body, and
+    /// then finally. Consumers walking or folding the tree should use this
+    /// instead of matching every variant, so new node shapes are picked up
+    /// automatically.
+    #[must_use]
+    pub fn child_bodies(&self) -> Vec<&[AstNode<I>]> {
+        match self {
+            AstNode::Block { .. }
+            | AstNode::Break { .. }
+            | AstNode::Continue { .. }
+            | AstNode::Return { .. }
+            | AstNode::Goto { .. } => Vec::new(),
+            AstNode::Sequence { body }
+            | AstNode::Loop { body, .. }
+            | AstNode::Label { body, .. }
+            | AstNode::Guarded { body, .. } => alloc::vec![body.as_slice()],
+            AstNode::IfThenElse {
+                then_body,
+                else_body,
+                ..
+            } => alloc::vec![then_body.as_slice(), else_body.as_slice()],
+            AstNode::Switch {
+                cases,
+                default_body,
+                ..
+            } => cases
+                .iter()
+                .map(|case| case.body.as_slice())
+                .chain(core::iter::once(default_body.as_slice()))
+                .collect(),
+            AstNode::TryCatch {
+                try_body,
+                handlers,
+                finally_body,
+            } => {
+                let mut bodies = alloc::vec![try_body.as_slice()];
+                bodies.extend(handlers.iter().map(|handler| handler.body.as_slice()));
+                bodies.push(finally_body.as_slice());
+                bodies
+            }
+        }
+    }
+
     /// Flatten nested single-element sequences.
     #[must_use]
     pub fn simplify(self) -> Self {

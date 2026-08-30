@@ -328,29 +328,16 @@ pub fn alias_propagation<I: CopySource + Clone, E>(cfg: &mut Cfg<I, E>) -> Alias
 mod tests {
     use super::*;
     use crate::cfg::Cfg;
-    use crate::dataflow::InstrInfo;
     use crate::edge::EdgeKind;
-    use crate::test_util::{DfInst, df_copy, df_def, df_use};
-    use alloc::vec;
+    use crate::test_util::{DfInst, UdInst, df_copy, df_def, df_use, ud_inst};
 
-    #[derive(Debug, Clone)]
-    struct AliasInst {
-        uses: Vec<u16>,
-        defs: Vec<u16>,
-        alias: bool,
-    }
+    /// Whether the mock instruction is a pairwise alias set.
+    #[derive(Debug, Clone, Copy)]
+    struct IsAlias(bool);
 
-    impl InstrInfo for AliasInst {
-        type Variable = u16;
-
-        fn uses(&self) -> &[Self::Variable] {
-            &self.uses
-        }
-
-        fn defs(&self) -> &[Self::Variable] {
-            &self.defs
-        }
-    }
+    /// A non-copy instruction exposing pairwise aliases over the shared
+    /// uses/defs mock.
+    type AliasInst = UdInst<IsAlias>;
 
     impl CopySource for AliasInst {
         fn as_copy(&self) -> Option<(Self::Variable, Self::Variable)> {
@@ -358,7 +345,7 @@ mod tests {
         }
 
         fn as_aliases(&self) -> Option<AliasPairs<'_, Self::Variable>> {
-            self.alias.then_some((&self.defs, &self.uses))
+            self.payload.0.then_some((&self.defs, &self.uses))
         }
 
         fn rewrite_use(&mut self, old: &Self::Variable, new: &Self::Variable) {
@@ -478,16 +465,8 @@ mod tests {
     fn pairwise_aliases_propagate_without_runtime_assignments() {
         let mut cfg: Cfg<AliasInst> = Cfg::new();
         cfg.block_mut(cfg.entry()).instructions_mut().extend([
-            AliasInst {
-                uses: vec![7, 8],
-                defs: vec![1, 2],
-                alias: true,
-            },
-            AliasInst {
-                uses: vec![1, 2],
-                defs: Vec::new(),
-                alias: false,
-            },
+            ud_inst(&[7, 8], &[1, 2], IsAlias(true)),
+            ud_inst(&[1, 2], &[], IsAlias(false)),
         ]);
 
         let result = alias_propagation(&mut cfg);
@@ -503,16 +482,8 @@ mod tests {
     fn pairwise_aliases_preserve_same_instruction_pre_state_reads() {
         let mut cfg: Cfg<AliasInst> = Cfg::new();
         cfg.block_mut(cfg.entry()).instructions_mut().extend([
-            AliasInst {
-                uses: vec![0, 1],
-                defs: vec![1, 2],
-                alias: true,
-            },
-            AliasInst {
-                uses: vec![2],
-                defs: Vec::new(),
-                alias: false,
-            },
+            ud_inst(&[0, 1], &[1, 2], IsAlias(true)),
+            ud_inst(&[2], &[], IsAlias(false)),
         ]);
 
         let result = alias_propagation(&mut cfg);

@@ -3,64 +3,13 @@
 extern crate alloc;
 
 use alloc::string::String;
-use alloc::vec::Vec;
+
 use core::fmt;
 
-/// One independently actionable HLIL verification failure.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct VerificationIssue {
-    /// Human-readable description of the violated invariant.
-    pub message: String,
-}
+pub use crate::ir::verification::{VerificationIssue, VerificationReport};
 
-impl VerificationIssue {
-    /// Creates one verification issue.
-    #[must_use]
-    pub fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-impl fmt::Display for VerificationIssue {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-/// Complete deterministic result of HLIL verification.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct VerificationReport {
-    /// All structural, semantic, typing, and provenance failures.
-    pub issues: Vec<VerificationIssue>,
-}
-
-impl VerificationReport {
-    /// Returns whether the function satisfies every HLIL invariant.
-    #[must_use]
-    pub fn is_ok(&self) -> bool {
-        self.issues.is_empty()
-    }
-
-    /// Returns the number of independent failures.
-    #[must_use]
-    pub fn issue_count(&self) -> usize {
-        self.issues.len()
-    }
-}
-
-impl fmt::Display for VerificationReport {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("HLIL verification failed")?;
-        for issue in &self.issues {
-            write!(formatter, "; {issue}")?;
-        }
-        Ok(())
-    }
-}
-
-impl core::error::Error for VerificationReport {}
+/// Rendered level name for HLIL verification reports.
+pub(super) const LEVEL: &str = "HLIL";
 
 /// Error returned while constructing or validating HLIL.
 #[derive(Debug)]

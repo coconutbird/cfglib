@@ -247,6 +247,32 @@ impl<'a> ChildBody<'a> {
     }
 }
 
+impl<D: Dialect> StatementKind<D> {
+    /// Every child statement body of this statement, in execution order.
+    ///
+    /// Leaf statements yield no bodies. Compound statements yield each nested
+    /// sequence exactly once — `if` yields then/else, `for` yields
+    /// initializer/body/update, `switch` yields every arm then the default,
+    /// `try` yields body, per-handler filter and handler bodies, then
+    /// finally. Consumers walking or rewriting the statement tree should use
+    /// this instead of matching every variant, so new statement shapes are
+    /// picked up automatically.
+    #[must_use]
+    pub fn child_bodies(&self) -> Vec<&[StatementId]> {
+        child_bodies(self)
+    }
+
+    /// Visits every expression directly referenced by this statement.
+    ///
+    /// Only the statement's own operands are visited — condition, scrutinee,
+    /// assignment sides, return and region operands — not expressions inside
+    /// child statement bodies, and not the operands nested inside each
+    /// visited expression tree.
+    pub fn for_each_expression(&self, mut visit: impl FnMut(ExpressionId)) {
+        expression_references(self, &mut visit);
+    }
+}
+
 /// Every child statement body of one statement, in execution order.
 pub(super) fn child_body_entries<D: Dialect>(kind: &StatementKind<D>) -> Vec<ChildBody<'_>> {
     match kind {

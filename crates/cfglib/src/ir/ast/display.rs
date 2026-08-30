@@ -4,7 +4,7 @@ extern crate alloc;
 use alloc::string::String;
 use core::fmt::{self, Write as _};
 
-use crate::display::DisplayInstr;
+use crate::display::{DisplayInstr, write_indent};
 use crate::region::HandlerKind;
 
 use super::node::{AstNode, CatchHandler, LoopKind, SwitchCase};
@@ -16,12 +16,6 @@ impl<I: DisplayInstr> AstNode<I> {
         let mut out = String::new();
         write_node(&mut out, self, 0);
         out
-    }
-}
-
-fn write_indent(out: &mut String, depth: usize) {
-    for _ in 0..depth {
-        out.push_str("    ");
     }
 }
 

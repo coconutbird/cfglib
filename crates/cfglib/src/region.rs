@@ -59,42 +59,19 @@ pub use recover::promote_handler_extents;
 
 use crate::block::BlockId;
 use crate::cfg::Cfg;
+use crate::identity::define_dense_id;
 
-/// Opaque identifier for a region within a [`Cfg`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct RegionId(pub(crate) u32);
-
-impl RegionId {
+define_dense_id! {
+    /// Opaque identifier for a region within a [`Cfg`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct RegionId(pub(crate) u32);
+    display = "region";
     /// Create a `RegionId` from a dense zero-based index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("region index exceeds u32::MAX"))
-    }
-
-    /// Create a `RegionId` from a raw index.
-    #[inline]
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Returns the raw index.
-    #[inline]
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl core::fmt::Display for RegionId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "region{}", self.0)
-    }
+    from_index = "region index exceeds u32::MAX";
 }
 
 /// A protected region (try block) and its handlers.

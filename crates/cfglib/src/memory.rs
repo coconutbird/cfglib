@@ -210,6 +210,24 @@ impl<L, V> MemoryAccess<L, V> {
         }
     }
 
+    /// Creates an access of `kind` whose value operands are unreported.
+    ///
+    /// Every stored and loaded value stays unknown, so the access acts as an
+    /// opaque clobber or effect-only read of `location`. Prefer the
+    /// directional constructors when the transferred values are known: only
+    /// they let derived analyses connect ordinary values through memory.
+    #[must_use]
+    pub const fn opaque(location: L, kind: MemoryAccessKind) -> Self {
+        Self {
+            location,
+            address_uses: Vec::new(),
+            value_uses: Vec::new(),
+            value_defs: Vec::new(),
+            kind,
+            atomicity: MemoryAtomicity::NonAtomic,
+        }
+    }
+
     /// Attaches the ordinary values that select the binding or sub-location.
     #[must_use]
     pub fn with_address_uses(mut self, address_uses: impl IntoIterator<Item = V>) -> Self {

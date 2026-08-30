@@ -2,7 +2,6 @@
 
 extern crate alloc;
 
-use alloc::collections::BTreeSet;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -45,18 +44,13 @@ impl<D: Dialect> FunctionBuilder<D> {
     ///
     /// Returns an error when a parameter is undeclared or repeated.
     pub fn set_signature(&mut self, signature: Signature<D>) -> Result<()> {
-        let mut seen = BTreeSet::new();
-        for &parameter in &signature.parameters {
-            if parameter.index() >= self.variables.len() {
-                return Err(Error::InvalidConstruction(format!(
-                    "signature names undeclared parameter {parameter}"
-                )));
-            }
-            if !seen.insert(parameter) {
-                return Err(Error::InvalidConstruction(format!(
-                    "signature repeats parameter {parameter}"
-                )));
-            }
+        let declared = self.variables.len();
+        if let Some(issue) = signature
+            .parameter_issues(|parameter| parameter.index() < declared)
+            .into_iter()
+            .next()
+        {
+            return Err(Error::InvalidConstruction(issue));
         }
         self.signature = signature;
         Ok(())
@@ -161,7 +155,7 @@ impl<D: Dialect> FunctionBuilder<D> {
         }
     }
 
-    pub(super) fn copy_cleanups(&mut self, cleanups: &[Cleanup]) -> Result<()> {
+    fn copy_cleanups(&mut self, cleanups: &[Cleanup]) -> Result<()> {
         for cleanup in cleanups {
             if let Some(resume_from) = cleanup.resume_from {
                 self.set_cleanup_resume(cleanup.handler, resume_from)?;
@@ -173,14 +167,44 @@ impl<D: Dialect> FunctionBuilder<D> {
         Ok(())
     }
 
-    fn require_region_block(&self, block: BlockId, role: &str) -> Result<()> {
-        self.require_block(block)?;
-        if block == self.cfg.entry() {
-            return Err(Error::InvalidConstruction(format!(
-                "{role} {block} is the synthetic root"
-            )));
+    /// Mirrors the source block skeleton so rebuilt identities match.
+    pub(super) fn copy_blocks(&mut self, source: &Cfg<Instruction<D>, D::Edge>) {
+        for block in source.blocks().iter().skip(1) {
+            let rebuilt = self.new_block(block.label().unwrap_or(""));
+            debug_assert_eq!(rebuilt, block.id());
+        }
+    }
+
+    /// Copies every edge, exception region, and cleanup route verbatim.
+    ///
+    /// Blocks must already mirror the source; call after instructions are
+    /// appended so edge endpoints and cleanup blocks exist.
+    pub(super) fn copy_structure(&mut self, source: &Cfg<Instruction<D>, D::Edge>) -> Result<()> {
+        for edge in source.edges() {
+            self.add_edge(edge.source(), edge.target(), edge.payload().clone(), None)?;
+        }
+        for region in source.regions() {
+            self.add_region(region.clone())?;
+        }
+        self.copy_cleanups(source.cleanups())
+    }
+
+    /// Copies the signature and every provenance correspondence verbatim.
+    pub(super) fn copy_metadata(
+        &mut self,
+        signature: Signature<D>,
+        provenance: &ProvenanceMap<D>,
+    ) -> Result<()> {
+        self.set_signature(signature)?;
+        for entry in provenance.entries() {
+            self.map_entity(entry.source.clone(), entry.entity)?;
         }
         Ok(())
+    }
+
+    fn require_region_block(&self, block: BlockId, role: &str) -> Result<()> {
+        crate::ir::construction::check_semantic_block(&self.cfg, block, role)
+            .map_err(Error::InvalidConstruction)
     }
 
     /// Returns the synthetic root block.
@@ -291,14 +315,7 @@ impl<D: Dialect> FunctionBuilder<D> {
     }
 
     fn require_block(&self, block: BlockId) -> Result<()> {
-        if block.index() < self.cfg.block_count() {
-            Ok(())
-        } else {
-            Err(Error::InvalidConstruction(format!(
-                "block {block} is outside a {}-block function",
-                self.cfg.block_count()
-            )))
-        }
+        crate::ir::construction::check_block(&self.cfg, block).map_err(Error::InvalidConstruction)
     }
 }
 

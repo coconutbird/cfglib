@@ -3,6 +3,7 @@ extern crate alloc;
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::test_util::MemInst;
 use crate::{
     Cfg, DominatorTree, InstrInfo, MemoryAccessKind, MemoryAtomicity, MemoryOperations,
     ProgramPoint, SsaForm, SsaValue,
@@ -21,71 +22,14 @@ enum Fence {
     Function,
 }
 
-#[derive(Debug, Clone)]
-struct Instruction {
-    uses: Vec<u8>,
-    defs: Vec<u8>,
-    events: Vec<MemoryEvent<Location, u8, Fence>>,
-}
-
-impl Instruction {
-    fn new(events: impl IntoIterator<Item = MemoryEvent<Location, u8, Fence>>) -> Self {
-        Self {
-            uses: Vec::new(),
-            defs: Vec::new(),
-            events: events.into_iter().collect(),
-        }
-    }
-
-    fn with_data_flow(
-        uses: impl IntoIterator<Item = u8>,
-        defs: impl IntoIterator<Item = u8>,
-        events: impl IntoIterator<Item = MemoryEvent<Location, u8, Fence>>,
-    ) -> Self {
-        Self {
-            uses: uses.into_iter().collect(),
-            defs: defs.into_iter().collect(),
-            events: events.into_iter().collect(),
-        }
-    }
-}
-
-impl InstrInfo for Instruction {
-    type Variable = u8;
-
-    fn uses(&self) -> &[Self::Variable] {
-        &self.uses
-    }
-
-    fn defs(&self) -> &[Self::Variable] {
-        &self.defs
-    }
-}
-
-impl MemoryEventInfo for Instruction {
-    type Location = Location;
-    type Fence = Fence;
-
-    fn memory_events(
-        &self,
-    ) -> impl Iterator<Item = MemoryEvent<Self::Location, Self::Variable, Self::Fence>> {
-        self.events.iter().cloned()
-    }
-}
+type Instruction = MemInst<Location, Fence>;
 
 fn access(
     location: Location,
     kind: MemoryAccessKind,
     atomicity: MemoryAtomicity,
 ) -> MemoryEvent<Location, u8, Fence> {
-    let access = match kind {
-        MemoryAccessKind::Read => MemoryAccess::read(location, Vec::new()),
-        MemoryAccessKind::Write => MemoryAccess::write(location, Vec::new()),
-        MemoryAccessKind::ReadModifyWrite => {
-            MemoryAccess::read_modify_write(location, Vec::new(), Vec::new())
-        }
-    };
-    MemoryEvent::Access(access.with_atomicity(atomicity))
+    MemoryEvent::Access(MemoryAccess::opaque(location, kind).with_atomicity(atomicity))
 }
 
 #[test]

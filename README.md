@@ -245,6 +245,14 @@ Both level bridges return per-instruction maps between MLIL identities and
 the HLIL entities carrying them, and compose source provenance across the
 translation, so source maps survive in either direction.
 
+Consumers walk the trees without matching every variant:
+`StatementKind::child_bodies` yields each nested statement sequence in
+execution order, `StatementKind::for_each_expression` visits the statement's
+own operands, `Function::visit_statements` walks statement trees in
+preorder, and `Function::visit_expression_tree` walks one expression tree
+in postorder — so a new statement or node shape extends downstream walkers
+automatically.
+
 Above the lift, `recover_structure` (`RecoverDialect`) rebuilds a function
 with source-level shapes restored: `init; while (c) { …; update }` becomes
 a `for` statement, assigning and returning diamonds become the dialect's
@@ -268,6 +276,7 @@ inverted — before falling back to a wrapping `logical_not`.
 | Configurable search | `search` + `SearchConfig` (order, visited policy, direction, depth bound) | First-match, pruning (`Visit::Skip`), early exit (`ControlFlow::Break`), and backtracking as configuration; `VisitedPolicy::Path` un-marks on unwind so every route to a node is reported |
 | Reusable search marks | `search_with_marks` + `EpochMarks` | The same search with its visited marks in a caller-owned epoch-stamped buffer: a per-root pass allocates marks once instead of an O(node count) buffer per root, and each search still starts from a clean set (epoch bump, O(1)) |
 | Reusable search scratch | `search_with_scratch` + `SearchScratch` | The same search with the marks *and* the call's own buffers — seeds, frontier, adjacency — caller-owned, for a pass whose searches are small enough that the call is the cost; marks and buffers both reset on entry |
+| Disjoint sets | `DisjointSet` (`union` by rank, `union_toward_min` for deterministic minimum representatives, growable via `push`) | The union-find backing phi webs, may-alias classes, and lane webs, usable directly by consumers |
 | Traversal events | `breadth_first_events` → `BfsEvent`; `depth_first_events` → `DfsEvent` | Breadth-first discovery with tree/non-tree edges, or depth-first discover/tree/back/forward-or-cross/finish events in pinned order |
 | Open-graph search | `open_search` + `OpenSearchConfig` | The same disciplines over a lazily discovered node space: successors come from a closure, no dense ids (import/re-export chases, ordered emission walks) |
 | Open-graph events | `open_breadth_first_events` → `OpenBfsEvent`; `open_depth_first_events` → `OpenDfsEvent` | Breadth-first discovery/refusal events or depth-first discover/finish/refusal events over a lazily discovered node space; path policy can revisit a shared node once per route |
@@ -305,12 +314,12 @@ inverted — before falling back to a wrapping `logical_not`.
 
 | Analysis | Function / Type | Description |
 |---|---|---|
-| Generic fixpoint solver | `solve_problem[_from][_with_config]`, `Problem` / `TryProblem` traits | Forward or backward, any lattice type; every solver carries the same seeded/bounded/fallible matrix over shared `SolveConfig` and `SolveError` |
+| Generic fixpoint solver | `solve_problem[_from][_with_config]`, `Problem` / `TryProblem` traits | Forward or backward, any lattice type; every solver carries the same seeded/bounded/fallible matrix over shared `SolveConfig` and `SolveError`; `meet_options` lifts any lattice to `Option<F>` with `None` as unreachable bottom |
 | Node-level fixpoint | `solve_node_problem[_from][_with_config]`, `NodeProblem` / `TryNodeProblem` traits | Per-node facts over any graph view (taint, reachability-with-facts) |
 | Edge-sensitive fixpoint | `solve_edge_problem`, `solve_edge_problem_from`, `EdgeProblem` trait | Full or seeded per-edge transfer over any edge view; stable id/data plus physical node pre/post states and deterministic bounded-solve errors |
 | Fallible edge-sensitive fixpoint | `try_solve_edge_problem`, `try_solve_edge_problem_from`, `TryEdgeProblem` trait | Preserves consumer boundary, merge, node-transfer, and edge-transfer errors separately from solver limits |
 | Reaching definitions | `ReachingDefs::compute` | Which writes reach each point |
-| Liveness | `Liveness::compute` | Live-in / live-out at each block |
+| Liveness | `Liveness::compute` | Live-in / live-out at each block; `live_before_instructions` / `live_after_instructions` replay the block transfer for instruction-granular sets (dead-store detection) |
 | Def-use / use-def chains | `DefUseChains::compute` | Bidirectional def↔use links; dead-def detection |
 | SSA construction | `SsaForm::compute` | IDF phi placement plus full dominator-forest renaming, including disconnected handler/dead-code components |
 | Phi placement | `PhiPlacements::compute` | Structural IDF phase for consumers that only need placement |
@@ -382,7 +391,7 @@ generic instruction payload.
 | Switch/case | Case arms carry their dispatch `EdgeId`s (case keys stay on caller edge payloads) and the explicit default arm is captured |
 | Try/catch/finally | From region metadata; unknown or malformed handler extents degrade to explicit `Goto`/`Label` flow — reachable code is never dropped |
 | Label/goto | Exact post-pass labeling: only blocks a goto actually targets are wrapped |
-| Traversal | `visit`, `for_each_instruction`, and `map_instructions` — the re-leveling hook from opaque payloads to another representation |
+| Traversal | `child_bodies` (every nested sequence in execution order), `visit`, `for_each_instruction`, and `map_instructions` — the re-leveling hook from opaque payloads to another representation |
 | Pseudocode | `to_pseudocode` via `DisplayInstr` — rendering never requires flow classification |
 
 ## Extension contracts
@@ -416,7 +425,8 @@ SwitchSource              (switch table recovery — associated Target)
 
 `MemoryEventInfo` is the single instruction-side source of truth for memory.
 Directional `MemoryAccess::read`, `write`, and `read_modify_write`
-constructors keep loaded definitions, stored uses, and address uses distinct;
+constructors keep loaded definitions, stored uses, and address uses distinct
+(`MemoryAccess::opaque` covers table-driven kinds with unknown values);
 events also retain exact locations, atomicity, and ordered fences. `MemorySSA`
 in `dataflow::memory` merges locations through the caller-provided
 `MemoryAlias` relation, then exposes loop-correct reaching definitions,

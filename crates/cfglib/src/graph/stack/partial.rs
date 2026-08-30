@@ -7,43 +7,22 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::graph::search::SearchOrder;
+use crate::identity::define_dense_id;
 
 use super::path::{StackPath, StackPathError};
 use super::storage::{StackEdgeId, StackFileId, StackGraph, StackGraphError, StackNodeId};
 
-/// Stable identity of a path summary in a [`StackPartialPathDatabase`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct StackPartialPathId(u32);
-
-impl StackPartialPathId {
+define_dense_id! {
+    /// Stable identity of a path summary in a [`StackPartialPathDatabase`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct StackPartialPathId(u32);
+    display = "pp";
     /// Construct an identity from a dense arena index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("partial-path index exceeds u32::MAX"))
-    }
-
-    /// Construct an identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return the dense arena index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl core::fmt::Display for StackPartialPathId {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "pp{}", self.0)
-    }
+    from_index = "partial-path index exceeds u32::MAX";
 }
 
 /// A file-local structural route between stack-graph stitching endpoints.

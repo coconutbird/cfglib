@@ -166,32 +166,17 @@ mod tests {
     use super::*;
     use crate::cfg::Cfg;
     use crate::edge::EdgeKind;
-    use crate::test_util::{DfInst, df_const, df_def, df_use};
+    use crate::test_util::{DfInst, UdInst, df_const, df_def, df_use, ud_inst};
 
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy)]
     enum Fold {
         Literal(i64),
         Copy(u16),
         Opaque,
     }
 
-    struct KnownSensitiveInst {
-        uses: alloc::vec::Vec<u16>,
-        defs: alloc::vec::Vec<u16>,
-        fold: Fold,
-    }
-
-    impl InstrInfo for KnownSensitiveInst {
-        type Variable = u16;
-
-        fn uses(&self) -> &[Self::Variable] {
-            &self.uses
-        }
-
-        fn defs(&self) -> &[Self::Variable] {
-            &self.defs
-        }
-    }
+    /// A known-map-sensitive folder over the shared uses/defs mock.
+    type KnownSensitiveInst = UdInst<Fold>;
 
     impl ConstantFolder for KnownSensitiveInst {
         type Const = i64;
@@ -201,7 +186,7 @@ mod tests {
             known: &BTreeMap<Self::Variable, Self::Const>,
         ) -> Option<(Self::Variable, Self::Const)> {
             let destination = *self.defs.first()?;
-            match self.fold {
+            match self.payload {
                 Fold::Literal(value) => Some((destination, value)),
                 Fold::Copy(source) => known
                     .get(&source)
@@ -326,31 +311,11 @@ mod tests {
     fn known_constants_are_updated_and_killed_within_one_block() {
         let mut cfg = Cfg::new();
         cfg.block_mut(cfg.entry()).instructions_mut().extend([
-            KnownSensitiveInst {
-                uses: alloc::vec![],
-                defs: alloc::vec![0],
-                fold: Fold::Literal(7),
-            },
-            KnownSensitiveInst {
-                uses: alloc::vec![0],
-                defs: alloc::vec![1],
-                fold: Fold::Copy(0),
-            },
-            KnownSensitiveInst {
-                uses: alloc::vec![],
-                defs: alloc::vec![0],
-                fold: Fold::Opaque,
-            },
-            KnownSensitiveInst {
-                uses: alloc::vec![0],
-                defs: alloc::vec![2],
-                fold: Fold::Copy(0),
-            },
-            KnownSensitiveInst {
-                uses: alloc::vec![1],
-                defs: alloc::vec![3],
-                fold: Fold::Copy(1),
-            },
+            ud_inst(&[], &[0], Fold::Literal(7)),
+            ud_inst(&[0], &[1], Fold::Copy(0)),
+            ud_inst(&[], &[0], Fold::Opaque),
+            ud_inst(&[0], &[2], Fold::Copy(0)),
+            ud_inst(&[1], &[3], Fold::Copy(1)),
         ]);
 
         let result = constant_propagation(&cfg);

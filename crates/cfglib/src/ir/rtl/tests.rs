@@ -9,6 +9,7 @@ use crate::EdgeKind;
 use crate::ir::dialect::Vocabulary;
 use crate::ir::hlil::{self, Lifted};
 use crate::ir::mlil::{self, InstructionMetadata, VerificationIssue};
+use crate::test_util::toy::{self, Span};
 
 use super::{
     Dialect, Edge, Expr, Function, FunctionBuilder, Lift, LiftedStatement, MlilBridge, Place,
@@ -46,12 +47,6 @@ enum EffectOp {
     Emit,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-struct Span {
-    start: u32,
-    end: u32,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TestDialect;
 
@@ -73,11 +68,11 @@ impl Vocabulary for TestDialect {
     type NativeVariable = u8;
 
     fn span_is_empty(span: &Self::SourceSpan) -> bool {
-        span.start >= span.end
+        toy::span_is_empty(*span)
     }
 
     fn span_contains(span: &Self::SourceSpan, point: &Self::SourcePoint) -> bool {
-        span.start <= *point && *point < span.end
+        toy::span_contains(*span, *point)
     }
 }
 
@@ -91,11 +86,11 @@ impl Vocabulary for SemanticDialect {
     type NativeVariable = SemanticStorage;
 
     fn span_is_empty(span: &Self::SourceSpan) -> bool {
-        span.start >= span.end
+        toy::span_is_empty(*span)
     }
 
     fn span_contains(span: &Self::SourceSpan, point: &Self::SourcePoint) -> bool {
-        span.start <= *point && *point < span.end
+        toy::span_contains(*span, *point)
     }
 }
 
@@ -138,15 +133,7 @@ impl mlil::Dialect for SemanticDialect {
         operation: &Self::Operation,
         may_throw: bool,
     ) -> InstructionMetadata<Self::Effect> {
-        let effects = match operation {
-            LiftedStatement::Assign { effects, .. }
-            | LiftedStatement::Effect { effects, .. }
-            | LiftedStatement::Raise { effects, .. } => effects.clone(),
-            LiftedStatement::Branch { .. }
-            | LiftedStatement::Dispatch { .. }
-            | LiftedStatement::Return { .. } => Vec::new(),
-        };
-        InstructionMetadata::new(effects, operation.flow_effect(), may_throw)
+        toy::lifted_statement_metadata(operation, may_throw)
     }
 
     fn mnemonic(operation: &Self::Operation) -> &str {

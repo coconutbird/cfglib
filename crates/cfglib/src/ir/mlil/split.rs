@@ -169,10 +169,7 @@ pub(super) fn split_variables<D: VerifyDialect>(source: &Function<D>) -> Result<
     // Identical graph structure: blocks in identity order, instructions in
     // stable identity order appended at their original points, edges and
     // regions in insertion order — every rebuilt identity matches.
-    for block in source.cfg.blocks().iter().skip(1) {
-        let rebuilt = builder.new_block(block.label().unwrap_or(""));
-        debug_assert_eq!(rebuilt, block.id());
-    }
+    builder.copy_blocks(&source.cfg);
     for index in 0..source.instruction_points.len() {
         let id = InstructionId::from_raw(
             u32::try_from(index).expect("existing identities fit their own space"),
@@ -212,13 +209,7 @@ pub(super) fn split_variables<D: VerifyDialect>(source: &Function<D>) -> Result<
         )?;
         debug_assert_eq!(rebuilt, id);
     }
-    for edge in source.cfg.edges() {
-        builder.add_edge(edge.source(), edge.target(), edge.payload().clone(), None)?;
-    }
-    for region in source.cfg.regions() {
-        builder.add_region(region.clone())?;
-    }
-    builder.copy_cleanups(source.cfg.cleanups())?;
+    builder.copy_structure(&source.cfg)?;
 
     let parameters = source
         .signature

@@ -142,10 +142,7 @@ where
         promoted.insert(location.clone(), builder.declare_variable(role, native)?);
     }
 
-    for block in source.cfg.blocks().iter().skip(1) {
-        let rebuilt = builder.new_block(block.label().unwrap_or(""));
-        debug_assert_eq!(rebuilt, block.id());
-    }
+    builder.copy_blocks(&source.cfg);
     let mut rewritten = 0usize;
     for index in 0..source.instruction_points.len() {
         let id = InstructionId::from_raw(
@@ -205,17 +202,8 @@ where
         };
         debug_assert_eq!(rebuilt, id);
     }
-    for edge in source.cfg.edges() {
-        builder.add_edge(edge.source(), edge.target(), edge.payload().clone(), None)?;
-    }
-    for region in source.cfg.regions() {
-        builder.add_region(region.clone())?;
-    }
-    builder.copy_cleanups(source.cfg.cleanups())?;
-    builder.set_signature(source.signature.clone())?;
-    for entry in source.provenance.entries() {
-        builder.map_entity(entry.source.clone(), entry.entity)?;
-    }
+    builder.copy_structure(&source.cfg)?;
+    builder.copy_metadata(source.signature.clone(), &source.provenance)?;
 
     Ok(MemoryPromotion {
         function: builder.finish()?,

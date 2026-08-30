@@ -8,43 +8,24 @@ use core::ops::Index;
 use crate::graph::directed::{DirectedGraph, EdgeId as DirectedEdgeId, NodeId};
 use crate::graph::edge_view::{DenseEdgeId, EdgeGraphView, EdgeRef};
 use crate::graph::view::{DenseNodeId, DirectedGraphView};
+use crate::identity::define_dense_id;
 
-/// Dense identity of a scope in a [`ScopeGraph`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ScopeId(u32);
-
-impl ScopeId {
+define_dense_id! {
+    /// Dense identity of a scope in a [`ScopeGraph`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct ScopeId(u32);
+    display = "s";
     /// Construct a scope identity from a dense zero-based index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("scope index exceeds u32::MAX"))
-    }
-
-    /// Construct a scope identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return the dense zero-based index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-
-    const fn graph_id(self) -> NodeId {
-        NodeId::from_raw(self.0)
-    }
+    from_index = "scope index exceeds u32::MAX";
 }
 
-impl core::fmt::Display for ScopeId {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "s{}", self.0)
+impl ScopeId {
+    const fn graph_id(self) -> NodeId {
+        NodeId::from_raw(self.0)
     }
 }
 
@@ -58,42 +39,22 @@ impl DenseNodeId for ScopeId {
     }
 }
 
-/// Stable identity of a labeled edge in a [`ScopeGraph`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ScopeEdgeId(u32);
-
-impl ScopeEdgeId {
+define_dense_id! {
+    /// Stable identity of a labeled edge in a [`ScopeGraph`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct ScopeEdgeId(u32);
+    display = "se";
     /// Construct an edge identity from a dense arena index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("scope-edge index exceeds u32::MAX"))
-    }
-
-    /// Construct an edge identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return the dense arena index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-
-    const fn graph_id(self) -> DirectedEdgeId {
-        DirectedEdgeId::from_raw(self.0)
-    }
+    from_index = "scope-edge index exceeds u32::MAX";
 }
 
-impl core::fmt::Display for ScopeEdgeId {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "se{}", self.0)
+impl ScopeEdgeId {
+    const fn graph_id(self) -> DirectedEdgeId {
+        DirectedEdgeId::from_raw(self.0)
     }
 }
 
@@ -107,74 +68,30 @@ impl DenseEdgeId for ScopeEdgeId {
     }
 }
 
-/// Stable identity of relation-tagged data in a [`ScopeGraph`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ScopeDatumId(u32);
-
-impl ScopeDatumId {
+define_dense_id! {
+    /// Stable identity of relation-tagged data in a [`ScopeGraph`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct ScopeDatumId(u32);
+    display = "d";
     /// Construct a datum identity from a dense zero-based index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("scope datum index exceeds u32::MAX"))
-    }
-
-    /// Construct a datum identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return the dense zero-based index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
+    from_index = "scope datum index exceeds u32::MAX";
 }
 
-impl core::fmt::Display for ScopeDatumId {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "d{}", self.0)
-    }
-}
-
-/// Stable identity of a reference in a [`ScopeGraph`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct ScopeReferenceId(u32);
-
-impl ScopeReferenceId {
+define_dense_id! {
+    /// Stable identity of a reference in a [`ScopeGraph`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct ScopeReferenceId(u32);
+    display = "r";
     /// Construct a reference identity from a dense zero-based index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("scope reference index exceeds u32::MAX"))
-    }
-
-    /// Construct a reference identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return the dense zero-based index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-}
-
-impl core::fmt::Display for ScopeReferenceId {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "r{}", self.0)
-    }
+    from_index = "scope reference index exceeds u32::MAX";
 }
 
 /// One scope carrying consumer-defined metadata.

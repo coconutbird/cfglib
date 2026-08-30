@@ -5,8 +5,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 
 use super::{
-    Dialect, Expression, ExpressionId, ProvenanceMap, Signature, Statement, StatementId, Variable,
-    VariableId, VerificationReport, VerifyDialect,
+    Dialect, Expression, ExpressionId, ExpressionKind, ProvenanceMap, Signature, Statement,
+    StatementId, Variable, VariableId, VerificationReport, VerifyDialect,
 };
 
 /// One structured semantic function.
@@ -112,5 +112,26 @@ impl<D: Dialect> Function<D> {
                 }
             }
         }
+    }
+
+    /// Visits `root`'s expression tree in postorder: operands before parents.
+    ///
+    /// Missing operand identities are skipped. Verified functions store each
+    /// expression tree with operands preceding parents, so postorder here is
+    /// also a valid evaluation order.
+    pub fn visit_expression_tree<'f>(
+        &'f self,
+        root: ExpressionId,
+        visit: &mut impl FnMut(&'f Expression<D>),
+    ) {
+        let Some(expression) = self.expression(root) else {
+            return;
+        };
+        if let ExpressionKind::Operation { operands, .. } = expression.kind() {
+            for &operand in operands {
+                self.visit_expression_tree(operand, visit);
+            }
+        }
+        visit(expression);
     }
 }

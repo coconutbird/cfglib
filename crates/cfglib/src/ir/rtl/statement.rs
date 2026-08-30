@@ -13,32 +13,14 @@ use super::expr::{Expr, Place};
 /// One storage lane: a native location and a lane index within it.
 pub type Lane<D> = (<D as Vocabulary>::NativeVariable, u8);
 
-/// The dense identity of one stored RTL statement.
-///
-/// Assigned by [`FunctionBuilder::append`](super::FunctionBuilder::append)
-/// in append order across the whole function; the lift's provenance maps
-/// key on it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StatementId(u32);
-
-impl StatementId {
-    /// Creates an identity from its dense raw index.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Returns the dense zero-based index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-
-    /// Returns the compact raw identity.
-    #[must_use]
-    pub const fn raw(self) -> u32 {
-        self.0
-    }
+crate::identity::define_dense_id! {
+    /// The dense identity of one stored RTL statement.
+    ///
+    /// Assigned by [`FunctionBuilder::append`](super::FunctionBuilder::append)
+    /// in append order across the whole function; the lift's provenance maps
+    /// key on it.
+    pub struct StatementId(u32);
+    raw;
 }
 
 /// One native instruction expressed at the RTL level.

@@ -4,6 +4,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::ir::dialect::Vocabulary;
+use crate::test_util::toy;
 
 use super::super::{
     Dialect, ExpressionId, ExpressionKind, Function, FunctionBuilder, StatementId, StatementKind,
@@ -23,17 +24,17 @@ impl Vocabulary for Toy {
     type ValueType = Type;
     type Effect = ();
     type Source = ();
-    type SourceSpan = (u32, u32);
+    type SourceSpan = toy::Span;
     type SourcePoint = u32;
     type VariableRole = ();
     type NativeVariable = ();
 
     fn span_is_empty(span: &Self::SourceSpan) -> bool {
-        span.0 >= span.1
+        toy::span_is_empty(*span)
     }
 
     fn span_contains(span: &Self::SourceSpan, point: &Self::SourcePoint) -> bool {
-        span.0 <= *point && *point < span.1
+        toy::span_contains(*span, *point)
     }
 }
 

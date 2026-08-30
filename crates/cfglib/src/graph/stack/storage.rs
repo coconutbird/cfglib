@@ -8,78 +8,37 @@ use core::ops::Index;
 use crate::graph::directed::{DirectedGraph, EdgeId as DirectedEdgeId, NodeId};
 use crate::graph::edge_view::{DenseEdgeId, EdgeGraphView, EdgeRef};
 use crate::graph::view::{DenseNodeId, DirectedGraphView};
+use crate::identity::define_dense_id;
 
-/// Dense identity of a file partition in a [`StackGraph`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct StackFileId(u32);
-
-impl StackFileId {
+define_dense_id! {
+    /// Dense identity of a file partition in a [`StackGraph`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct StackFileId(u32);
+    display = "f";
     /// Construct a file identity from a dense zero-based index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("stack-graph file index exceeds u32::MAX"))
-    }
-
-    /// Construct a file identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return the dense zero-based index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
+    from_index = "stack-graph file index exceeds u32::MAX";
 }
 
-impl core::fmt::Display for StackFileId {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "f{}", self.0)
-    }
-}
-
-/// Dense identity of a node in a [`StackGraph`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct StackNodeId(u32);
-
-impl StackNodeId {
+define_dense_id! {
+    /// Dense identity of a node in a [`StackGraph`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct StackNodeId(u32);
+    display = "sn";
     /// Construct a node identity from a dense zero-based index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("stack-graph node index exceeds u32::MAX"))
-    }
-
-    /// Construct a node identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return the dense zero-based index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-
-    const fn graph_id(self) -> NodeId {
-        NodeId::from_raw(self.0)
-    }
+    from_index = "stack-graph node index exceeds u32::MAX";
 }
 
-impl core::fmt::Display for StackNodeId {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "sn{}", self.0)
+impl StackNodeId {
+    const fn graph_id(self) -> NodeId {
+        NodeId::from_raw(self.0)
     }
 }
 
@@ -93,42 +52,22 @@ impl DenseNodeId for StackNodeId {
     }
 }
 
-/// Stable identity of an edge in a [`StackGraph`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct StackEdgeId(u32);
-
-impl StackEdgeId {
+define_dense_id! {
+    /// Stable identity of an edge in a [`StackGraph`].
+    #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+    pub struct StackEdgeId(u32);
+    display = "sg-e";
     /// Construct an edge identity from a dense arena index.
     ///
     /// # Panics
     ///
     /// Panics when `index` exceeds `u32::MAX`.
-    #[must_use]
-    pub fn from_index(index: usize) -> Self {
-        Self(u32::try_from(index).expect("stack-graph edge index exceeds u32::MAX"))
-    }
-
-    /// Construct an edge identity from its raw integer representation.
-    #[must_use]
-    pub const fn from_raw(raw: u32) -> Self {
-        Self(raw)
-    }
-
-    /// Return the dense arena index.
-    #[must_use]
-    pub const fn index(self) -> usize {
-        self.0 as usize
-    }
-
-    const fn graph_id(self) -> DirectedEdgeId {
-        DirectedEdgeId::from_raw(self.0)
-    }
+    from_index = "stack-graph edge index exceeds u32::MAX";
 }
 
-impl core::fmt::Display for StackEdgeId {
-    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(formatter, "sg-e{}", self.0)
+impl StackEdgeId {
+    const fn graph_id(self) -> DirectedEdgeId {
+        DirectedEdgeId::from_raw(self.0)
     }
 }
 

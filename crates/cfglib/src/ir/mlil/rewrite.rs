@@ -72,10 +72,7 @@ impl<D: VerifyDialect> Function<D> {
                 builder.declare_variable(variable.role.clone(), variable.native.clone())?;
             debug_assert_eq!(rebuilt, variable.id);
         }
-        for block in self.cfg().blocks().iter().skip(1) {
-            let rebuilt = builder.new_block(block.label().unwrap_or(""));
-            debug_assert_eq!(rebuilt, block.id());
-        }
+        builder.copy_blocks(self.cfg());
 
         let mut rewritten = 0usize;
         for index in 0..self.instruction_count() {
@@ -111,17 +108,8 @@ impl<D: VerifyDialect> Function<D> {
             debug_assert_eq!(rebuilt, id);
         }
 
-        for edge in self.cfg().edges() {
-            builder.add_edge(edge.source(), edge.target(), edge.payload().clone(), None)?;
-        }
-        for region in self.cfg().regions() {
-            builder.add_region(region.clone())?;
-        }
-        builder.copy_cleanups(self.cfg().cleanups())?;
-        builder.set_signature(self.signature().clone())?;
-        for entry in self.provenance().entries() {
-            builder.map_entity(entry.source.clone(), entry.entity)?;
-        }
+        builder.copy_structure(self.cfg())?;
+        builder.copy_metadata(self.signature().clone(), self.provenance())?;
 
         Ok(InstructionRewrite {
             function: builder.finish()?,

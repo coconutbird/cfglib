@@ -319,52 +319,7 @@ mod tests {
     use super::*;
     use crate::cfg::Cfg;
     use crate::edge::EdgeKind;
-    use crate::flow::{FlowControl, FlowEffect};
-
-    #[derive(Debug, Clone)]
-    struct VnInst {
-        op: u32,
-        uses: Vec<u16>,
-        defs: Vec<u16>,
-        pure_: bool,
-    }
-
-    impl FlowControl for VnInst {
-        fn flow_effect(&self) -> FlowEffect {
-            FlowEffect::Fallthrough
-        }
-    }
-
-    impl InstrInfo for VnInst {
-        type Variable = u16;
-
-        fn uses(&self) -> &[u16] {
-            &self.uses
-        }
-        fn defs(&self) -> &[u16] {
-            &self.defs
-        }
-    }
-
-    impl ValueNumberInfo for VnInst {
-        type Operator = u32;
-
-        fn operator(&self) -> u32 {
-            self.op
-        }
-        fn is_pure(&self) -> bool {
-            self.pure_
-        }
-    }
-
-    fn vn_inst(op: u32, uses: &[u16], defs: &[u16]) -> VnInst {
-        VnInst {
-            op,
-            uses: uses.to_vec(),
-            defs: defs.to_vec(),
-            pure_: true,
-        }
-    }
+    use crate::test_util::{VnInst, vn_impure, vn_inst};
 
     #[test]
     fn impure_redefinition_invalidates_value_numbers() {
@@ -374,12 +329,7 @@ mod tests {
         cfg.block_mut(cfg.entry()).instructions_mut().extend([
             vn_inst(1, &[0, 1], &[10]),
             vn_inst(2, &[10, 2], &[11]),
-            VnInst {
-                op: 99,
-                uses: alloc::vec![],
-                defs: alloc::vec![10],
-                pure_: false,
-            },
+            vn_impure(99, &[], &[10]),
             vn_inst(2, &[10, 2], &[12]),
         ]);
 

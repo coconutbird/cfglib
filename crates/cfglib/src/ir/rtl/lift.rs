@@ -26,6 +26,7 @@ use alloc::vec::Vec;
 use crate::ir::dialect::Vocabulary;
 use crate::ir::mlil::{FunctionBuilder as MlilBuilder, Signature as MlilSignature};
 use crate::region::{Handler, HandlerBody, HandlerKind, Region};
+use crate::union_find::DisjointSet;
 use crate::{BlockId, DominatorTree, PhiWebs, SsaForm, SsaValue};
 
 use super::dialect::{Dialect, Lift, MlilBridge};
@@ -36,29 +37,6 @@ use super::render::Webs;
 use super::statement::{Lane, Statement};
 use super::template::WebInfo;
 use super::types::{Constraint, Inference, Shape};
-
-struct UnionFind {
-    parent: Vec<usize>,
-}
-
-impl UnionFind {
-    fn find(&mut self, mut node: usize) -> usize {
-        while self.parent[node] != node {
-            self.parent[node] = self.parent[self.parent[node]];
-            node = self.parent[node];
-        }
-        node
-    }
-
-    fn unite(&mut self, a: usize, b: usize) {
-        let (ra, rb) = (self.find(a), self.find(b));
-        if ra != rb {
-            // Uniting toward the smaller id keeps ordering deterministic.
-            let (keep, fold) = if ra < rb { (ra, rb) } else { (rb, ra) };
-            self.parent[fold] = keep;
-        }
-    }
-}
 
 struct WebFact<D: Dialect> {
     storage: <D as Vocabulary>::NativeVariable,
@@ -92,14 +70,13 @@ pub fn lift<D: Lift>(
     // placement is not liveness-pruned, and a dead header φ would fuse
     // the unrelated lifetimes on either side of a full overwrite.
     let mut ids: BTreeMap<(Lane<D>, usize), usize> = BTreeMap::new();
-    let mut union = UnionFind { parent: Vec::new() };
-    let mut id_of = |value: &SsaValue<Lane<D>>, union: &mut UnionFind| -> usize {
+    let mut union = DisjointSet::default();
+    let mut id_of = |value: &SsaValue<Lane<D>>, union: &mut DisjointSet| -> usize {
         let key = (value.variable.clone(), value.version);
         if let Some(&id) = ids.get(&key) {
             return id;
         }
-        let id = union.parent.len();
-        union.parent.push(id);
+        let id = union.push();
         ids.insert(key, id);
         id
     };
@@ -108,7 +85,9 @@ pub fn lift<D: Lift>(
         for value in &web.values {
             let id = id_of(value, &mut union);
             match anchor {
-                Some(anchor) => union.unite(anchor, id),
+                Some(anchor) => {
+                    union.union_toward_min(anchor, id);
+                }
                 None => anchor = Some(id),
             }
         }
@@ -133,7 +112,7 @@ pub fn lift<D: Lift>(
                     let first = id_of(&defs[0], &mut union);
                     for value in &defs[1..] {
                         let other = id_of(value, &mut union);
-                        union.unite(first, other);
+                        union.union_toward_min(first, other);
                     }
                     cursor += place.lanes.len();
                 }
@@ -164,14 +143,14 @@ pub fn lift<D: Lift>(
         if let Some((storage, first)) = previous
             && *storage == lane.0
         {
-            union.unite(first, id);
+            union.union_toward_min(first, id);
         } else {
             previous = Some((&lane.0, id));
         }
     }
 
     // Phase 2: resolve roots and collect per-web facts.
-    let roots: Vec<usize> = (0..union.parent.len()).map(|id| union.find(id)).collect();
+    let roots: Vec<usize> = (0..union.len()).map(|id| union.find(id)).collect();
     let mut facts: Vec<Option<WebFact<D>>> =
         core::iter::repeat_with(|| None).take(roots.len()).collect();
     for ((lane, version), &id) in &ids {

@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeMap;
 use alloc::format;
 use alloc::string::String;
 use alloc::vec;
@@ -28,7 +28,7 @@ pub(super) fn verify_function<D: VerifyDialect>(function: &Function<D>) -> Verif
     }
     verify_provenance(function, &mut issues);
     D::verify(function, &mut issues);
-    VerificationReport { issues }
+    VerificationReport::new(super::error::LEVEL, issues)
 }
 
 fn verify_identities<D: Dialect>(function: &Function<D>, issues: &mut Vec<VerificationIssue>) {
@@ -68,17 +68,11 @@ fn verify_identities<D: Dialect>(function: &Function<D>, issues: &mut Vec<Verifi
 }
 
 fn verify_signature<D: Dialect>(function: &Function<D>, issues: &mut Vec<VerificationIssue>) {
-    let mut seen = BTreeSet::new();
-    for &parameter in &function.signature.parameters {
-        if function.variable(parameter).is_none() {
-            issue(
-                issues,
-                format!("signature names undeclared parameter {parameter}"),
-            );
-        }
-        if !seen.insert(parameter) {
-            issue(issues, format!("signature repeats parameter {parameter}"));
-        }
+    for message in function
+        .signature
+        .parameter_issues(|&parameter| function.variable(parameter).is_some())
+    {
+        issue(issues, message);
     }
 }
 

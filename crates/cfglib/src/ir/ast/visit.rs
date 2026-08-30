@@ -9,45 +9,8 @@ impl<I> AstNode<I> {
     /// Visits this node and every descendant in preorder.
     pub fn visit<'n>(&'n self, visit: &mut impl FnMut(&'n AstNode<I>)) {
         visit(self);
-        match self {
-            AstNode::Sequence { body }
-            | AstNode::Label { body, .. }
-            | AstNode::Guarded { body, .. }
-            | AstNode::Loop { body, .. } => visit_nodes(body, visit),
-            AstNode::IfThenElse {
-                then_body,
-                else_body,
-                ..
-            } => {
-                visit_nodes(then_body, visit);
-                visit_nodes(else_body, visit);
-            }
-            AstNode::Switch {
-                cases,
-                default_body,
-                ..
-            } => {
-                for case in cases {
-                    visit_nodes(&case.body, visit);
-                }
-                visit_nodes(default_body, visit);
-            }
-            AstNode::TryCatch {
-                try_body,
-                handlers,
-                finally_body,
-            } => {
-                visit_nodes(try_body, visit);
-                for handler in handlers {
-                    visit_nodes(&handler.body, visit);
-                }
-                visit_nodes(finally_body, visit);
-            }
-            AstNode::Block { .. }
-            | AstNode::Return { .. }
-            | AstNode::Break { .. }
-            | AstNode::Continue { .. }
-            | AstNode::Goto { .. } => {}
+        for body in self.child_bodies() {
+            visit_nodes(body, visit);
         }
     }
 

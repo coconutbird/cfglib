@@ -95,56 +95,15 @@ pub fn eliminate_pre<I: ValueNumberInfo + Clone>(cfg: &mut Cfg<I>, dom: &Dominat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::analysis::value_numbering::ValueNumberInfo;
     use crate::cfg::Cfg;
-    use crate::dataflow::InstrInfo;
     use crate::edge::EdgeKind;
-    use crate::flow::{FlowControl, FlowEffect};
     use crate::graph::dominator::DominatorTree;
-
-    #[derive(Debug, Clone)]
-    struct PreInst {
-        op: u32,
-        uses: Vec<u16>,
-        defs: Vec<u16>,
-    }
-    impl FlowControl for PreInst {
-        fn flow_effect(&self) -> FlowEffect {
-            FlowEffect::Fallthrough
-        }
-    }
-    impl InstrInfo for PreInst {
-        type Variable = u16;
-
-        fn uses(&self) -> &[u16] {
-            &self.uses
-        }
-        fn defs(&self) -> &[u16] {
-            &self.defs
-        }
-    }
-    impl ValueNumberInfo for PreInst {
-        type Operator = u32;
-
-        fn operator(&self) -> u32 {
-            self.op
-        }
-        fn is_pure(&self) -> bool {
-            true
-        }
-    }
-    fn pi(op: u32, u: &[u16], d: &[u16]) -> PreInst {
-        PreInst {
-            op,
-            uses: u.to_vec(),
-            defs: d.to_vec(),
-        }
-    }
+    use crate::test_util::{VnInst, vn_inst as pi};
 
     #[test]
     fn pre_detects_within_block_redundancy() {
         // Same expression computed twice within one block.
-        let mut cfg: Cfg<PreInst> = Cfg::new();
+        let mut cfg: Cfg<VnInst> = Cfg::new();
         cfg.block_mut(cfg.entry())
             .instructions_mut()
             .extend([pi(1, &[0, 1], &[2]), pi(1, &[0, 1], &[3])]);
@@ -157,7 +116,7 @@ mod tests {
     fn pre_detects_cross_block_redundancy() {
         // Block 0 computes op1(loc0, loc1), block 1 computes the same.
         // Block 0 dominates block 1, so the second is redundant.
-        let mut cfg: Cfg<PreInst> = Cfg::new();
+        let mut cfg: Cfg<VnInst> = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
             .instructions_mut()
@@ -173,7 +132,7 @@ mod tests {
 
     #[test]
     fn pre_no_redundancy() {
-        let mut cfg: Cfg<PreInst> = Cfg::new();
+        let mut cfg: Cfg<VnInst> = Cfg::new();
         let b = cfg.new_block();
         cfg.block_mut(cfg.entry())
             .instructions_mut()

@@ -362,24 +362,12 @@ impl<D: Dialect> FunctionBuilder<D> {
     }
 
     fn require_block(&self, block: BlockId) -> Result<()> {
-        if block.index() < self.cfg.block_count() {
-            Ok(())
-        } else {
-            Err(Error::InvalidConstruction(format!(
-                "block {block} is outside a {}-block function",
-                self.cfg.block_count()
-            )))
-        }
+        crate::ir::construction::check_block(&self.cfg, block).map_err(Error::InvalidConstruction)
     }
 
     fn require_region_block(&self, block: BlockId, role: &str) -> Result<()> {
-        self.require_block(block)?;
-        if block == self.cfg.entry() {
-            return Err(Error::InvalidConstruction(format!(
-                "{role} {block} is the synthetic root"
-            )));
-        }
-        Ok(())
+        crate::ir::construction::check_semantic_block(&self.cfg, block, role)
+            .map_err(Error::InvalidConstruction)
     }
 }
 

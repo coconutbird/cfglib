@@ -7,6 +7,7 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::ops::Range;
 
+use crate::union_find::DisjointSet;
 use crate::{BlockId, Cfg, DominatorTree, InstrInfo, ProgramPoint, SsaForm, SsaValue, VariableId};
 
 use crate::memory::{
@@ -788,13 +789,13 @@ where
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let mut union_find = UnionFind::new(locations.len());
+    let mut union_find = DisjointSet::new(locations.len());
     for left in 0..locations.len() {
         for right in left + 1..locations.len() {
             if alias.may_alias(&locations[left], &locations[right])
                 || alias.may_alias(&locations[right], &locations[left])
             {
-                union_find.union(left, right);
+                union_find.union_toward_min(left, right);
             }
         }
     }
@@ -816,40 +817,6 @@ where
         class_by_location.insert(location, id);
     }
     (classes, class_by_location)
-}
-
-struct UnionFind {
-    parent: Vec<usize>,
-}
-
-impl UnionFind {
-    fn new(len: usize) -> Self {
-        Self {
-            parent: (0..len).collect(),
-        }
-    }
-
-    fn find(&mut self, mut index: usize) -> usize {
-        while self.parent[index] != index {
-            self.parent[index] = self.parent[self.parent[index]];
-            index = self.parent[index];
-        }
-        index
-    }
-
-    fn union(&mut self, left: usize, right: usize) {
-        let left_root = self.find(left);
-        let right_root = self.find(right);
-        if left_root == right_root {
-            return;
-        }
-        let (root, merged) = if left_root < right_root {
-            (left_root, right_root)
-        } else {
-            (right_root, left_root)
-        };
-        self.parent[merged] = root;
-    }
 }
 
 #[cfg(test)]

@@ -237,6 +237,26 @@ impl<F> Facts<F> {
     }
 }
 
+/// Meets two optional facts, treating `None` as unreachable bottom.
+///
+/// This is the standard reachability lifting of a lattice: `None` means "no
+/// path reaches this point yet", so it is the identity of the meet and only
+/// two reached facts invoke the inner `meet`. Use it as the
+/// [`Problem::meet`] of an analysis whose `Fact` is `Option<F>` and whose
+/// `bottom` is `None`, so unreachable code never fabricates a fact.
+#[must_use]
+pub fn meet_options<F: Clone>(
+    left: &Option<F>,
+    right: &Option<F>,
+    meet: impl FnOnce(&F, &F) -> F,
+) -> Option<F> {
+    match (left, right) {
+        (None, None) => None,
+        (Some(fact), None) | (None, Some(fact)) => Some(fact.clone()),
+        (Some(left), Some(right)) => Some(meet(left, right)),
+    }
+}
+
 /// Run the fixpoint iteration for the given problem on the CFG without a
 /// step limit.
 ///
