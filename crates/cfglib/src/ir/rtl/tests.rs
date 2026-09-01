@@ -472,6 +472,60 @@ fn parallel_hazard_pre_copies_when_webs_unite() {
     assert_eq!(header_len, Some(4));
 }
 
+/// A straight-line swap has distinct old and new webs, but still needs
+/// both native pre-state values while its assignments serialize.
+#[test]
+fn parallel_hazard_pre_copies_split_webs_in_straight_line_code() {
+    let mut builder = FunctionBuilder::<TestDialect>::new("test".into());
+    let entry = builder.entry();
+    let body = builder.new_block("body");
+    builder.add_edge(entry, body, Edge::Entry).unwrap();
+    builder
+        .append(
+            body,
+            Statement::Transfer {
+                assignments: vec![
+                    (
+                        Place {
+                            storage: 0,
+                            lanes: vec![0],
+                        },
+                        read(1, &[0], ScalarType::U32),
+                    ),
+                    (
+                        Place {
+                            storage: 1,
+                            lanes: vec![0],
+                        },
+                        read(0, &[0], ScalarType::U32),
+                    ),
+                ],
+                effects: Vec::new(),
+                may_throw: false,
+            },
+            None,
+        )
+        .unwrap();
+    builder
+        .append(body, Statement::Return { values: Vec::new() }, None)
+        .unwrap();
+    let function = builder.finish().unwrap();
+
+    let lifting = lift(&function, &()).unwrap();
+    let synthetic_count = lifting
+        .webs
+        .iter()
+        .filter(|web| web.storage.is_none())
+        .count();
+    assert_eq!(synthetic_count, 2, "both old values are staged");
+    let function = lifting.builder.finish().unwrap();
+    assert_eq!(
+        instructions(&function).len(),
+        5,
+        "two copies, two writes, return"
+    );
+}
+
 /// A diamond join φ-unites both definitions into one typed web.
 #[test]
 fn join_unites_definitions_into_one_web() {

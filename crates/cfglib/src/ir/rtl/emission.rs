@@ -644,6 +644,31 @@ impl<D: Lift> Emitter<'_, D> {
         ))
     }
 
+    /// Finds pre-state webs whose native lanes a serialized write would clobber.
+    fn serialization_hazards(&self, assignments: &[PendingAssign<D>]) -> BTreeSet<usize> {
+        let mut hazards = BTreeSet::new();
+        for assignment in assignments {
+            for &read in &assignment.reads {
+                let read_info = &self.webs[read];
+                let overlaps_target = assignments.iter().any(|target| {
+                    let target_info = &self.webs[target.target];
+                    target_info.storage.is_some()
+                        && target_info.storage == read_info.storage
+                        && target.positions.iter().any(|&position| {
+                            target_info
+                                .lanes
+                                .get(usize::from(position))
+                                .is_some_and(|lane| read_info.lanes.contains(lane))
+                        })
+                });
+                if overlaps_target {
+                    hazards.insert(read);
+                }
+            }
+        }
+        hazards
+    }
+
     /// Serializes one parallel transfer: rebuild every assignment
     /// against pre-statement state, pre-copy hazarded targets, then
     /// emit one MLIL assignment per destination.
@@ -683,18 +708,12 @@ impl<D: Lift> Emitter<'_, D> {
                 reads,
             });
         }
-        // Serialize: a target web read by any sibling assignment keeps
-        // its pre-state through a synthetic copy — the sibling reads
-        // then reference the copy instead.
+        // Serialize: every read whose native lanes overlap a target keeps
+        // its pre-state through a synthetic copy. Compare native storage,
+        // not web identity: a straight-line definition starts a fresh web,
+        // while its sibling still reads the older web in the same location.
         if lifted.len() > 1 {
-            let targets: Vec<usize> = lifted.iter().map(|pending| pending.target).collect();
-            let mut hazards: BTreeSet<usize> = BTreeSet::new();
-            for &target in &targets {
-                if lifted.iter().any(|pending| pending.reads.contains(&target)) {
-                    hazards.insert(target);
-                }
-            }
-            for hazard in hazards {
+            for hazard in self.serialization_hazards(&lifted) {
                 let shape = self.webs[hazard].shape.clone();
                 let temporary = self.declare_temporary(shape.clone())?;
                 let all: Vec<u8> = (0..shape.lanes).collect();
